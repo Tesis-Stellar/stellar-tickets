@@ -41,7 +41,7 @@ app.get('/api/events', async (req, res) => {
 // GET /api/events/:slug - Event details
 app.get('/api/events/:slug', async (req, res) => {
   try {
-    const event = await prisma.events.findUnique({
+    const event = await prisma.events.findFirst({
       where: { slug: req.params.slug },
       include: {
         venues: { include: { cities: true } },
@@ -56,7 +56,7 @@ app.get('/api/events/:slug', async (req, res) => {
     }
     
     // Fetch live ticket data mapped from Web3 contract via indexer
-    let tickets = [];
+    let tickets: any[] = [];
     if (event.contract_address) {
        tickets = await prisma.tickets.findMany({
          where: { contract_address: event.contract_address, is_for_sale: true }
@@ -75,7 +75,7 @@ app.post('/api/transactions/buy', async (req, res) => {
   try {
     const { event_slug, ticket_root_id, version, buyer_public_key } = req.body;
     
-    const event = await prisma.events.findUnique({ where: { slug: event_slug } });
+    const event = await prisma.events.findFirst({ where: { slug: event_slug } });
     if (!event || !event.contract_address) {
       res.status(404).json({ error: 'Evento no válido o sin contrato asignado' });
       return;

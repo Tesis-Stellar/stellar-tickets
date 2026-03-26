@@ -67,7 +67,7 @@ export async function runIndexer() {
       for (const evt of eventsRes.events) {
         const topicExtracted = parseTopics(evt.topic);
         const eventName = topicExtracted[0]; 
-        const contractId = evt.contractId;
+        const contractId = evt.contractId?.toString();
 
         // Skip events we can't parse or aren't tracking
         if (!eventName || !contractId) continue;
@@ -80,45 +80,55 @@ export async function runIndexer() {
         // Mapping based on the Event Contract names
         if (eventName === 'Mint') {
           // e.g: ["Mint", boleto_root_id, owner, price]
-          await prisma.tickets.upsert({
+          const ownerWallet = valueParsed.owner ?? 'unknown';
+          const user = await prisma.users.findUnique({ where: { wallet_address: ownerWallet } });
+          const ownerUserId = user ? user.id : null;
+          const rootId = Number(valueParsed.root_id ?? topicExtracted[1]);
+
+          const existing = await prisma.tickets.findFirst({
             where: {
-              contract_address_ticket_root_id_version: {
-                contract_address: contractId,
-                ticket_root_id: valueParsed.root_id ?? topicExtracted[1],
-                version: 1
-              }
-            },
-            create: {
               contract_address: contractId,
-              ticket_root_id: valueParsed.root_id ?? topicExtracted[1],
-              version: 1,
-              owner_wallet: valueParsed.owner ?? 'unknown',
-              price: valueParsed.price ?? 0,
-              is_for_sale: false,
-              is_used: false,
-              is_invalidated: false
-            },
-            update: {}
+              ticket_root_id: rootId,
+              version: 1
+            }
           });
+
+          if (!existing) {
+            await prisma.tickets.create({
+              data: {
+                contract_address: contractId,
+                ticket_root_id: rootId,
+                version: 1,
+                owner_wallet: ownerWallet,
+                owner_user_id: ownerUserId,
+                is_for_sale: false,
+                status: 'ACTIVE'
+              }
+            });
+          }
         } 
         else if (eventName === 'Venta') {
            // topic: ["Venta", root_id]
-           const rootId = topicExtracted[1];
+           const rootId = Number(topicExtracted[1]);
            await prisma.tickets.updateMany({
-             where: { contract_address: contractId, ticket_root_id: rootId, is_invalidated: false },
+             where: { contract_address: contractId, ticket_root_id: rootId, status: 'ACTIVE' },
              data: { is_for_sale: true }
            });
         }
         else if (eventName === 'Compra') {
            // Includes both primary purchases and resales
-           const rootId = topicExtracted[1];
+           const rootId = Number(topicExtracted[1]);
            const data = valueParsed; // assumed { old_owner, new_owner, new_version, price }
 
            // 1. Invalidate previous version
            await prisma.tickets.updateMany({
-             where: { contract_address: contractId, ticket_root_id: rootId, is_invalidated: false },
-             data: { is_invalidated: true, is_for_sale: false }
+             where: { contract_address: contractId, ticket_root_id: rootId, status: 'ACTIVE' },
+             data: { status: 'CANCELLED', is_for_sale: false }
            });
+
+           const newOwnerWallet = data.new_owner ?? 'unknown';
+           const user = await prisma.users.findUnique({ where: { wallet_address: newOwnerWallet } });
+           const ownerUserId = user ? user.id : null;
 
            // 2. Create new version
            await prisma.tickets.create({
@@ -126,19 +136,18 @@ export async function runIndexer() {
                contract_address: contractId,
                ticket_root_id: rootId,
                version: data.new_version ?? 2,
-               owner_wallet: data.new_owner ?? 'unknown',
-               price: data.price ?? 0,
+               owner_wallet: newOwnerWallet,
+               owner_user_id: ownerUserId,
                is_for_sale: false,
-               is_used: false,
-               is_invalidated: false
+               status: 'ACTIVE'
              }
            });
         }
         else if (eventName === 'Redimido') {
-           const rootId = topicExtracted[1];
+           const rootId = Number(topicExtracted[1]);
            await prisma.tickets.updateMany({
-             where: { contract_address: contractId, ticket_root_id: rootId, is_invalidated: false },
-             data: { is_used: true, is_for_sale: false }
+             where: { contract_address: contractId, ticket_root_id: rootId, status: 'ACTIVE' },
+             data: { status: 'USED', is_for_sale: false }
            });
         }
       }
