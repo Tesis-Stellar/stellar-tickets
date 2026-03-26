@@ -1,0 +1,1836 @@
+{
+  "openapi": "3.0.0",
+  "paths": {
+    "/api/auth/register": {
+      "post": {
+        "operationId": "AuthController_register",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegisterDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Register a new customer account",
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/api/auth/login": {
+      "post": {
+        "operationId": "AuthController_login",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Authenticate user and return JWT",
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/api/auth/me": {
+      "get": {
+        "operationId": "AuthController_me",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthUserDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Get current authenticated user profile",
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/api/users/me": {
+      "get": {
+        "operationId": "UsersController_me",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserProfileDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Get current customer profile",
+        "tags": [
+          "Users"
+        ]
+      },
+      "patch": {
+        "operationId": "UsersController_updateMe",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateProfileDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserProfileDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Update current customer profile",
+        "tags": [
+          "Users"
+        ]
+      }
+    },
+    "/api/events": {
+      "get": {
+        "operationId": "EventsController_list",
+        "parameters": [
+          {
+            "name": "search",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "category",
+            "required": false,
+            "in": "query",
+            "description": "Accepts enum value or Spanish label",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "city",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "date",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "example": "2026-04-02",
+              "type": "string"
+            }
+          },
+          {
+            "name": "featured",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "page",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "default": 1,
+              "type": "number"
+            }
+          },
+          {
+            "name": "limit",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "default": 10,
+              "type": "number"
+            }
+          },
+          {
+            "name": "sort",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "default": "date_asc",
+              "type": "string",
+              "enum": [
+                "date_asc",
+                "date_desc",
+                "featured",
+                "price_asc",
+                "price_desc"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "List public events with filters",
+        "tags": [
+          "Events"
+        ]
+      }
+    },
+    "/api/events/featured": {
+      "get": {
+        "operationId": "EventsController_featured",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/EventListItemDto"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "summary": "List featured public events",
+        "tags": [
+          "Events"
+        ]
+      }
+    },
+    "/api/events/categories": {
+      "get": {
+        "operationId": "EventsController_categories",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/EventCategoryDto"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "summary": "List event categories",
+        "tags": [
+          "Events"
+        ]
+      }
+    },
+    "/api/events/{id}/ticket-types": {
+      "get": {
+        "operationId": "EventsController_ticketTypes",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "List event ticket types",
+        "tags": [
+          "Events"
+        ]
+      }
+    },
+    "/api/events/{id}/availability": {
+      "get": {
+        "operationId": "EventsController_availability",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EventAvailabilityDto"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Get event availability summary",
+        "tags": [
+          "Events"
+        ]
+      }
+    },
+    "/api/events/{id}/related": {
+      "get": {
+        "operationId": "EventsController_related",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/EventListItemDto"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "summary": "List related events",
+        "tags": [
+          "Events"
+        ]
+      }
+    },
+    "/api/events/{slug}": {
+      "get": {
+        "operationId": "EventsController_bySlug",
+        "parameters": [
+          {
+            "name": "slug",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Get event detail by slug",
+        "tags": [
+          "Events"
+        ]
+      }
+    },
+    "/api/venues": {
+      "get": {
+        "operationId": "VenuesController_list",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "List venues",
+        "tags": [
+          "Venues"
+        ]
+      }
+    },
+    "/api/venues/{id}": {
+      "get": {
+        "operationId": "VenuesController_byId",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Get venue detail",
+        "tags": [
+          "Venues"
+        ]
+      }
+    },
+    "/api/venues/{id}/sections": {
+      "get": {
+        "operationId": "VenuesController_sections",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "List venue sections and seats",
+        "tags": [
+          "Venues"
+        ]
+      }
+    },
+    "/api/events/{id}/seatmap": {
+      "get": {
+        "operationId": "SeatmapsController_seatmap",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Get seatmap for an event",
+        "tags": [
+          "Seat Maps"
+        ]
+      }
+    },
+    "/api/events/{id}/seats/availability": {
+      "get": {
+        "operationId": "SeatmapsController_seatAvailability",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Get seat availability summary by section",
+        "tags": [
+          "Seat Maps"
+        ]
+      }
+    },
+    "/api/cart": {
+      "get": {
+        "operationId": "CartController_getCart",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Get current user cart",
+        "tags": [
+          "Cart"
+        ]
+      }
+    },
+    "/api/cart/items": {
+      "post": {
+        "operationId": "CartController_addItem",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddCartItemDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Add tickets or seats to cart",
+        "tags": [
+          "Cart"
+        ]
+      }
+    },
+    "/api/cart/items/{id}": {
+      "patch": {
+        "operationId": "CartController_updateItem",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateCartItemDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Update a cart item quantity",
+        "tags": [
+          "Cart"
+        ]
+      },
+      "delete": {
+        "operationId": "CartController_removeItem",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Remove a cart item",
+        "tags": [
+          "Cart"
+        ]
+      }
+    },
+    "/api/cart/clear": {
+      "delete": {
+        "operationId": "CartController_clear",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Clear current cart",
+        "tags": [
+          "Cart"
+        ]
+      }
+    },
+    "/api/catalog/cities": {
+      "get": {
+        "operationId": "CatalogController_cities",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "List catalog cities",
+        "tags": [
+          "Catalog"
+        ]
+      }
+    },
+    "/api/catalog/categories": {
+      "get": {
+        "operationId": "CatalogController_categories",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "List active event categories",
+        "tags": [
+          "Catalog"
+        ]
+      }
+    },
+    "/api/catalog/organizers": {
+      "get": {
+        "operationId": "CatalogController_organizers",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "List organizers",
+        "tags": [
+          "Catalog"
+        ]
+      }
+    },
+    "/api/checkout/preview": {
+      "post": {
+        "operationId": "CheckoutController_preview",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CheckoutPreviewDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Validate cart and preview totals",
+        "tags": [
+          "Checkout"
+        ]
+      }
+    },
+    "/api/checkout/confirm": {
+      "post": {
+        "operationId": "CheckoutController_confirm",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CheckoutConfirmDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Confirm checkout and create order",
+        "tags": [
+          "Checkout"
+        ]
+      }
+    },
+    "/api/orders": {
+      "get": {
+        "operationId": "OrdersController_list",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "List current user purchase orders",
+        "tags": [
+          "Orders"
+        ]
+      }
+    },
+    "/api/orders/{id}": {
+      "get": {
+        "operationId": "OrdersController_byId",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Get order detail",
+        "tags": [
+          "Orders"
+        ]
+      }
+    },
+    "/api/orders/{id}/items": {
+      "get": {
+        "operationId": "OrdersController_items",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "List order items",
+        "tags": [
+          "Orders"
+        ]
+      }
+    },
+    "/api/tickets": {
+      "get": {
+        "operationId": "TicketsController_list",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "List purchased tickets for current user",
+        "tags": [
+          "Tickets"
+        ]
+      }
+    },
+    "/api/tickets/{id}": {
+      "get": {
+        "operationId": "TicketsController_byId",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Get purchased ticket detail",
+        "tags": [
+          "Tickets"
+        ]
+      }
+    },
+    "/api/tickets/{id}/qr": {
+      "get": {
+        "operationId": "TicketsController_qr",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Get QR placeholder for a ticket",
+        "tags": [
+          "Tickets"
+        ]
+      }
+    },
+    "/api/admin/dashboard": {
+      "get": {
+        "operationId": "AdminController_dashboard",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Get admin dashboard summary",
+        "tags": [
+          "Admin"
+        ]
+      }
+    },
+    "/api/admin/events": {
+      "get": {
+        "operationId": "AdminController_events",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "List events with admin overview",
+        "tags": [
+          "Admin"
+        ]
+      },
+      "post": {
+        "operationId": "AdminController_createEvent",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateAdminEventDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Create event",
+        "tags": [
+          "Admin"
+        ]
+      }
+    },
+    "/api/admin/events/{id}": {
+      "get": {
+        "operationId": "AdminController_eventById",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Get admin event detail",
+        "tags": [
+          "Admin"
+        ]
+      },
+      "patch": {
+        "operationId": "AdminController_updateEvent",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateAdminEventDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Update event",
+        "tags": [
+          "Admin"
+        ]
+      }
+    },
+    "/api/admin/events/{id}/stats": {
+      "get": {
+        "operationId": "AdminController_eventStats",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Get admin event sales and occupancy stats",
+        "tags": [
+          "Admin"
+        ]
+      }
+    },
+    "/api/admin/events/{id}/ticket-types": {
+      "post": {
+        "operationId": "AdminController_createTicketType",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateEventTicketTypeDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Create event ticket type",
+        "tags": [
+          "Admin"
+        ]
+      }
+    },
+    "/api/admin/events/{id}/ticket-types/{ticketTypeId}": {
+      "patch": {
+        "operationId": "AdminController_updateTicketType",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "ticketTypeId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateEventTicketTypeDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Update event ticket type",
+        "tags": [
+          "Admin"
+        ]
+      }
+    }
+  },
+  "info": {
+    "title": "TuTicket Backend API",
+    "description": "Mock backend para una plataforma tradicional de ticketing primario en Colombia.",
+    "version": "1.0.0",
+    "contact": {}
+  },
+  "tags": [],
+  "servers": [
+    {
+      "url": "http://localhost:3000/api",
+      "description": "Local development"
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "bearer": {
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "type": "http"
+      }
+    },
+    "schemas": {
+      "DocumentType": {
+        "type": "string",
+        "enum": [
+          "CC",
+          "CE",
+          "TI",
+          "PP"
+        ]
+      },
+      "RegisterDto": {
+        "type": "object",
+        "properties": {
+          "firstName": {
+            "type": "string"
+          },
+          "lastName": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "documentType": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DocumentType"
+              }
+            ]
+          },
+          "documentNumber": {
+            "type": "string"
+          },
+          "phone": {
+            "type": "string",
+            "example": "+573001112233"
+          },
+          "password": {
+            "type": "string",
+            "minLength": 8
+          }
+        },
+        "required": [
+          "firstName",
+          "lastName",
+          "email",
+          "documentType",
+          "documentNumber",
+          "phone",
+          "password"
+        ]
+      },
+      "UserRole": {
+        "type": "string",
+        "enum": [
+          "CUSTOMER",
+          "ADMIN"
+        ]
+      },
+      "AuthUserDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "firstName": {
+            "type": "string"
+          },
+          "lastName": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "documentType": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DocumentType"
+              }
+            ]
+          },
+          "documentNumber": {
+            "type": "string"
+          },
+          "phone": {
+            "type": "string"
+          },
+          "role": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/UserRole"
+              }
+            ]
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "firstName",
+          "lastName",
+          "email",
+          "documentType",
+          "documentNumber",
+          "phone",
+          "role",
+          "createdAt"
+        ]
+      },
+      "AuthResponseDto": {
+        "type": "object",
+        "properties": {
+          "accessToken": {
+            "type": "string"
+          },
+          "user": {
+            "$ref": "#/components/schemas/AuthUserDto"
+          }
+        },
+        "required": [
+          "accessToken",
+          "user"
+        ]
+      },
+      "LoginDto": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string"
+          },
+          "password": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "email",
+          "password"
+        ]
+      },
+      "UserProfileDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "firstName": {
+            "type": "string"
+          },
+          "lastName": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "documentType": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DocumentType"
+              }
+            ]
+          },
+          "documentNumber": {
+            "type": "string"
+          },
+          "phone": {
+            "type": "string"
+          },
+          "role": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/UserRole"
+              }
+            ]
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "firstName",
+          "lastName",
+          "email",
+          "documentType",
+          "documentNumber",
+          "phone",
+          "role",
+          "createdAt"
+        ]
+      },
+      "UpdateProfileDto": {
+        "type": "object",
+        "properties": {
+          "firstName": {
+            "type": "string"
+          },
+          "lastName": {
+            "type": "string"
+          },
+          "documentType": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DocumentType"
+              }
+            ]
+          },
+          "documentNumber": {
+            "type": "string"
+          },
+          "phone": {
+            "type": "string",
+            "example": "+573001112233"
+          }
+        }
+      },
+      "EventStatus": {
+        "type": "string",
+        "enum": [
+          "DRAFT",
+          "PUBLISHED",
+          "SOLD_OUT",
+          "CANCELLED",
+          "COMPLETED"
+        ]
+      },
+      "EventListItemDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "category": {
+            "type": "string"
+          },
+          "categoryLabel": {
+            "type": "string"
+          },
+          "city": {
+            "type": "string"
+          },
+          "organizer": {
+            "type": "string"
+          },
+          "bannerImage": {
+            "type": "string"
+          },
+          "posterImage": {
+            "type": "string"
+          },
+          "eventDate": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "eventTime": {
+            "type": "string"
+          },
+          "isFeatured": {
+            "type": "boolean"
+          },
+          "hasSeatSelection": {
+            "type": "boolean"
+          },
+          "status": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/EventStatus"
+              }
+            ]
+          },
+          "venue": {
+            "type": "object"
+          },
+          "minPrice": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "id",
+          "slug",
+          "title",
+          "description",
+          "category",
+          "categoryLabel",
+          "city",
+          "organizer",
+          "bannerImage",
+          "posterImage",
+          "eventDate",
+          "eventTime",
+          "isFeatured",
+          "hasSeatSelection",
+          "status",
+          "venue",
+          "minPrice"
+        ]
+      },
+      "EventCategoryDto": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "label"
+        ]
+      },
+      "EventAvailabilityTicketTypeDto": {
+        "type": "object",
+        "properties": {
+          "ticketTypeId": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "price": {
+            "type": "number"
+          },
+          "serviceFee": {
+            "type": "number"
+          },
+          "availability": {
+            "type": "number"
+          },
+          "sold": {
+            "type": "number"
+          },
+          "remaining": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "ticketTypeId",
+          "name",
+          "price",
+          "serviceFee",
+          "availability",
+          "sold",
+          "remaining"
+        ]
+      },
+      "EventAvailabilityDto": {
+        "type": "object",
+        "properties": {
+          "eventId": {
+            "type": "string"
+          },
+          "hasSeatSelection": {
+            "type": "boolean"
+          },
+          "totalAvailable": {
+            "type": "number"
+          },
+          "totalSold": {
+            "type": "number"
+          },
+          "totalRemaining": {
+            "type": "number"
+          },
+          "ticketTypes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EventAvailabilityTicketTypeDto"
+            }
+          }
+        },
+        "required": [
+          "eventId",
+          "hasSeatSelection",
+          "totalAvailable",
+          "totalSold",
+          "totalRemaining",
+          "ticketTypes"
+        ]
+      },
+      "AddCartItemDto": {
+        "type": "object",
+        "properties": {
+          "eventId": {
+            "type": "string"
+          },
+          "ticketTypeId": {
+            "type": "string"
+          },
+          "quantity": {
+            "type": "number",
+            "minimum": 1
+          },
+          "seatIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "eventId"
+        ]
+      },
+      "UpdateCartItemDto": {
+        "type": "object",
+        "properties": {
+          "quantity": {
+            "type": "number",
+            "minimum": 1
+          }
+        },
+        "required": [
+          "quantity"
+        ]
+      },
+      "CheckoutPreviewDto": {
+        "type": "object",
+        "properties": {
+          "buyerEmail": {
+            "type": "string"
+          },
+          "buyerPhone": {
+            "type": "string"
+          }
+        }
+      },
+      "PaymentMethod": {
+        "type": "string",
+        "enum": [
+          "CARD",
+          "PSE",
+          "CASHPOINT"
+        ]
+      },
+      "CheckoutConfirmDto": {
+        "type": "object",
+        "properties": {
+          "buyerEmail": {
+            "type": "string"
+          },
+          "buyerPhone": {
+            "type": "string"
+          },
+          "paymentMethod": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/PaymentMethod"
+              }
+            ]
+          }
+        },
+        "required": [
+          "paymentMethod"
+        ]
+      },
+      "CreateAdminEventDto": {
+        "type": "object",
+        "properties": {
+          "slug": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "category": {
+            "type": "string"
+          },
+          "city": {
+            "type": "string"
+          },
+          "venueId": {
+            "type": "string"
+          },
+          "organizer": {
+            "type": "string"
+          },
+          "bannerImage": {
+            "type": "string"
+          },
+          "posterImage": {
+            "type": "string"
+          },
+          "eventDate": {
+            "type": "string"
+          },
+          "eventTime": {
+            "type": "string"
+          },
+          "isFeatured": {
+            "type": "boolean"
+          },
+          "hasSeatSelection": {
+            "type": "boolean"
+          },
+          "status": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/EventStatus"
+              }
+            ]
+          }
+        },
+        "required": [
+          "slug",
+          "title",
+          "description",
+          "category",
+          "city",
+          "venueId",
+          "organizer",
+          "bannerImage",
+          "posterImage",
+          "eventDate",
+          "eventTime"
+        ]
+      },
+      "UpdateAdminEventDto": {
+        "type": "object",
+        "properties": {
+          "slug": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "category": {
+            "type": "string"
+          },
+          "city": {
+            "type": "string"
+          },
+          "venueId": {
+            "type": "string"
+          },
+          "organizer": {
+            "type": "string"
+          },
+          "bannerImage": {
+            "type": "string"
+          },
+          "posterImage": {
+            "type": "string"
+          },
+          "eventDate": {
+            "type": "string"
+          },
+          "eventTime": {
+            "type": "string"
+          },
+          "isFeatured": {
+            "type": "boolean"
+          },
+          "hasSeatSelection": {
+            "type": "boolean"
+          },
+          "status": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/EventStatus"
+              }
+            ]
+          }
+        }
+      },
+      "CreateEventTicketTypeDto": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "price": {
+            "type": "number"
+          },
+          "serviceFee": {
+            "type": "number"
+          },
+          "availability": {
+            "type": "number"
+          },
+          "maxPerOrder": {
+            "type": "number"
+          },
+          "sectionId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "description",
+          "price",
+          "serviceFee",
+          "availability",
+          "maxPerOrder"
+        ]
+      },
+      "UpdateEventTicketTypeDto": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "price": {
+            "type": "number"
+          },
+          "serviceFee": {
+            "type": "number"
+          },
+          "availability": {
+            "type": "number"
+          },
+          "maxPerOrder": {
+            "type": "number"
+          },
+          "sectionId": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  },
+  "x-contract-version": "v1"
+}
