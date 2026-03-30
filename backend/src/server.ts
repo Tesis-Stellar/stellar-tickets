@@ -104,6 +104,42 @@ app.post('/api/transactions/buy', async (req, res) => {
   }
 });
 
+// --- MOCK WEB2 API ENDPOINTS FOR FRONTEND COMPATIBILITY ---
+app.post('/api/auth/login', async (req, res) => {
+  const { email } = req.body;
+  const user = await prisma.users.findFirst({ where: { email } });
+  
+  if (user) {
+    res.json({ accessToken: 'fake-jwt-token', user: { id: user.id, firstName: user.first_name, lastName: user.last_name, email: user.email, documentNumber: user.document_number, documentType: user.document_type || 'CC', phone: user.phone || '' } });
+  } else {
+    res.json({ accessToken: 'fake-jwt-token', user: { id: '1234abcd-1234-1234-1234-1234567890ab', firstName: 'Usuario', lastName: 'Demo', email, documentNumber: '12345678', documentType: 'CC', phone: '3000000000' } });
+  }
+});
+
+app.post('/api/auth/register', (req, res) => {
+  res.json({ accessToken: 'fake-jwt-token', user: { id: '1234abcd-1234-1234-1234-1234567890ab', firstName: req.body.firstName || 'Nuevo', lastName: req.body.lastName || 'Usuario', email: req.body.email, documentNumber: req.body.documentNumber || '123', documentType: 'CC', phone: '000' } });
+});
+
+app.get('/api/users/me', (req, res) => {
+   res.json({ id: '1234abcd-1234-1234-1234-1234567890ab', firstName: 'Usuario', lastName: 'Activo', email: 'demo@demo.com', documentNumber: '12345678', documentType: 'CC', phone: '3000000000' });
+});
+
+app.post('/api/checkout/preview', (req, res) => res.json({}));
+app.post('/api/checkout/confirm', async (req, res) => {
+  res.json({ id: `ord-${Date.now()}`, orderNumber: `TT-${Date.now()}` });
+});
+app.get('/api/orders', (req, res) => res.json([]));
+app.get('/api/tickets', async (req, res) => {
+  res.json([]);
+});
+
+// Cart mock
+app.get('/api/cart', (req, res) => res.json([]));
+app.post('/api/cart/items', (req, res) => res.status(204).send());
+app.delete('/api/cart/items/:id', (req, res) => res.status(204).send());
+app.patch('/api/cart/items/:id', (req, res) => res.status(204).send());
+app.delete('/api/cart/clear', (req, res) => res.status(204).send());
+
 // START THE SERVER
 app.listen(PORT, () => {
   console.log(`[HTTP] Express server listening on http://localhost:${PORT}`);
