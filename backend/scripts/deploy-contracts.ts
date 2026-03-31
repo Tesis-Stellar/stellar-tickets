@@ -59,7 +59,7 @@ async function getAccount(publicKey: string): Promise<Account> {
   return new Account(accountResponse.accountId(), accountResponse.sequenceNumber());
 }
 
-async function submitTx(tx: TransactionBuilder, signer: Keypair): Promise<SorobanRpc.Api.GetTransactionResponse> {
+async function submitTx(tx: TransactionBuilder, ...signers: Keypair[]): Promise<SorobanRpc.Api.GetTransactionResponse> {
   let built = tx.build();
 
   // Simulate first
@@ -70,7 +70,9 @@ async function submitTx(tx: TransactionBuilder, signer: Keypair): Promise<Soroba
 
   // Assemble with resource estimates
   const assembled = SorobanRpc.assembleTransaction(built, simResponse).build();
-  assembled.sign(signer);
+  for (const signer of signers) {
+    assembled.sign(signer);
+  }
 
   const sendResponse = await server.sendTransaction(assembled);
   if (sendResponse.status === 'ERROR') {
@@ -140,15 +142,15 @@ async function deployContract(adminKeypair: Keypair, wasmHash: Buffer, salt: Buf
 
 async function initializeEventContract(
   adminKeypair: Keypair,
+  organizerKeypair: Keypair,
   contractAddress: string,
-  organizerPubKey: string,
   platformPubKey: string,
 ): Promise<void> {
   console.log(`  Initializing contract ${contractAddress.slice(0, 8)}...`);
-  const account = await getAccount(adminKeypair.publicKey());
+  // Use organizer as source account since inicializar() requires organizador.require_auth()
+  const account = await getAccount(organizerKeypair.publicKey());
 
   // Use the native XLM asset as payment token for testnet demo
-  // The contract expects: inicializar(organizador, plataforma, token_pago, comision_org, comision_plat)
   const nativeTokenAddress = new Address('CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC');
 
   const tx = new TransactionBuilder(account, {
@@ -159,16 +161,16 @@ async function initializeEventContract(
       contract: contractAddress,
       function: 'inicializar',
       args: [
-        new Address(organizerPubKey).toScVal(),     // organizador
-        new Address(platformPubKey).toScVal(),       // plataforma
-        nativeTokenAddress.toScVal(),                // token_pago
-        nativeToScVal(COMISION_ORGANIZADOR, { type: 'u32' }),  // comision_organizador
-        nativeToScVal(COMISION_PLATAFORMA, { type: 'u32' }),   // comision_plataforma
+        new Address(organizerKeypair.publicKey()).toScVal(),  // organizador
+        new Address(platformPubKey).toScVal(),                // plataforma
+        nativeTokenAddress.toScVal(),                         // token_pago
+        nativeToScVal(COMISION_ORGANIZADOR, { type: 'i128' }),  // comision_organizador
+        nativeToScVal(COMISION_PLATAFORMA, { type: 'i128' }),   // comision_plataforma
       ],
     }))
     .setTimeout(60);
 
-  await submitTx(tx, adminKeypair);
+  await submitTx(tx, organizerKeypair);
   console.log(`  Initialized!`);
 }
 
@@ -233,8 +235,8 @@ ORGANIZER_SECRET=${organizerKeypair.secret()}
       // Initialize the contract
       await initializeEventContract(
         adminKeypair,
+        organizerKeypair,
         contractAddress,
-        organizerKeypair.publicKey(),
         platformKeypair.publicKey(),
       );
 
