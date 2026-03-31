@@ -289,8 +289,13 @@ npm run lint          # ESLint
 - **Phase 3 (partial)** — Frontend: full e-commerce flow (browse/cart/checkout/account), Freighter deps installed, ConnectWallet component, simulated Web3 buttons in TicketCard and EventDetail. Build succeeds (7 minor lint warnings).
 - **Phase 3.5** — Frontend-backend wired: backend returns DTO matching frontend EventListItemDto (category, city, venue, organizer, minPrice, startsAt). Added /featured, /ticket-types, /related endpoints. Events from Supabase display correctly in UI.
 
-### Pending
+### Pending — NEXT SESSION START HERE
 - **Phase 3.6** — Implement real auth (replace mocked JWT with bcrypt + real tokens). Primary market fiat checkout working end-to-end. Add event images.
+  - **BLOCKER**: `node_modules/plain-crypto-js` was locked by a process. On next session:
+    1. Close VS Code and any terminals
+    2. Run: `cmd /c "rd /s /q D:\Tesis\codigo\main_contract\backend\node_modules"`
+    3. Then: `cd codigo/main_contract/backend && npm install bcryptjs jsonwebtoken @types/bcryptjs @types/jsonwebtoken && npm install && npx prisma generate`
+    4. Continue implementing real auth in `src/server.ts` (replace mocked login/register/me with bcrypt + JWT)
 - **Phase 3.6.1** — "Asegurar en Blockchain" button: real XDR construction + Freighter signing + submission to Soroban testnet
 - **Phase 3.7** — Secondary market: real listar/comprar flow via Indexer-synced data
 - **Phase 4** — Verifier UI for check-in, E2E demo scripts, latency/cost metrics (Stroops)
