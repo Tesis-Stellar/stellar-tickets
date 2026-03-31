@@ -23,11 +23,11 @@ jobs:
       with:
         targets: wasm32-unknown-unknown
 
-    - name: Install system dependencies
-      run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+    - name: Install cargo-binstall
+      run: curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
 
-    - name: Install Stellar CLI
-      run: cargo install --locked stellar-cli
+    - name: Install Stellar CLI (pre-built binary)
+      run: cargo binstall --no-confirm stellar-cli
 
     - name: Cache dependencies
       uses: Swatinem/rust-cache@v2
