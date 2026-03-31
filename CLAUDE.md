@@ -151,11 +151,14 @@ npm start                     # Run compiled output
 
 ### API Endpoints (server.ts)
 
-**Real endpoints:**
+**Real endpoints (return DTO shape matching frontend `EventListItemDto`):**
 - `GET /health` — Health check
-- `GET /api/events` — List PUBLISHED events from DB (includes venues, ticket types)
-- `GET /api/events/:slug` — Event detail + live Web3 tickets (is_for_sale=true)
-- `POST /api/transactions/buy` — **XDR Builder**: returns unsigned transaction payload for Freighter signing. Body: `{ event_slug, ticket_root_id, version, buyer_public_key }`. Returns: `{ network, contractId, method, args }`
+- `GET /api/events` — List PUBLISHED events (transformed: category, city, venue, organizer, minPrice, startsAt)
+- `GET /api/events/featured` — Top 6 events
+- `GET /api/events/:slug` — Event detail + `live_tickets` (Web3 tickets with is_for_sale=true)
+- `GET /api/events/:id/ticket-types` — Ticket types for an event
+- `GET /api/events/:id/related` — Related events (same category, max 4)
+- `POST /api/transactions/buy` — **XDR Builder**: returns unsigned transaction payload for Freighter signing
 
 **Mocked endpoints (placeholders):**
 - `POST /api/auth/login` — Fake JWT, hardcoded demo user
@@ -186,6 +189,7 @@ Polls Soroban RPC every 5 seconds. Processes events from all contracts with `con
 1. **No real auth** — All endpoints public, mocked JWT (fake tokens, hardcoded demo user)
 2. **No contract_address assigned** — All 11 events have `contract_address: null` (contracts not deployed to testnet yet)
 3. **Cart/checkout mocked** — Cart CRUD and checkout are no-op stubs
+4. **No event images** — DB has no image fields; frontend shows placeholder gray boxes
 
 ### Database Schema (Prisma)
 
@@ -283,9 +287,10 @@ npm run lint          # ESLint
 - **Phase 1** — Smart contracts: burn/remint, typed errors, verifier role, factory deploy, 48+ tests, CI
 - **Phase 2** — Backend functional: Express proxy + Prisma + Indexer compiling and running, connected to Supabase (11 events, 26 users). package.json created, TS errors fixed, BigInt serialization fixed.
 - **Phase 3 (partial)** — Frontend: full e-commerce flow (browse/cart/checkout/account), Freighter deps installed, ConnectWallet component, simulated Web3 buttons in TicketCard and EventDetail. Build succeeds (7 minor lint warnings).
+- **Phase 3.5** — Frontend-backend wired: backend returns DTO matching frontend EventListItemDto (category, city, venue, organizer, minPrice, startsAt). Added /featured, /ticket-types, /related endpoints. Events from Supabase display correctly in UI.
 
 ### Pending
-- **Phase 3.6** — Wire frontend to real backend API (verify data mapping works end-to-end). Implement real auth (replace mocked JWT with bcrypt + real tokens). Primary market fiat checkout working end-to-end.
+- **Phase 3.6** — Implement real auth (replace mocked JWT with bcrypt + real tokens). Primary market fiat checkout working end-to-end. Add event images.
 - **Phase 3.6.1** — "Asegurar en Blockchain" button: real XDR construction + Freighter signing + submission to Soroban testnet
 - **Phase 3.7** — Secondary market: real listar/comprar flow via Indexer-synced data
 - **Phase 4** — Verifier UI for check-in, E2E demo scripts, latency/cost metrics (Stroops)

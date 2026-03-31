@@ -25,18 +25,60 @@ app.get('/health', (req, res) => {
 
 // --- WEB2 CATALOG ENDPOINTS ---
 
+// Transform a Prisma event row into the DTO the frontend expects
+function toEventDto(event: any) {
+  const prices = (event.event_ticket_types ?? []).map((t: any) => Number(t.price_amount));
+  const minPrice = prices.length > 0 ? Math.min(...prices) : 0;
+  return {
+    id: event.id,
+    slug: event.slug,
+    title: event.title,
+    description: event.description ?? '',
+    category: event.event_categories?.code ?? '',
+    categoryLabel: event.event_categories?.display_name ?? '',
+    city: event.venues?.cities?.city_name ?? null,
+    organizer: event.organizers?.legal_name ?? '',
+    venue: { name: event.venues?.name ?? '' },
+    startsAt: event.starts_at,
+    hasAssignedSeating: event.has_assigned_seating,
+    minPrice: minPrice,
+    isFeatured: false,
+    contract_address: event.contract_address,
+  };
+}
+
+const eventIncludes = {
+  venues: { include: { cities: true } },
+  organizers: true,
+  event_categories: true,
+  event_ticket_types: { where: { is_active: true } },
+};
+
 // GET /api/events - List published events
 app.get('/api/events', async (req, res) => {
   try {
     const events = await prisma.events.findMany({
       where: { status: 'PUBLISHED' },
-      include: {
-        venues: { include: { cities: true } },
-        event_ticket_types: { where: { is_active: true } }
-      },
+      include: eventIncludes,
       orderBy: { starts_at: 'asc' }
     });
-    res.json(events);
+    res.json(events.map(toEventDto));
+  } catch (error: any) {
+    console.error(error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/events/featured - Featured events
+app.get('/api/events/featured', async (req, res) => {
+  try {
+    const events = await prisma.events.findMany({
+      where: { status: 'PUBLISHED' },
+      include: eventIncludes,
+      orderBy: { starts_at: 'asc' },
+      take: 6,
+    });
+    res.json(events.map(toEventDto));
   } catch (error: any) {
     console.error(error);
     res.status(500).json({ error: error.message });
@@ -48,27 +90,53 @@ app.get('/api/events/:slug', async (req, res) => {
   try {
     const event = await prisma.events.findFirst({
       where: { slug: req.params.slug },
-      include: {
-        venues: { include: { cities: true } },
-        organizers: true,
-        event_ticket_types: { where: { is_active: true } }
-      }
+      include: eventIncludes,
     });
 
     if (!event) {
       res.status(404).json({ error: 'Evento no encontrado' });
       return;
     }
-    
+
     // Fetch live ticket data mapped from Web3 contract via indexer
-    let tickets: any[] = [];
+    let live_tickets: any[] = [];
     if (event.contract_address) {
-       tickets = await prisma.tickets.findMany({
+       live_tickets = await prisma.tickets.findMany({
          where: { contract_address: event.contract_address, is_for_sale: true }
        });
     }
-    
-    res.json({ ...event, live_tickets: tickets });
+
+    res.json({ ...toEventDto(event), live_tickets });
+  } catch (error: any) {
+    console.error(error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/events/:id/ticket-types - Ticket types for an event
+app.get('/api/events/:id/ticket-types', async (req, res) => {
+  try {
+    const types = await prisma.event_ticket_types.findMany({
+      where: { event_id: req.params.id, is_active: true },
+    });
+    res.json(types);
+  } catch (error: any) {
+    console.error(error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/events/:id/related - Related events (same category)
+app.get('/api/events/:id/related', async (req, res) => {
+  try {
+    const event = await prisma.events.findUnique({ where: { id: req.params.id }, select: { category_id: true } });
+    if (!event) { res.json([]); return; }
+    const related = await prisma.events.findMany({
+      where: { category_id: event.category_id, status: 'PUBLISHED', id: { not: req.params.id } },
+      include: eventIncludes,
+      take: 4,
+    });
+    res.json(related.map(toEventDto));
   } catch (error: any) {
     console.error(error);
     res.status(500).json({ error: error.message });
