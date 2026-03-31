@@ -141,13 +141,13 @@ npm start                     # Run compiled output
 
 ### Files
 
-- `package.json` — Dependencies: express, @prisma/client, @stellar/stellar-sdk, cors, dotenv
-- `src/server.ts` — Express API (stateless XDR proxy + mocked Web2 endpoints)
+- `package.json` — Dependencies: express, @prisma/client, @stellar/stellar-sdk, cors, dotenv, bcryptjs, jsonwebtoken
+- `src/server.ts` — Express API (stateless XDR proxy + real auth + mocked checkout/cart)
 - `src/indexer.ts` — Soroban event poller daemon (syncs blockchain -> DB)
 - `prisma/schema.prisma` — Full hybrid Web2+Web3 database schema
 - `prisma/seed.ts` — Disabled (DB hosted in Supabase, seeded externally)
 - `tsconfig.json` — TypeScript config (target ES2021, commonjs, esModuleInterop)
-- `.env.example` — Required env vars: DATABASE_URL, SOROBAN_RPC_URL, PORT
+- `.env.example` — Required env vars: DATABASE_URL, SOROBAN_RPC_URL, PORT, JWT_SECRET
 
 ### API Endpoints (server.ts)
 
@@ -160,13 +160,27 @@ npm start                     # Run compiled output
 - `GET /api/events/:id/related` — Related events (same category, max 4)
 - `POST /api/transactions/buy` — **XDR Builder**: returns unsigned transaction payload for Freighter signing
 
-**Mocked endpoints (placeholders):**
-- `POST /api/auth/login` — Fake JWT, hardcoded demo user
-- `POST /api/auth/register` — Fake registration
-- `GET /api/users/me` — Hardcoded demo user
-- `POST /api/checkout/preview`, `POST /api/checkout/confirm` — Empty stubs
-- `GET /api/orders`, `GET /api/tickets` — Empty arrays
-- Cart CRUD (`GET/POST/DELETE/PATCH /api/cart/*`) — No-ops
+**Auth endpoints (real bcrypt + JWT):**
+- `POST /api/auth/login` — bcrypt.compare against DB `password_hash`, returns JWT (7d expiry) + user DTO
+- `POST /api/auth/register` — bcrypt.hash(10 rounds), creates user in DB, returns JWT + user DTO. Checks duplicate email (409).
+- `GET /api/users/me` — Protected by `authMiddleware` (Bearer JWT), returns user DTO from DB
+- `PATCH /api/users/me` — Update profile (firstName, lastName, phone, documentType, documentNumber)
+- `authMiddleware` — Extracts `userId` from JWT, attaches to `req.userId`. Returns 401 on missing/invalid token.
+
+**Cart endpoints (real, auth required):**
+- `GET /api/cart` — List items in user's active cart (with event + ticketType data for frontend)
+- `POST /api/cart/items` — Add item `{ticketTypeId, quantity}`. Auto-creates cart if none exists. DB check constraint: only general-admission ticket types (no `venue_section_id`) can be added by quantity.
+- `PATCH /api/cart/items/:id` — Update quantity
+- `DELETE /api/cart/items/:id` — Remove single item
+- `DELETE /api/cart/clear` — Remove all items from active cart
+
+**Checkout endpoints (real, auth required):**
+- `POST /api/checkout/preview` — Validate cart, return `{subtotal, serviceFees, total, itemCount}`
+- `POST /api/checkout/confirm` — Atomic transaction: creates `orders` + `order_items` + `tickets` + `payments`, marks cart as CONVERTED. Payment simulated as PAID (thesis demo). Returns `{id, orderNumber, subtotal, serviceFees, total}`.
+
+**Order & ticket endpoints (real, auth required):**
+- `GET /api/orders` — User's order history `{id, orderNumber, createdAt, total, subtotal, serviceFees, status}`
+- `GET /api/tickets` — User's active tickets with event + ticketType data for TicketCard rendering
 
 ### Indexer (indexer.ts)
 
@@ -186,10 +200,10 @@ Polls Soroban RPC every 5 seconds. Processes events from all contracts with `con
 
 ### Known limitations
 
-1. **No real auth** — All endpoints public, mocked JWT (fake tokens, hardcoded demo user)
-2. **No contract_address assigned** — All 11 events have `contract_address: null` (contracts not deployed to testnet yet)
-3. **Cart/checkout mocked** — Cart CRUD and checkout are no-op stubs
-4. **No event images** — DB has no image fields; frontend shows placeholder gray boxes
+1. **No contract_address assigned** — All 11 events have `contract_address: null` (contracts not deployed to testnet yet)
+2. **Seated events cart constraint** — DB check constraint requires `event_seat_inventory_id` for ticket types with `venue_section_id`. Only general-admission events work with the current cart flow.
+3. **Event images are hardcoded** — No DB column; images mapped by slug in `EVENT_IMAGES` dict in server.ts (Unsplash URLs). Fallback by category via `CATEGORY_IMAGES`.
+4. **node_modules workaround** — `plain-crypto-js` directory lock on Windows prevented normal `npm install`. Dependencies were installed via `npx yarn install` (yarn.lock present). If issues recur, delete node_modules fully and re-run `npx --yes yarn install && npx prisma generate`.
 
 ### Database Schema (Prisma)
 
@@ -288,14 +302,10 @@ npm run lint          # ESLint
 - **Phase 2** — Backend functional: Express proxy + Prisma + Indexer compiling and running, connected to Supabase (11 events, 26 users). package.json created, TS errors fixed, BigInt serialization fixed.
 - **Phase 3 (partial)** — Frontend: full e-commerce flow (browse/cart/checkout/account), Freighter deps installed, ConnectWallet component, simulated Web3 buttons in TicketCard and EventDetail. Build succeeds (7 minor lint warnings).
 - **Phase 3.5** — Frontend-backend wired: backend returns DTO matching frontend EventListItemDto (category, city, venue, organizer, minPrice, startsAt). Added /featured, /ticket-types, /related endpoints. Events from Supabase display correctly in UI.
+- **Phase 3.6 (auth)** — Real auth implemented (2026-03-30): bcryptjs + jsonwebtoken replace mocked endpoints. Login verifies password_hash from DB, register hashes with bcrypt(10), /users/me protected by JWT middleware. Dependencies installed via yarn workaround. TypeScript compiles clean, server starts OK.
+- **Phase 3.6 (checkout)** — Full fiat checkout implemented (2026-03-31): Cart CRUD persisted to DB (carts + cart_items), checkout creates orders + order_items + tickets + payments atomically, cart marked CONVERTED after purchase. Orders and tickets endpoints return real data. Frontend bugs fixed: Checkout Field component extracted to prevent focus loss, TicketCard venue object rendering fixed. Tested end-to-end (GA events).
 
 ### Pending — NEXT SESSION START HERE
-- **Phase 3.6** — Implement real auth (replace mocked JWT with bcrypt + real tokens). Primary market fiat checkout working end-to-end. Add event images.
-  - **BLOCKER**: `node_modules/plain-crypto-js` was locked by a process. On next session:
-    1. Close VS Code and any terminals
-    2. Run: `cmd /c "rd /s /q D:\Tesis\codigo\main_contract\backend\node_modules"`
-    3. Then: `cd codigo/main_contract/backend && npm install bcryptjs jsonwebtoken @types/bcryptjs @types/jsonwebtoken && npm install && npx prisma generate`
-    4. Continue implementing real auth in `src/server.ts` (replace mocked login/register/me with bcrypt + JWT)
 - **Phase 3.6.1** — "Asegurar en Blockchain" button: real XDR construction + Freighter signing + submission to Soroban testnet
 - **Phase 3.7** — Secondary market: real listar/comprar flow via Indexer-synced data
 - **Phase 4** — Verifier UI for check-in, E2E demo scripts, latency/cost metrics (Stroops)

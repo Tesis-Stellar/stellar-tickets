@@ -6,6 +6,15 @@ import { CheckoutStepper } from "@/components/ui/CheckoutStepper";
 import { useAppContext } from "@/context/AppContext";
 import { CreditCard, ShieldCheck } from "lucide-react";
 
+const Field = ({ label, name, type = "text", placeholder = "", value, onChange, error }: { label: string; name: string; type?: string; placeholder?: string; value: string; onChange: (name: string, value: string) => void; error?: string }) => (
+  <div>
+    <label className="text-xs font-bold text-muted-foreground uppercase tracking-wider mb-1 block">{label}</label>
+    <input type={type} value={value} onChange={(e) => onChange(name, e.target.value)} placeholder={placeholder}
+      className={`w-full py-2.5 px-3 bg-secondary rounded-lg text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary ${error ? "ring-2 ring-destructive" : ""}`} />
+    {error && <p className="text-xs text-destructive mt-1">{error}</p>}
+  </div>
+);
+
 const Checkout = () => {
   const { cart, checkout } = useAppContext();
   const navigate = useNavigate();
@@ -58,14 +67,7 @@ const Checkout = () => {
     }
   };
 
-  const Field = ({ label, name, type = "text", placeholder = "" }: { label: string; name: string; type?: string; placeholder?: string }) => (
-    <div>
-      <label className="text-xs font-bold text-muted-foreground uppercase tracking-wider mb-1 block">{label}</label>
-      <input type={type} value={(form as any)[name]} onChange={(e) => setForm((p) => ({ ...p, [name]: e.target.value }))} placeholder={placeholder}
-        className={`w-full py-2.5 px-3 bg-secondary rounded-lg text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary ${errors[name] ? "ring-2 ring-destructive" : ""}`} />
-      {errors[name] && <p className="text-xs text-destructive mt-1">{errors[name]}</p>}
-    </div>
-  );
+  const handleFieldChange = (name: string, value: string) => setForm((p) => ({ ...p, [name]: value }));
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
@@ -90,9 +92,9 @@ const Checkout = () => {
                 <>
                   <h2 className="font-black text-foreground uppercase tracking-tight">Datos del Comprador</h2>
                   <div className="grid sm:grid-cols-2 gap-4">
-                    <Field label="Nombre completo" name="name" placeholder="Juan Pérez" />
-                    <Field label="Correo electrónico" name="email" type="email" placeholder="juan@email.com" />
-                    <Field label="Teléfono" name="phone" type="tel" placeholder="3001234567" />
+                    <Field label="Nombre completo" name="name" placeholder="Juan Pérez" value={form.name} onChange={handleFieldChange} error={errors.name} />
+                    <Field label="Correo electrónico" name="email" type="email" placeholder="juan@email.com" value={form.email} onChange={handleFieldChange} error={errors.email} />
+                    <Field label="Teléfono" name="phone" type="tel" placeholder="3001234567" value={form.phone} onChange={handleFieldChange} error={errors.phone} />
                     <div>
                       <label className="text-xs font-bold text-muted-foreground uppercase tracking-wider mb-1 block">Documento</label>
                       <div className="flex gap-2">

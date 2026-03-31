@@ -48,7 +48,7 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
         </div>
         <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
           <MapPin className="w-3.5 h-3.5" />
-          <span>{ticket.event.venue}, {ticket.event.city}</span>
+          <span>{typeof ticket.event.venue === 'object' ? (ticket.event.venue as any)?.name : ticket.event.venue}, {ticket.event.city}</span>
         </div>
         <div className="flex items-center gap-2 mt-1">
           <span className="px-2 py-0.5 bg-primary/10 text-primary text-[10px] font-bold rounded-full">

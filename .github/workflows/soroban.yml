@@ -33,3 +33,10 @@ jobs:
 
     - name: Test all contracts
       run: cargo test --verbose
+
+    - name: Upload WASM artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: soroban-contracts
+        path: contracts/target/wasm32-unknown-unknown/release/*.wasm
+        if-no-files-found: error

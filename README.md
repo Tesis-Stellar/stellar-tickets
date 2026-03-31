@@ -1,4 +1,4 @@
-
+1
 # Stellar Tickets — Arquitectura Híbrida Web2.5
 
 Este repositorio contiene la implementación técnica para la tesis **Stellar Tickets**.
