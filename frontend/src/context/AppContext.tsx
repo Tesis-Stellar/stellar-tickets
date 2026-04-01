@@ -20,6 +20,7 @@ export interface PurchasedTicket {
   purchasedAt: string;
   // Web3 fields
   isSecuredOnChain?: boolean;
+  isForSale?: boolean;
   contractAddress?: string;
   ticketRootId?: number;
   version?: number;
@@ -70,6 +71,11 @@ interface AppState {
   logout: () => void;
   updateProfile: (data: Partial<UserData>) => Promise<void>;
   secureTicketOnChain: (ticketId: string) => Promise<{ success: boolean; txHash?: string; error?: string }>;
+  listTicketForSale: (ticketId: string, priceXLM: number) => Promise<{ success: boolean; txHash?: string; error?: string }>;
+  buyResaleTicket: (contractAddress: string, ticketRootId: number, buyerPublicKey: string) => Promise<{ success: boolean; txHash?: string; error?: string }>;
+  linkWallet: (walletAddress: string) => Promise<void>;
+  walletAddress: string | null;
+  setWalletAddress: (address: string) => void;
   lastOrder: OrderData | null;
 }
 
@@ -89,6 +95,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   const [user, setUser] = useState<UserData | null>(null);
   const [lastOrder, setLastOrder] = useState<OrderData | null>(null);
   const [token, setToken] = useState<string | null>(() => localStorage.getItem("authToken"));
+  const [walletAddress, setWalletAddress] = useState<string | null>(null);
 
   const isLoggedIn = useMemo(() => Boolean(token && user), [token, user]);
 
@@ -166,7 +173,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         const [cartData, ordersData, ticketsData] = await Promise.all([
           apiFetch<Array<{ id: string; quantity: number; seatIds?: string[]; ticketType?: { id: string; name: string; price: number; serviceFee: number } }>>("/api/cart"),
           apiFetch<Array<{ id: string; orderNumber?: string; createdAt: string; total: number; subtotal?: number; serviceFees?: number; status?: string }>>("/api/orders"),
-          apiFetch<Array<{ id: string; purchasedAt?: string; quantity: number; seatIds?: string[]; ticketType?: { id: string; name: string; price: number; serviceFee: number }; event?: Partial<EventData>; isSecuredOnChain?: boolean; contractAddress?: string; ticketRootId?: number; version?: number; ownerWallet?: string }>>("/api/tickets"),
+          apiFetch<Array<{ id: string; purchasedAt?: string; quantity: number; seatIds?: string[]; ticketType?: { id: string; name: string; price: number; serviceFee: number }; event?: Partial<EventData>; isSecuredOnChain?: boolean; isForSale?: boolean; contractAddress?: string; ticketRootId?: number; version?: number; ownerWallet?: string }>>("/api/tickets"),
         ]);
 
         setCart(
@@ -219,6 +226,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
             seats: ticket.seatIds,
             purchasedAt: ticket.purchasedAt ?? new Date().toISOString(),
             isSecuredOnChain: ticket.isSecuredOnChain,
+            isForSale: ticket.isForSale,
             contractAddress: ticket.contractAddress,
             ticketRootId: ticket.ticketRootId,
             version: ticket.version,
@@ -446,6 +454,63 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     [apiFetch]
   );
 
+  const listTicketForSale = useCallback(
+    async (ticketId: string, priceXLM: number): Promise<{ success: boolean; txHash?: string; error?: string }> => {
+      try {
+        const priceStroops = Math.round(priceXLM * 10_000_000);
+        const result = await apiFetch<{ success: boolean; txHash: string }>("/api/transactions/list-ticket", {
+          method: "POST",
+          body: JSON.stringify({ ticketId, price: priceStroops }),
+        });
+        setPurchasedTickets((prev) =>
+          prev.map((t) => (t.id === ticketId ? { ...t, isForSale: true } : t))
+        );
+        return { success: true, txHash: result.txHash };
+      } catch (error: any) {
+        return { success: false, error: error.message || "Error listando ticket" };
+      }
+    },
+    [apiFetch]
+  );
+
+  const buyResaleTicket = useCallback(
+    async (contractAddress: string, ticketRootId: number, buyerPublicKey: string): Promise<{ success: boolean; txHash?: string; error?: string }> => {
+      try {
+        // 1. Get unsigned XDR from backend
+        const { xdr, networkPassphrase } = await apiFetch<{ xdr: string; networkPassphrase: string }>("/api/transactions/build-buy-xdr", {
+          method: "POST",
+          body: JSON.stringify({ contractAddress, ticketRootId, buyerPublicKey }),
+        });
+
+        // 2. Sign with Freighter
+        const { signTransaction } = await import("@stellar/freighter-api");
+        const signResult = await signTransaction(xdr, { networkPassphrase });
+        const signedXdr = typeof signResult === "string" ? signResult : (signResult as any)?.signedTxXdr ?? "";
+        if (!signedXdr) return { success: false, error: "Firma cancelada por el usuario" };
+
+        // 3. Submit signed XDR
+        const submitResult = await apiFetch<{ success: boolean; txHash: string }>("/api/transactions/submit", {
+          method: "POST",
+          body: JSON.stringify({ signedXdr }),
+        });
+        return { success: true, txHash: submitResult.txHash };
+      } catch (error: any) {
+        return { success: false, error: error.message || "Error comprando ticket" };
+      }
+    },
+    [apiFetch]
+  );
+
+  const linkWallet = useCallback(
+    async (walletAddress: string) => {
+      await apiFetch("/api/users/me/wallet", {
+        method: "PATCH",
+        body: JSON.stringify({ walletAddress }),
+      });
+    },
+    [apiFetch]
+  );
+
   return (
     <AppContext.Provider
       value={{
@@ -464,6 +529,11 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         logout,
         updateProfile,
         secureTicketOnChain,
+        listTicketForSale,
+        buyResaleTicket,
+        linkWallet,
+        walletAddress,
+        setWalletAddress,
         lastOrder,
       }}
     >

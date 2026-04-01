@@ -1,12 +1,14 @@
-import { QrCode, MapPin, Calendar, ShieldCheck, Lock, ExternalLink } from "lucide-react";
+import { QrCode, MapPin, Calendar, ShieldCheck, Lock, ExternalLink, Tag } from "lucide-react";
 import type { PurchasedTicket } from "@/context/AppContext";
 import { useAppContext } from "@/context/AppContext";
 import { useState } from "react";
 
 export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
-  const { secureTicketOnChain } = useAppContext();
+  const { secureTicketOnChain, listTicketForSale } = useAppContext();
   const [isMinting, setIsMinting] = useState(false);
   const [isMinted, setIsMinted] = useState(ticket.isSecuredOnChain ?? false);
+  const [isListing, setIsListing] = useState(false);
+  const [isListed, setIsListed] = useState(ticket.isForSale ?? false);
   const [txHash, setTxHash] = useState<string | null>(null);
 
   const claimTicket = async () => {
@@ -24,6 +26,27 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
       alert("Error al asegurar en blockchain");
     } finally {
       setIsMinting(false);
+    }
+  };
+
+  const handleListForSale = async () => {
+    const priceStr = prompt("Ingresa el precio de reventa en XLM:");
+    if (!priceStr || isNaN(Number(priceStr)) || Number(priceStr) <= 0) return;
+
+    try {
+      setIsListing(true);
+      const result = await listTicketForSale(ticket.id, Number(priceStr));
+      if (result.success) {
+        setIsListed(true);
+        setTxHash(result.txHash ?? txHash);
+      } else {
+        alert(`Error: ${result.error}`);
+      }
+    } catch (e) {
+      console.error(e);
+      alert("Error al listar en blockchain");
+    } finally {
+      setIsListing(false);
     }
   };
 
@@ -70,6 +93,11 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
               <span className="inline-flex items-center gap-1 px-3 py-1 bg-success/10 text-success text-xs font-black rounded-lg border border-success/20">
                 <ShieldCheck className="w-4 h-4" /> Asegurado en Blockchain
               </span>
+              {isListed && (
+                <span className="inline-flex items-center gap-1 px-3 py-1 bg-blue-500/10 text-blue-400 text-xs font-black rounded-lg border border-blue-500/20">
+                  <Tag className="w-3.5 h-3.5" /> En Venta
+                </span>
+              )}
               {stellarExplorerUrl && (
                 <a
                   href={stellarExplorerUrl}
@@ -81,17 +109,15 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
                 </a>
               )}
             </div>
-            <button
-              onClick={async () => {
-                const price = prompt("Ingresa tu precio de reventa en XLM para listar el boleto en Soroban:");
-                if(price && !isNaN(Number(price))) {
-                  alert(`Funcionalidad de reventa disponible en la siguiente fase.`);
-                }
-              }}
-              className="inline-flex items-center gap-1 px-3 py-1 bg-blue-600 hover:bg-blue-700 text-white text-xs font-black rounded-lg transition-colors shadow-md shadow-blue-900/20 w-fit"
-            >
-              Revender NFT
-            </button>
+            {!isListed && (
+              <button
+                onClick={handleListForSale}
+                disabled={isListing}
+                className={`inline-flex items-center gap-1 px-3 py-1 text-xs font-black rounded-lg transition-colors shadow-md shadow-blue-900/20 w-fit ${isListing ? "bg-muted text-muted-foreground" : "bg-blue-600 hover:bg-blue-700 text-white"}`}
+              >
+                {isListing ? "Listando en Soroban..." : "Revender NFT"}
+              </button>
+            )}
           </div>
         ) : (
           <button

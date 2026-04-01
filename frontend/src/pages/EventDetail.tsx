@@ -2,10 +2,10 @@ import { useEffect, useState } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
 import { Header } from "@/components/layout/Header";
 import { Footer } from "@/components/layout/Footer";
-import { getEventBySlug, getEventTicketTypes, getRelatedEvents, type EventData } from "@/data/events";
-import { MapPin, Calendar, Clock, ChevronLeft, User, Info, ShieldCheck, Lock } from "lucide-react";
+import { getEventBySlug, getEventTicketTypes, getRelatedEvents, type EventData, type LiveTicket } from "@/data/events";
+import { MapPin, Calendar, Clock, ChevronLeft, User, Info, ShieldCheck, Lock, Loader2 } from "lucide-react";
 import { EventCard } from "@/components/ui/EventCard";
-import { getPublicKey, isConnected } from "@stellar/freighter-api";
+import { useAppContext } from "@/context/AppContext";
 
 const EventDetail = () => {
   const { id: slug } = useParams<{ id: string }>();
@@ -13,6 +13,9 @@ const EventDetail = () => {
   const [event, setEvent] = useState<EventData | null>(null);
   const [related, setRelated] = useState<EventData[]>([]);
   const [loading, setLoading] = useState(true);
+  const [liveTickets, setLiveTickets] = useState<LiveTicket[]>([]);
+  const [buyingId, setBuyingId] = useState<string | null>(null);
+  const { buyResaleTicket, linkWallet, walletAddress } = useAppContext();
 
   useEffect(() => {
     if (!slug) return;
@@ -27,6 +30,7 @@ const EventDetail = () => {
         }
         const [ticketTypes, relatedEvents] = await Promise.all([getEventTicketTypes(detail.id), getRelatedEvents(detail.id)]);
         setEvent({ ...detail, ticketTypes });
+        setLiveTickets(detail.liveTickets ?? []);
         setRelated(relatedEvents);
       } catch {
         setEvent(null);
@@ -115,7 +119,7 @@ const EventDetail = () => {
           </div>
 
           <div className="lg:col-span-1">
-            <div className="sticky top-24 bg-card rounded-xl border border-border p-6 space-y-5">
+            <div className="bg-card rounded-xl border border-border p-6 space-y-5">
               <img src={event.image} alt={event.title} className="rounded-lg w-full aspect-video object-cover" />
               <p className="font-bold text-foreground text-sm">{event.title}</p>
               <p className="text-xs text-muted-foreground">{event.date} {event.month} {event.year} · {event.venue}</p>
@@ -126,30 +130,58 @@ const EventDetail = () => {
             </div>
 
             {/* Mercado Secundario Seguro */}
-            <div className="sticky top-96 bg-purple-500/5 rounded-xl border border-purple-500/20 p-6 space-y-4 mt-6">
+            <div className="bg-purple-500/5 rounded-xl border border-purple-500/20 p-6 space-y-4 mt-6">
               <h3 className="font-black text-purple-600 uppercase tracking-tight text-sm flex items-center gap-2">
                 <ShieldCheck className="w-4 h-4" /> Reventa P2P Segura
               </h3>
               <p className="text-xs text-muted-foreground leading-relaxed">Boletos revendidos por fans, custodiados y garantizados por los Contratos de Soroban.</p>
-              
+
               <div className="space-y-3">
-                {/* Mock P2P Ticket */}
-                <div className="bg-background rounded-lg p-3 border border-border flex justify-between items-center shadow-sm">
-                   <div>
-                     <div className="flex items-center gap-1.5"><p className="text-xs font-bold text-foreground">General</p><span className="text-[8px] bg-purple-100 text-purple-800 px-1.5 py-0.5 rounded font-bold uppercase tracking-widest">Web3 NFT</span></div>
-                     <p className="text-[10px] text-muted-foreground mt-0.5 flex items-center gap-1">Vendedor: <span className="font-mono text-foreground font-medium">GBDE...L2Z</span></p>
-                   </div>
-                   <button 
-                    onClick={async () => {
-                      if (!(await isConnected())) return alert("Por favor conecta Freighter en el Menú Principal.");
-                      const pk = await getPublicKey();
-                      alert("¡Firmado! Tu Freighter (" + pk.slice(0,5) + "...) ha pagado 50 USDC y ahora eres el dueño criptográfico de este boleto.");
-                    }}
-                    className="bg-purple-600 hover:bg-purple-700 text-white text-xs font-bold px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1 shadow-md shadow-purple-900/20"
-                   >
-                     <Lock className="w-3 h-3" /> 50 USDC
-                   </button>
-                </div>
+                {liveTickets.length === 0 ? (
+                  <p className="text-xs text-muted-foreground italic">No hay boletos en reventa para este evento.</p>
+                ) : (
+                  liveTickets.map((lt) => (
+                    <div key={lt.id} className="bg-background rounded-lg p-3 border border-border flex justify-between items-center shadow-sm">
+                      <div>
+                        <div className="flex items-center gap-1.5">
+                          <p className="text-xs font-bold text-foreground">Boleto #{lt.ticketRootId}</p>
+                          <span className="text-[8px] bg-purple-100 text-purple-800 px-1.5 py-0.5 rounded font-bold uppercase tracking-widest">Soroban</span>
+                        </div>
+                        <p className="text-[10px] text-muted-foreground mt-0.5 flex items-center gap-1">
+                          Vendedor: <span className="font-mono text-foreground font-medium">{lt.sellerWallet ? `${lt.sellerWallet.slice(0, 4)}...${lt.sellerWallet.slice(-3)}` : "?"}</span>
+                        </p>
+                      </div>
+                      <button
+                        disabled={buyingId === lt.id}
+                        onClick={async () => {
+                          try {
+                            if (!walletAddress) return alert("Conecta tu billetera Freighter desde el botón del header primero.");
+                            if (walletAddress === lt.sellerWallet) return alert("No puedes comprar tu propio boleto.");
+                            const pk = walletAddress;
+                            setBuyingId(lt.id);
+                            await linkWallet(pk).catch(() => {});
+                            const buyResult = await buyResaleTicket(lt.contractAddress, lt.ticketRootId, pk);
+                            if (buyResult.success) {
+                              alert("Compra exitosa! Tx: " + buyResult.txHash?.slice(0, 12) + "...");
+                              setLiveTickets((prev) => prev.filter((t) => t.id !== lt.id));
+                            } else {
+                              alert("Error: " + buyResult.error);
+                            }
+                          } catch (e: any) {
+                            console.error("[BUY] Error:", e);
+                            alert("Error: " + e.message);
+                          } finally {
+                            setBuyingId(null);
+                          }
+                        }}
+                        className="bg-purple-600 hover:bg-purple-700 text-white text-xs font-bold px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1 shadow-md shadow-purple-900/20 disabled:opacity-50"
+                      >
+                        {buyingId === lt.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <Lock className="w-3 h-3" />}
+                        {buyingId === lt.id ? "Firmando..." : "Comprar"}
+                      </button>
+                    </div>
+                  ))
+                )}
               </div>
             </div>
           </div>

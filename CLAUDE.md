@@ -126,7 +126,7 @@ cargo fmt --all                 # Format all code
 
 **Stack:** Node.js + Express + TypeScript + Prisma ORM + PostgreSQL (Supabase) + Stellar SDK
 
-**Status: FUNCTIONAL** — Backend compiles, runs, and connects to Supabase. Auth endpoints are mocked (fake JWT). Indexer runs in background.
+**Status: FUNCTIONAL** — Backend compiles, runs, and connects to Supabase. Real auth (bcrypt + JWT). Full Soroban integration (secure, list, buy). Indexer runs in background.
 
 ### Commands
 
@@ -160,12 +160,16 @@ npm start                     # Run compiled output
 - `GET /api/events/:id/related` — Related events (same category, max 4)
 - `POST /api/transactions/buy` — **XDR Builder**: returns unsigned transaction payload for Freighter signing
 - `POST /api/transactions/secure-ticket` — **Soroban on-chain registration**: calls `crear_boleto` on event contract (organizer-signed server-side), updates DB with `contract_address`, `ticket_root_id`, `version`. Returns `{txHash, contractAddress, ticketRootId}`. Auth required.
+- `POST /api/transactions/list-ticket` — **Soroban list for resale**: calls `listar_boleto` on-chain (organizer-signed). Accepts `{ticketId, price}` (price in stroops). Updates DB `is_for_sale = true`. Auth required.
+- `POST /api/transactions/build-buy-xdr` — **XDR Builder for resale**: builds unsigned `comprar_boleto` transaction with buyer as source account. Returns `{xdr, networkPassphrase}` for Freighter signing. Auth required.
+- `POST /api/transactions/submit` — Receives Freighter-signed XDR, submits to Soroban RPC, polls for result. Returns `{success, txHash}`. Auth required.
 
 **Auth endpoints (real bcrypt + JWT):**
 - `POST /api/auth/login` — bcrypt.compare against DB `password_hash`, returns JWT (7d expiry) + user DTO
 - `POST /api/auth/register` — bcrypt.hash(10 rounds), creates user in DB, returns JWT + user DTO. Checks duplicate email (409).
 - `GET /api/users/me` — Protected by `authMiddleware` (Bearer JWT), returns user DTO from DB
 - `PATCH /api/users/me` — Update profile (firstName, lastName, phone, documentType, documentNumber)
+- `PATCH /api/users/me/wallet` — Link Freighter wallet address to user account. Auth required.
 - `authMiddleware` — Extracts `userId` from JWT, attaches to `req.userId`. Returns 401 on missing/invalid token.
 
 **Cart endpoints (real, auth required):**
@@ -187,12 +191,15 @@ npm start                     # Run compiled output
 
 Polls Soroban RPC every 5 seconds. Processes events from all contracts with `contract_address` in DB:
 
-| Soroban Event | DB Action |
+| Soroban Event (snake_case) | DB Action |
 |---|---|
-| `Mint` | Create ticket record (version 1, link wallet to user) |
-| `Venta` | Set `is_for_sale = true` |
-| `Compra` | Cancel old version, create new version with new owner |
-| `Redimido` | Set status = USED |
+| `boleto_creado` | Create ticket record if not already tracked |
+| `boleto_listado` | Set `is_for_sale = true` |
+| `venta_cancelada` | Set `is_for_sale = false` |
+| `boleto_comprado_primario` | Update owner (primary sale, no version bump) |
+| `boleto_revendido` | Cancel old version, create new version with new owner |
+| `boleto_redimido` | Set status = USED |
+| `boleto_invalidado_evt` | Set status = CANCELLED |
 
 - Tracks cursor in `indexer_state` table (last_ledger)
 - On first run, starts 100 ledgers behind latest
@@ -202,7 +209,7 @@ Polls Soroban RPC every 5 seconds. Processes events from all contracts with `con
 
 ### Known limitations
 
-1. **On-chain registration is organizer-signed** — `crear_boleto` is signed server-side with organizer key. Ticket is created on-chain owned by organizer (not user's wallet). Full wallet-to-wallet transfer requires `listar_boleto` + `comprar_boleto` flow (Phase 3.7).
+1. **On-chain registration is organizer-signed** — `crear_boleto` and `listar_boleto` are signed server-side with organizer key. `comprar_boleto` is signed by buyer via Freighter. Post-purchase UI doesn't auto-refresh buyer's ticket list (requires page reload).
 2. **Seated events cart constraint** — DB check constraint requires `event_seat_inventory_id` for ticket types with `venue_section_id`. Only general-admission events work with the current cart flow.
 3. **Event images are hardcoded** — No DB column; images mapped by slug in `EVENT_IMAGES` dict in server.ts (Unsplash URLs). Fallback by category via `CATEGORY_IMAGES`.
 4. **node_modules workaround** — `plain-crypto-js` directory lock on Windows prevented normal `npm install`. Dependencies were installed via `npx yarn install` (yarn.lock present). If issues recur, delete node_modules fully and re-run `npx --yes yarn install && npx prisma generate`.
@@ -253,15 +260,16 @@ npm run lint          # ESLint
 - React Context for cart, orders, purchased tickets, user data, JWT auth
 - `apiFetch<T>(path, init?)` — Centralized fetch with Bearer token from `localStorage.authToken`
 - `VITE_API_BASE_URL` (defaults to `http://localhost:3000`)
-- API calls: auth (login/register/me), cart CRUD, checkout (preview/confirm), orders, tickets, `secureTicketOnChain`
+- API calls: auth (login/register/me), cart CRUD, checkout (preview/confirm), orders, tickets, `secureTicketOnChain`, `listTicketForSale`, `buyResaleTicket`, `linkWallet`
+- `walletAddress` / `setWalletAddress` — Shared Freighter wallet state set by ConnectWallet, consumed by EventDetail for resale purchases
 
 ### Key components
 
 **Web3 integration:**
-- `ConnectWallet.tsx` — Freighter wallet connection (isConnected, setAllowed, getPublicKey). Shown in header.
-- `TicketCard.tsx` — "Asegurar en Blockchain" button calls `POST /api/transactions/secure-ticket` → real Soroban `crear_boleto` → shows "Asegurado en Blockchain" badge + Stellar Explorer link. "Revender NFT" button (placeholder for Phase 3.7).
-- `EventDetail.tsx` — "Reventa P2P Segura" section (placeholder for Phase 3.7)
-- `AppContext.tsx` — `secureTicketOnChain(ticketId)` function, `PurchasedTicket` type includes Web3 fields (`isSecuredOnChain`, `contractAddress`, `ticketRootId`, `version`, `ownerWallet`)
+- `ConnectWallet.tsx` — Freighter wallet connection via dynamic import. Uses Freighter v6 API (`isConnected`, `isAllowed`, `getAddress`, `requestAccess`). Sets `walletAddress` in AppContext for other components. All Freighter v6 responses are objects (e.g., `{ isConnected: bool }`, `{ address: string }`), not primitives.
+- `TicketCard.tsx` — "Asegurar en Blockchain" button calls `POST /api/transactions/secure-ticket` → real Soroban `crear_boleto` → shows "Asegurado en Blockchain" badge + Stellar Explorer link. "Revender NFT" button calls `POST /api/transactions/list-ticket` → real Soroban `listar_boleto` → shows "En Venta" badge.
+- `EventDetail.tsx` — "Reventa P2P Segura" section shows live tickets for sale from DB. Buy button: reads `walletAddress` from AppContext (no direct Freighter calls), prevents self-purchase, calls `buyResaleTicket` → backend builds XDR → Freighter signs → backend submits to Soroban.
+- `AppContext.tsx` — `secureTicketOnChain`, `listTicketForSale`, `buyResaleTicket`, `linkWallet` functions. `PurchasedTicket` type includes Web3 fields (`isSecuredOnChain`, `isForSale`, `contractAddress`, `ticketRootId`, `version`, `ownerWallet`). `walletAddress`/`setWalletAddress` shared state for Freighter address.
 
 **Layout:** Header (nav + ConnectWallet), Footer, HeroSearch, CategorySection, AccountSidebar
 
@@ -324,15 +332,19 @@ npm run lint          # ESLint
 - **Phase 3.6 (deploy)** — 11 Soroban contracts deployed to Stellar Testnet (2026-03-31): CI fixed (cargo-binstall, wasm32v1-none, per-package build), deploy script created and debugged (i128 comisiones, organizer source account for require_auth). All events in DB now have `contract_address`.
 - **Phase 3.6.1 (secure on-chain)** — "Asegurar en Blockchain" working end-to-end (2026-03-31): Backend `POST /api/transactions/secure-ticket` calls `crear_boleto` on Soroban testnet (organizer-signed), updates DB with on-chain data. Frontend TicketCard shows real "Asegurado en Blockchain" badge + Stellar Explorer link. Indexer fixed for 11 contracts (5-per-filter chunking). Tested and verified on testnet.
 
+- **Phase 3.7 (secondary market)** — Full resale marketplace working end-to-end on Soroban testnet (2026-03-31). Backend: `POST /api/transactions/list-ticket` (organizer-signed `listar_boleto`), `POST /api/transactions/build-buy-xdr` (unsigned XDR for `comprar_boleto`), `POST /api/transactions/submit` (signed XDR submission), `PATCH /api/users/me/wallet` (link Freighter). Frontend: ConnectWallet rewritten for Freighter v6 API (objects not primitives), `walletAddress` shared via AppContext, TicketCard "Revender NFT" button with real on-chain listing, EventDetail "Reventa P2P Segura" section with live marketplace + Freighter-signed purchases, self-purchase prevention. Indexer updated with all 7 snake_case event handlers. Tested: listing + purchase confirmed on testnet (tx `3f93a54c3a66...`).
+
 ### Pending — NEXT SESSION START HERE
-- **Phase 3.7** — Secondary market: real `listar_boleto`/`comprar_boleto` flow with Freighter signing + Indexer-synced data
-- **Phase 4** — Verifier UI for check-in, E2E demo scripts, latency/cost metrics (Stroops)
+- **Phase 3.8 (resale UX polish)** — Post-purchase UI updates: bought ticket appears immediately in "Mis Entradas" without page reload, seller sees sale confirmation and amount received, wallet balance display in header, cancel listing flow (`cancelar_venta`), resale price display in marketplace
+- **Phase 4** — Verifier UI for check-in (`redimir_boleto` flow), E2E demo scripts, latency/cost metrics (Stroops)
 - **Phase 5** — Thesis documentation: updated architecture diagrams, Web2 problem mitigation analysis, test evidence
 
 ### Key architectural rules
-- Backend signs `crear_boleto` server-side with organizer key (on-chain registration). For user-facing operations (buy/resale), backend builds unsigned XDR and frontend signs with **Freighter wallet**
-- `ORGANIZER_SECRET` env var required for on-chain ticket creation
-- **Indexer** keeps PostgreSQL in sync with on-chain state (polls Soroban events every 5s)
+- Backend signs `crear_boleto` and `listar_boleto` server-side with organizer key. For buyer-facing operations (`comprar_boleto`), backend builds unsigned XDR and frontend signs with **Freighter wallet**
+- `ORGANIZER_SECRET` env var required for on-chain ticket creation and listing
+- **Freighter v6 API** returns objects, not primitives (e.g., `{ isConnected: bool }`, `{ address: string }`, `{ signedTxXdr: string }`). ConnectWallet shares wallet address via AppContext — other components should NOT call Freighter directly
+- **Indexer** keeps PostgreSQL in sync with on-chain state (polls Soroban events every 5s, 7 event handlers)
 - Web2 purchase flow (cart -> checkout -> order) remains intact; blockchain is an **opt-in layer** on top
 - `payments.provider_reference` stores blockchain transaction hashes
 - `tickets` table uses `(contract_address, ticket_root_id, version)` unique constraint to mirror on-chain state
+- Frontend prevents self-purchase (seller wallet === buyer wallet check)

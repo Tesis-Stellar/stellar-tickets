@@ -30,6 +30,16 @@ export interface EventData {
   ticketTypes: TicketType[];
   relatedEventIds: string[];
   price: string;
+  liveTickets?: LiveTicket[];
+  contractAddress?: string;
+}
+
+export interface LiveTicket {
+  id: string;
+  ticketRootId: number;
+  version: number;
+  sellerWallet: string;
+  contractAddress: string;
 }
 
 interface EventListItemDto {
@@ -136,8 +146,12 @@ export const getFeaturedEvents = async (): Promise<EventData[]> => {
 };
 
 export const getEventBySlug = async (slug: string): Promise<EventData | null> => {
-  const event = await apiGet<EventListItemDto>(`/api/events/${slug}`);
-  return event ? mapEvent(event) : null;
+  const raw = await apiGet<EventListItemDto & { live_tickets?: LiveTicket[]; contractAddress?: string }>(`/api/events/${slug}`);
+  if (!raw) return null;
+  const event = mapEvent(raw);
+  event.liveTickets = raw.live_tickets ?? [];
+  event.contractAddress = raw.contractAddress;
+  return event;
 };
 
 export const getEventById = async (id: string): Promise<EventData | null> => {

@@ -184,12 +184,22 @@ app.get('/api/events/:slug', async (req, res) => {
     // Fetch live ticket data mapped from Web3 contract via indexer
     let live_tickets: any[] = [];
     if (event.contract_address) {
-       live_tickets = await prisma.tickets.findMany({
-         where: { contract_address: event.contract_address, is_for_sale: true }
+       const rawTickets = await prisma.tickets.findMany({
+         where: { contract_address: event.contract_address, is_for_sale: true, status: 'ACTIVE' },
+         select: {
+           id: true, ticket_root_id: true, version: true, owner_wallet: true, contract_address: true,
+         },
        });
+       live_tickets = rawTickets.map(t => ({
+         id: t.id,
+         ticketRootId: t.ticket_root_id,
+         version: t.version,
+         sellerWallet: t.owner_wallet,
+         contractAddress: t.contract_address,
+       }));
     }
 
-    res.json({ ...toEventDto(event), live_tickets });
+    res.json({ ...toEventDto(event), live_tickets, contractAddress: event.contract_address });
   } catch (error: any) {
     console.error(error);
     res.status(500).json({ error: error.message });
@@ -406,6 +416,186 @@ app.post('/api/transactions/secure-ticket', authMiddleware, async (req, res) => 
   }
 });
 
+// POST /api/transactions/list-ticket — List a ticket for resale on Soroban
+app.post('/api/transactions/list-ticket', authMiddleware, async (req, res) => {
+  try {
+    if (!organizerKeypair) {
+      res.status(503).json({ error: 'Blockchain no configurada' });
+      return;
+    }
+
+    const { ticketId, price } = req.body; // price in XLM stroops (1 XLM = 10_000_000)
+    if (!ticketId || !price || price <= 0) {
+      res.status(400).json({ error: 'ticketId y price son requeridos' });
+      return;
+    }
+
+    const ticket = await prisma.tickets.findUnique({ where: { id: ticketId } });
+    if (!ticket) { res.status(404).json({ error: 'Ticket no encontrado' }); return; }
+    if (ticket.owner_user_id !== (req as any).userId) { res.status(403).json({ error: 'No autorizado' }); return; }
+    if (!ticket.contract_address || ticket.ticket_root_id === null) { res.status(400).json({ error: 'Ticket no registrado en blockchain' }); return; }
+    if (ticket.is_for_sale) { res.status(409).json({ error: 'Ticket ya está en venta' }); return; }
+
+    console.log(`[SOROBAN] Listing ticket root_id=${ticket.ticket_root_id} for ${price} stroops...`);
+
+    const accountResponse = await sorobanServer.getAccount(organizerKeypair.publicKey());
+    const account = new Account(accountResponse.accountId(), accountResponse.sequenceNumber());
+
+    const tx = new TransactionBuilder(account, {
+      fee: '10000000',
+      networkPassphrase: NETWORK_PASSPHRASE,
+    })
+      .addOperation(Operation.invokeContractFunction({
+        contract: ticket.contract_address,
+        function: 'listar_boleto',
+        args: [
+          nativeToScVal(ticket.ticket_root_id, { type: 'u32' }),
+          nativeToScVal(price, { type: 'i128' }),
+        ],
+      }))
+      .setTimeout(60)
+      .build();
+
+    const simResponse = await sorobanServer.simulateTransaction(tx);
+    if (SorobanRpc.Api.isSimulationError(simResponse)) {
+      console.error('[SOROBAN] List simulation failed:', (simResponse as any).error);
+      res.status(500).json({ error: 'Error en simulación blockchain' });
+      return;
+    }
+
+    const assembled = SorobanRpc.assembleTransaction(tx, simResponse).build();
+    assembled.sign(organizerKeypair);
+
+    const sendResponse = await sorobanServer.sendTransaction(assembled);
+    if (sendResponse.status === 'ERROR') {
+      res.status(500).json({ error: 'Error enviando transacción' });
+      return;
+    }
+
+    let getResponse: SorobanRpc.Api.GetTransactionResponse;
+    let attempts = 0;
+    do {
+      await new Promise((r) => setTimeout(r, 2000));
+      getResponse = await sorobanServer.getTransaction(sendResponse.hash);
+      attempts++;
+    } while (getResponse.status === 'NOT_FOUND' && attempts < 30);
+
+    if (getResponse.status !== 'SUCCESS') {
+      res.status(500).json({ error: 'Transacción de listado fallida' });
+      return;
+    }
+
+    // Optimistic DB update (indexer will also pick this up)
+    await prisma.tickets.update({
+      where: { id: ticketId },
+      data: { is_for_sale: true },
+    });
+
+    console.log(`[SOROBAN] Ticket listed! root_id=${ticket.ticket_root_id}, tx=${sendResponse.hash}`);
+    res.json({ success: true, txHash: sendResponse.hash });
+  } catch (error: any) {
+    console.error('[SOROBAN] list-ticket error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/transactions/build-buy-xdr — Build unsigned XDR for comprar_boleto (Freighter signs)
+app.post('/api/transactions/build-buy-xdr', authMiddleware, async (req, res) => {
+  try {
+    const { contractAddress, ticketRootId, buyerPublicKey } = req.body;
+    if (!contractAddress || ticketRootId === undefined || !buyerPublicKey) {
+      res.status(400).json({ error: 'contractAddress, ticketRootId y buyerPublicKey son requeridos' });
+      return;
+    }
+
+    // Verify ticket is listed
+    const ticket = await prisma.tickets.findFirst({
+      where: { contract_address: contractAddress, ticket_root_id: ticketRootId, is_for_sale: true, status: 'ACTIVE' },
+    });
+    if (!ticket) {
+      res.status(404).json({ error: 'Ticket no está en venta' });
+      return;
+    }
+
+    console.log(`[SOROBAN] Building buy XDR for root_id=${ticketRootId}, buyer=${buyerPublicKey.slice(0, 8)}...`);
+
+    const accountResponse = await sorobanServer.getAccount(buyerPublicKey);
+    const account = new Account(accountResponse.accountId(), accountResponse.sequenceNumber());
+
+    const tx = new TransactionBuilder(account, {
+      fee: '10000000',
+      networkPassphrase: NETWORK_PASSPHRASE,
+    })
+      .addOperation(Operation.invokeContractFunction({
+        contract: contractAddress,
+        function: 'comprar_boleto',
+        args: [
+          nativeToScVal(ticketRootId, { type: 'u32' }),
+          new Address(buyerPublicKey).toScVal(),
+        ],
+      }))
+      .setTimeout(60)
+      .build();
+
+    // Simulate to get footprint and auth entries
+    const simResponse = await sorobanServer.simulateTransaction(tx);
+    if (SorobanRpc.Api.isSimulationError(simResponse)) {
+      console.error('[SOROBAN] Buy simulation failed:', (simResponse as any).error);
+      res.status(500).json({ error: 'Error en simulación: ' + ((simResponse as any).error || 'desconocido') });
+      return;
+    }
+
+    // Assemble but do NOT sign — frontend signs with Freighter
+    const assembled = SorobanRpc.assembleTransaction(tx, simResponse).build();
+    const xdrBase64 = assembled.toXDR();
+
+    console.log(`[SOROBAN] XDR built for buy, ${xdrBase64.length} chars`);
+    res.json({ xdr: xdrBase64, networkPassphrase: NETWORK_PASSPHRASE });
+  } catch (error: any) {
+    console.error('[SOROBAN] build-buy-xdr error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/transactions/submit — Submit Freighter-signed XDR to Soroban
+app.post('/api/transactions/submit', authMiddleware, async (req, res) => {
+  try {
+    const { signedXdr } = req.body;
+    if (!signedXdr) {
+      res.status(400).json({ error: 'signedXdr es requerido' });
+      return;
+    }
+
+    const tx = TransactionBuilder.fromXDR(signedXdr, NETWORK_PASSPHRASE);
+
+    const sendResponse = await sorobanServer.sendTransaction(tx);
+    if (sendResponse.status === 'ERROR') {
+      console.error('[SOROBAN] Submit failed:', sendResponse);
+      res.status(500).json({ error: 'Error enviando transacción firmada' });
+      return;
+    }
+
+    let getResponse: SorobanRpc.Api.GetTransactionResponse;
+    let attempts = 0;
+    do {
+      await new Promise((r) => setTimeout(r, 2000));
+      getResponse = await sorobanServer.getTransaction(sendResponse.hash);
+      attempts++;
+    } while (getResponse.status === 'NOT_FOUND' && attempts < 30);
+
+    if (getResponse.status !== 'SUCCESS') {
+      res.status(500).json({ error: 'Transacción fallida: ' + getResponse.status });
+      return;
+    }
+
+    console.log(`[SOROBAN] Signed tx submitted! hash=${sendResponse.hash}`);
+    res.json({ success: true, txHash: sendResponse.hash });
+  } catch (error: any) {
+    console.error('[SOROBAN] submit error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // --- AUTH ENDPOINTS ---
 app.post('/api/auth/login', async (req, res) => {
   try {
@@ -506,6 +696,26 @@ app.patch('/api/users/me', authMiddleware, async (req, res) => {
   } catch (error: any) {
     console.error('[AUTH] Update profile error:', error);
     res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// PATCH /api/users/me/wallet — link Freighter wallet to user account
+app.patch('/api/users/me/wallet', authMiddleware, async (req, res) => {
+  try {
+    const { walletAddress } = req.body;
+    if (!walletAddress) { res.status(400).json({ error: 'walletAddress requerido' }); return; }
+    const user = await prisma.users.update({
+      where: { id: (req as any).userId },
+      data: { wallet_address: walletAddress },
+    });
+    res.json({ walletAddress: user.wallet_address });
+  } catch (error: any) {
+    if (error.code === 'P2002') {
+      res.status(409).json({ error: 'Wallet ya vinculada a otra cuenta' });
+      return;
+    }
+    console.error('[AUTH] Link wallet error:', error);
+    res.status(500).json({ error: error.message });
   }
 });
 
@@ -833,6 +1043,7 @@ app.get('/api/tickets', authMiddleware, async (req, res) => {
         event: evt ? toEventDto(evt) : undefined,
         // Web3 fields
         isSecuredOnChain: Boolean(t.contract_address),
+        isForSale: t.is_for_sale ?? false,
         contractAddress: t.contract_address,
         ticketRootId: t.ticket_root_id,
         version: t.version,
