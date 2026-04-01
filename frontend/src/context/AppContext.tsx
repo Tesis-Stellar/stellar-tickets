@@ -18,6 +18,12 @@ export interface PurchasedTicket {
   quantity: number;
   seats?: string[];
   purchasedAt: string;
+  // Web3 fields
+  isSecuredOnChain?: boolean;
+  contractAddress?: string;
+  ticketRootId?: number;
+  version?: number;
+  ownerWallet?: string;
 }
 
 /* ── Order ── */
@@ -63,6 +69,7 @@ interface AppState {
   register: (user: { name: string; email: string; phone: string; document: string; password: string }) => Promise<boolean>;
   logout: () => void;
   updateProfile: (data: Partial<UserData>) => Promise<void>;
+  secureTicketOnChain: (ticketId: string) => Promise<{ success: boolean; txHash?: string; error?: string }>;
   lastOrder: OrderData | null;
 }
 
@@ -159,7 +166,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         const [cartData, ordersData, ticketsData] = await Promise.all([
           apiFetch<Array<{ id: string; quantity: number; seatIds?: string[]; ticketType?: { id: string; name: string; price: number; serviceFee: number } }>>("/api/cart"),
           apiFetch<Array<{ id: string; orderNumber?: string; createdAt: string; total: number; subtotal?: number; serviceFees?: number; status?: string }>>("/api/orders"),
-          apiFetch<Array<{ id: string; purchasedAt?: string; quantity: number; seatIds?: string[]; ticketType?: { id: string; name: string; price: number; serviceFee: number }; event?: Partial<EventData> }>>("/api/tickets"),
+          apiFetch<Array<{ id: string; purchasedAt?: string; quantity: number; seatIds?: string[]; ticketType?: { id: string; name: string; price: number; serviceFee: number }; event?: Partial<EventData>; isSecuredOnChain?: boolean; contractAddress?: string; ticketRootId?: number; version?: number; ownerWallet?: string }>>("/api/tickets"),
         ]);
 
         setCart(
@@ -211,6 +218,11 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
             quantity: ticket.quantity,
             seats: ticket.seatIds,
             purchasedAt: ticket.purchasedAt ?? new Date().toISOString(),
+            isSecuredOnChain: ticket.isSecuredOnChain,
+            contractAddress: ticket.contractAddress,
+            ticketRootId: ticket.ticketRootId,
+            version: ticket.version,
+            ownerWallet: ticket.ownerWallet,
           }))
         );
       } catch {
@@ -410,6 +422,30 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     [apiFetch, normalizeUser, user]
   );
 
+  const secureTicketOnChain = useCallback(
+    async (ticketId: string): Promise<{ success: boolean; txHash?: string; error?: string }> => {
+      try {
+        const result = await apiFetch<{ success: boolean; txHash: string; contractAddress: string; ticketRootId: number }>("/api/transactions/secure-ticket", {
+          method: "POST",
+          body: JSON.stringify({ ticketId }),
+        });
+        // Update local state to reflect on-chain status
+        setPurchasedTickets((prev) =>
+          prev.map((t) =>
+            t.id === ticketId
+              ? { ...t, isSecuredOnChain: true, contractAddress: result.contractAddress, ticketRootId: result.ticketRootId, version: 0 }
+              : t
+          )
+        );
+        return { success: true, txHash: result.txHash };
+      } catch (error: any) {
+        const msg = error.message || "Error asegurando ticket en blockchain";
+        return { success: false, error: msg };
+      }
+    },
+    [apiFetch]
+  );
+
   return (
     <AppContext.Provider
       value={{
@@ -427,6 +463,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         register,
         logout,
         updateProfile,
+        secureTicketOnChain,
         lastOrder,
       }}
     >

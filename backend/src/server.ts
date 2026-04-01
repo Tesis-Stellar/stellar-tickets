@@ -4,6 +4,16 @@ import { PrismaClient } from '@prisma/client';
 import dotenv from 'dotenv';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
+import {
+  Keypair,
+  Networks,
+  TransactionBuilder,
+  Operation,
+  Account,
+  Address,
+  nativeToScVal,
+} from '@stellar/stellar-sdk';
+import { rpc as SorobanRpc } from '@stellar/stellar-sdk';
 import { runIndexer } from './indexer';
 
 dotenv.config();
@@ -18,6 +28,15 @@ const prisma = new PrismaClient();
 const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || 'stellar-tickets-dev-secret-change-in-prod';
 const JWT_EXPIRES_IN = '7d';
+
+// Soroban / Stellar config
+const SOROBAN_RPC_URL = process.env.SOROBAN_RPC_URL || 'https://soroban-testnet.stellar.org';
+const NETWORK_PASSPHRASE = Networks.TESTNET;
+const sorobanServer = new SorobanRpc.Server(SOROBAN_RPC_URL);
+
+// Organizer keypair for on-chain operations (from deploy)
+const ORGANIZER_SECRET = process.env.ORGANIZER_SECRET;
+const organizerKeypair = ORGANIZER_SECRET ? Keypair.fromSecret(ORGANIZER_SECRET) : null;
 
 // Helper: build user DTO for frontend
 function toUserDto(user: { id: string; first_name: string; last_name: string; email: string; phone: string | null; document_type: string; document_number: string }) {
@@ -237,6 +256,152 @@ app.post('/api/transactions/buy', async (req, res) => {
     res.json(payload);
   } catch (error: any) {
     console.error(error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/transactions/secure-ticket — Register ticket on Soroban blockchain
+// The organizer signs crear_boleto server-side, proving the ticket exists on-chain
+app.post('/api/transactions/secure-ticket', authMiddleware, async (req, res) => {
+  try {
+    if (!organizerKeypair) {
+      res.status(503).json({ error: 'Blockchain no configurada (falta ORGANIZER_SECRET)' });
+      return;
+    }
+
+    const { ticketId } = req.body;
+    if (!ticketId) {
+      res.status(400).json({ error: 'ticketId es requerido' });
+      return;
+    }
+
+    // Find ticket and its event
+    const ticket = await prisma.tickets.findUnique({
+      where: { id: ticketId },
+      include: {
+        order_items: {
+          include: {
+            event_ticket_types: {
+              include: { events: true },
+            },
+          },
+        },
+      },
+    });
+
+    if (!ticket) {
+      res.status(404).json({ error: 'Ticket no encontrado' });
+      return;
+    }
+    if (ticket.owner_user_id !== (req as any).userId) {
+      res.status(403).json({ error: 'No autorizado' });
+      return;
+    }
+    if (ticket.contract_address) {
+      res.status(409).json({ error: 'Ticket ya asegurado en blockchain', txHash: ticket.contract_address });
+      return;
+    }
+
+    const event = ticket.order_items?.event_ticket_types?.events;
+    if (!event?.contract_address) {
+      res.status(400).json({ error: 'Evento sin contrato desplegado' });
+      return;
+    }
+
+    const contractAddress = event.contract_address;
+    const price = Number(ticket.order_items?.event_ticket_types?.price_amount || 0);
+
+    // Build and submit crear_boleto transaction
+    console.log(`[SOROBAN] Creating ticket on-chain for contract ${contractAddress.slice(0, 8)}...`);
+
+    const accountResponse = await sorobanServer.getAccount(organizerKeypair.publicKey());
+    const account = new Account(accountResponse.accountId(), accountResponse.sequenceNumber());
+
+    const tx = new TransactionBuilder(account, {
+      fee: '10000000',
+      networkPassphrase: NETWORK_PASSPHRASE,
+    })
+      .addOperation(Operation.invokeContractFunction({
+        contract: contractAddress,
+        function: 'crear_boleto',
+        args: [
+          nativeToScVal(1, { type: 'u32' }),        // id_evento (1 for all, each contract is per-event)
+          nativeToScVal(price, { type: 'i128' }),    // precio
+        ],
+      }))
+      .setTimeout(60)
+      .build();
+
+    // Simulate
+    const simResponse = await sorobanServer.simulateTransaction(tx);
+    if (SorobanRpc.Api.isSimulationError(simResponse)) {
+      console.error('[SOROBAN] Simulation failed:', (simResponse as any).error);
+      res.status(500).json({ error: 'Error en simulación blockchain' });
+      return;
+    }
+
+    // Assemble and sign with organizer key
+    const assembled = SorobanRpc.assembleTransaction(tx, simResponse).build();
+    assembled.sign(organizerKeypair);
+
+    // Submit
+    const sendResponse = await sorobanServer.sendTransaction(assembled);
+    if (sendResponse.status === 'ERROR') {
+      console.error('[SOROBAN] Send failed:', sendResponse);
+      res.status(500).json({ error: 'Error enviando transacción a la red' });
+      return;
+    }
+
+    // Poll for result
+    let getResponse: SorobanRpc.Api.GetTransactionResponse;
+    let attempts = 0;
+    do {
+      await new Promise((r) => setTimeout(r, 2000));
+      getResponse = await sorobanServer.getTransaction(sendResponse.hash);
+      attempts++;
+    } while (getResponse.status === 'NOT_FOUND' && attempts < 30);
+
+    if (getResponse.status !== 'SUCCESS') {
+      console.error('[SOROBAN] Transaction failed:', getResponse.status);
+      res.status(500).json({ error: 'Transacción blockchain fallida' });
+      return;
+    }
+
+    // Extract ticket_root_id from return value
+    const returnValue = (getResponse as any).returnValue;
+    let ticketRootId = 0;
+    if (returnValue) {
+      try {
+        // Result<u32, ErrorContrato> — unwrap the Ok variant
+        const val = returnValue.value?.();
+        ticketRootId = typeof val === 'number' ? val : Number(val);
+      } catch {
+        console.warn('[SOROBAN] Could not parse return value, using 0');
+      }
+    }
+
+    // Update DB with on-chain data
+    await prisma.tickets.update({
+      where: { id: ticketId },
+      data: {
+        contract_address: contractAddress,
+        ticket_root_id: ticketRootId,
+        version: 0,
+        owner_wallet: organizerKeypair.publicKey(),
+      },
+    });
+
+    console.log(`[SOROBAN] Ticket secured on-chain! root_id=${ticketRootId}, tx=${sendResponse.hash}`);
+
+    res.json({
+      success: true,
+      txHash: sendResponse.hash,
+      contractAddress,
+      ticketRootId,
+      network: 'TESTNET',
+    });
+  } catch (error: any) {
+    console.error('[SOROBAN] secure-ticket error:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -666,6 +831,12 @@ app.get('/api/tickets', authMiddleware, async (req, res) => {
           serviceFee: Number(tt.service_fee_amount),
         } : undefined,
         event: evt ? toEventDto(evt) : undefined,
+        // Web3 fields
+        isSecuredOnChain: Boolean(t.contract_address),
+        contractAddress: t.contract_address,
+        ticketRootId: t.ticket_root_id,
+        version: t.version,
+        ownerWallet: t.owner_wallet,
       };
     }));
   } catch (error: any) {

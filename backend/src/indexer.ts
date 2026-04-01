@@ -50,21 +50,21 @@ export async function runIndexer() {
       // RPC might reject ranges too large, fetch in chunks (max 10,000 ledgers)
       const endLedger = Math.min(startLedger + 1000, currentLedger);
 
-      const request: any = {
-        type: 'contract',
-        contractIds: contractIds,
-        // We capture all topics to process them
-        topics: []
-      };
-
-      const eventsRes = await server.getEvents({
-        startLedger,
-        filters: [request],
-        limit: 1000
-      });
+      // Soroban RPC allows max 5 contract IDs per filter — chunk them
+      const CHUNK_SIZE = 5;
+      let allEvents: any[] = [];
+      for (let i = 0; i < contractIds.length; i += CHUNK_SIZE) {
+        const chunk = contractIds.slice(i, i + CHUNK_SIZE);
+        const eventsRes = await server.getEvents({
+          startLedger,
+          filters: [{ type: 'contract', contractIds: chunk, topics: [] } as any],
+          limit: 1000,
+        });
+        allEvents = allEvents.concat(eventsRes.events);
+      }
 
       // 4. Process each event
-      for (const evt of eventsRes.events) {
+      for (const evt of allEvents) {
         const topicExtracted = parseTopics(evt.topic);
         const eventName = topicExtracted[0]; 
         const contractId = typeof evt.contractId === 'string' ? evt.contractId : evt.contractId?.toString();

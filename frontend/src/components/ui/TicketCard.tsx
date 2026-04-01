@@ -1,36 +1,37 @@
-import { QrCode, MapPin, Calendar, ShieldCheck, Lock } from "lucide-react";
+import { QrCode, MapPin, Calendar, ShieldCheck, Lock, ExternalLink } from "lucide-react";
 import type { PurchasedTicket } from "@/context/AppContext";
+import { useAppContext } from "@/context/AppContext";
 import { useState } from "react";
-import { getPublicKey, isConnected } from "@stellar/freighter-api";
 
 export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
+  const { secureTicketOnChain } = useAppContext();
   const [isMinting, setIsMinting] = useState(false);
-  const [isMinted, setIsMinted] = useState(false);
+  const [isMinted, setIsMinted] = useState(ticket.isSecuredOnChain ?? false);
+  const [txHash, setTxHash] = useState<string | null>(null);
 
   const claimTicket = async () => {
     try {
-      if (!(await isConnected())) {
-        alert("Por favor conecta tu billetera Freighter primero en el menú principal.");
-        return;
-      }
       setIsMinting(true);
-      
-      const pubKey = await getPublicKey();
-      
-      // Simulating the Soroban XDR dettonation for the thesis demo
-      console.log(`[Freighter] Signing XDR payload for contract associated with ${ticket.event.slug}...`);
-      
-      // We simulate a 2-second confirmation from the Soroban Testnet
-      setTimeout(() => {
+      const result = await secureTicketOnChain(ticket.id);
+      if (result.success) {
         setIsMinted(true);
-        setIsMinting(false);
-      }, 2000);
-
+        setTxHash(result.txHash ?? null);
+      } else {
+        alert(`Error: ${result.error}`);
+      }
     } catch (e) {
       console.error(e);
+      alert("Error al asegurar en blockchain");
+    } finally {
       setIsMinting(false);
     }
   };
+
+  const stellarExplorerUrl = txHash
+    ? `https://stellar.expert/explorer/testnet/tx/${txHash}`
+    : ticket.contractAddress
+      ? `https://stellar.expert/explorer/testnet/contract/${ticket.contractAddress}`
+      : null;
 
   return (
   <div className="bg-card rounded-xl border border-border overflow-hidden flex flex-col sm:flex-row">
@@ -54,7 +55,7 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
           <span className="px-2 py-0.5 bg-primary/10 text-primary text-[10px] font-bold rounded-full">
             {ticket.ticketType.name}
           </span>
-          <span className="text-xs text-muted-foreground">× {ticket.quantity}</span>
+          <span className="text-xs text-muted-foreground">x {ticket.quantity}</span>
           {ticket.seats?.length ? (
             <span className="text-xs text-muted-foreground">
               Asientos: {ticket.seats.join(", ")}
@@ -62,33 +63,44 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
           ) : null}
         </div>
         </div>
-        
+
         {isMinted ? (
-          <div className="mt-2 flex items-center gap-2">
-            <span className="inline-flex items-center gap-1 px-3 py-1 bg-success/10 text-success text-xs font-black rounded-lg border border-success/20">
-              <ShieldCheck className="w-4 h-4" /> Asegurado
-            </span>
-            <button 
+          <div className="mt-2 flex flex-col gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="inline-flex items-center gap-1 px-3 py-1 bg-success/10 text-success text-xs font-black rounded-lg border border-success/20">
+                <ShieldCheck className="w-4 h-4" /> Asegurado en Blockchain
+              </span>
+              {stellarExplorerUrl && (
+                <a
+                  href={stellarExplorerUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 px-2 py-1 text-[10px] text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  <ExternalLink className="w-3 h-3" /> Ver en Stellar Explorer
+                </a>
+              )}
+            </div>
+            <button
               onClick={async () => {
-                if (!(await isConnected())) return alert("Conecta Freighter primero en el menú (arriba a la derecha).");
-                const price = prompt("Ingresa tu precio de reventa en USDC para listar el boleto de forma atómica en Soroban:");
+                const price = prompt("Ingresa tu precio de reventa en XLM para listar el boleto en Soroban:");
                 if(price && !isNaN(Number(price))) {
-                  alert(`¡Firmando! Has listado tu NFT por ${price} USDC en nuestro Mercado Secundario Seguro.`);
+                  alert(`Funcionalidad de reventa disponible en la siguiente fase.`);
                 }
               }}
-              className="inline-flex items-center gap-1 px-3 py-1 bg-blue-600 hover:bg-blue-700 text-white text-xs font-black rounded-lg transition-colors shadow-md shadow-blue-900/20"
+              className="inline-flex items-center gap-1 px-3 py-1 bg-blue-600 hover:bg-blue-700 text-white text-xs font-black rounded-lg transition-colors shadow-md shadow-blue-900/20 w-fit"
             >
               Revender NFT
             </button>
           </div>
         ) : (
-          <button 
+          <button
             onClick={claimTicket}
             disabled={isMinting}
             className={`inline-flex items-center gap-1.5 px-4 py-2 mt-2 text-xs font-black rounded-lg transition-all ${isMinting ? "bg-muted text-muted-foreground" : "bg-purple-600 hover:bg-purple-700 text-white shadow-md shadow-purple-900/20"}`}
           >
             <Lock className="w-3.5 h-3.5" />
-            {isMinting ? "Firmando XDR..." : "Reclamar en Web3"}
+            {isMinting ? "Registrando en Soroban..." : "Asegurar en Blockchain"}
           </button>
         )}
       </div>
@@ -96,7 +108,7 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
       <div className="flex items-center justify-center sm:border-l sm:border-border sm:pl-4">
         <div className="w-20 h-20 bg-secondary rounded-lg flex flex-col items-center justify-center gap-1">
           <QrCode className="w-8 h-8 text-muted-foreground" />
-          <span className="text-[9px] text-muted-foreground font-medium">Código QR</span>
+          <span className="text-[9px] text-muted-foreground font-medium">Codigo QR</span>
         </div>
       </div>
     </div>
