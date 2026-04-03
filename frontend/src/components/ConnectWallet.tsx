@@ -5,10 +5,25 @@ import { useAppContext } from "@/context/AppContext";
 // Freighter v6 returns objects, not primitives. Helper to safely call its API.
 const freighterApi = () => import("@stellar/freighter-api");
 
+const HORIZON_URL = "https://horizon-testnet.stellar.org";
+
 export const ConnectWallet = () => {
   const [address, setAddress] = useState<string | null>(null);
+  const [balance, setBalance] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const { setWalletAddress, linkWallet, isLoggedIn } = useAppContext();
+
+  const fetchBalance = async (pk: string) => {
+    try {
+      const res = await fetch(`${HORIZON_URL}/accounts/${pk}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      const native = data.balances?.find((b: any) => b.asset_type === "native");
+      if (native) setBalance(parseFloat(native.balance).toFixed(2));
+    } catch {
+      // Silently fail — balance is optional UX
+    }
+  };
 
   const tryLinkWallet = async (pk: string): Promise<boolean> => {
     try {
@@ -20,7 +35,6 @@ export const ConnectWallet = () => {
         alert("Esta billetera ya está vinculada a otra cuenta. Cambia de cuenta en Freighter o usa otra billetera.");
         return false;
       }
-      // Other errors (network, etc.) — still allow local wallet display
       console.error("linkWallet error:", err);
       return true;
     }
@@ -30,6 +44,7 @@ export const ConnectWallet = () => {
   useEffect(() => {
     if (!isLoggedIn) {
       setAddress(null);
+      setBalance(null);
       setWalletAddress(null);
       setLoading(false);
       return;
@@ -50,6 +65,7 @@ export const ConnectWallet = () => {
           if (linked) {
             setAddress(pk);
             setWalletAddress(pk);
+            fetchBalance(pk);
           }
         }
       } catch (error) {
@@ -82,6 +98,7 @@ export const ConnectWallet = () => {
         if (linked) {
           setAddress(pk);
           setWalletAddress(pk);
+          fetchBalance(pk);
         }
       }
     } catch (error) {
@@ -89,9 +106,7 @@ export const ConnectWallet = () => {
     }
   };
 
-  // Don't show wallet button if not logged in
   if (!isLoggedIn) return null;
-
   if (loading) return null;
 
   return (
@@ -109,6 +124,11 @@ export const ConnectWallet = () => {
           ? `${address.slice(0,4)}...${address.slice(-4)}`
           : "Connect Wallet"}
       </span>
+      {balance && (
+        <span className="text-[10px] bg-purple-800/50 px-1.5 py-0.5 rounded font-mono">
+          {balance} XLM
+        </span>
+      )}
     </button>
   );
 };
