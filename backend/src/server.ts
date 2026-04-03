@@ -39,7 +39,7 @@ const ORGANIZER_SECRET = process.env.ORGANIZER_SECRET;
 const organizerKeypair = ORGANIZER_SECRET ? Keypair.fromSecret(ORGANIZER_SECRET) : null;
 
 // Helper: build user DTO for frontend
-function toUserDto(user: { id: string; first_name: string; last_name: string; email: string; phone: string | null; document_type: string; document_number: string }) {
+function toUserDto(user: { id: string; first_name: string; last_name: string; email: string; phone: string | null; document_type: string; document_number: string; wallet_address?: string | null }) {
   return {
     id: user.id,
     firstName: user.first_name,
@@ -48,6 +48,7 @@ function toUserDto(user: { id: string; first_name: string; last_name: string; em
     phone: user.phone || '',
     documentType: user.document_type,
     documentNumber: user.document_number,
+    walletAddress: user.wallet_address ?? null,
   };
 }
 
@@ -187,7 +188,7 @@ app.get('/api/events/:slug', async (req, res) => {
        const rawTickets = await prisma.tickets.findMany({
          where: { contract_address: event.contract_address, is_for_sale: true, status: 'ACTIVE' },
          select: {
-           id: true, ticket_root_id: true, version: true, owner_wallet: true, contract_address: true,
+           id: true, ticket_root_id: true, version: true, owner_wallet: true, contract_address: true, resale_price: true,
          },
        });
        live_tickets = rawTickets.map(t => ({
@@ -196,6 +197,7 @@ app.get('/api/events/:slug', async (req, res) => {
          version: t.version,
          sellerWallet: t.owner_wallet,
          contractAddress: t.contract_address,
+         resalePrice: t.resale_price ? Number(t.resale_price) : null,
        }));
     }
 
@@ -390,6 +392,9 @@ app.post('/api/transactions/secure-ticket', authMiddleware, async (req, res) => 
       }
     }
 
+    // Get the user's linked wallet address
+    const ownerUser = await prisma.users.findUnique({ where: { id: (req as any).userId }, select: { wallet_address: true } });
+
     // Update DB with on-chain data
     await prisma.tickets.update({
       where: { id: ticketId },
@@ -397,7 +402,7 @@ app.post('/api/transactions/secure-ticket', authMiddleware, async (req, res) => 
         contract_address: contractAddress,
         ticket_root_id: ticketRootId,
         version: 0,
-        owner_wallet: organizerKeypair.publicKey(),
+        owner_wallet: ownerUser?.wallet_address ?? null,
       },
     });
 
@@ -485,16 +490,100 @@ app.post('/api/transactions/list-ticket', authMiddleware, async (req, res) => {
       return;
     }
 
+    // Get the user's linked wallet address
+    const listingUser = await prisma.users.findUnique({ where: { id: (req as any).userId }, select: { wallet_address: true } });
+
     // Optimistic DB update (indexer will also pick this up)
     await prisma.tickets.update({
       where: { id: ticketId },
-      data: { is_for_sale: true },
+      data: { is_for_sale: true, resale_price: BigInt(price), owner_wallet: listingUser?.wallet_address ?? ticket.owner_wallet },
     });
 
     console.log(`[SOROBAN] Ticket listed! root_id=${ticket.ticket_root_id}, tx=${sendResponse.hash}`);
     res.json({ success: true, txHash: sendResponse.hash });
   } catch (error: any) {
     console.error('[SOROBAN] list-ticket error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/transactions/cancel-listing — Cancel a resale listing on Soroban (cancelar_venta)
+app.post('/api/transactions/cancel-listing', authMiddleware, async (req, res) => {
+  try {
+    if (!organizerKeypair) {
+      res.status(503).json({ error: 'Blockchain no configurada' });
+      return;
+    }
+
+    const { ticketId } = req.body;
+    if (!ticketId) {
+      res.status(400).json({ error: 'ticketId es requerido' });
+      return;
+    }
+
+    const ticket = await prisma.tickets.findUnique({ where: { id: ticketId } });
+    if (!ticket) { res.status(404).json({ error: 'Ticket no encontrado' }); return; }
+    if (ticket.owner_user_id !== (req as any).userId) { res.status(403).json({ error: 'No autorizado' }); return; }
+    if (!ticket.contract_address || ticket.ticket_root_id === null) { res.status(400).json({ error: 'Ticket no registrado en blockchain' }); return; }
+    if (!ticket.is_for_sale) { res.status(409).json({ error: 'Ticket no está en venta' }); return; }
+
+    console.log(`[SOROBAN] Cancelling listing for ticket root_id=${ticket.ticket_root_id}...`);
+
+    const accountResponse = await sorobanServer.getAccount(organizerKeypair.publicKey());
+    const account = new Account(accountResponse.accountId(), accountResponse.sequenceNumber());
+
+    const tx = new TransactionBuilder(account, {
+      fee: '10000000',
+      networkPassphrase: NETWORK_PASSPHRASE,
+    })
+      .addOperation(Operation.invokeContractFunction({
+        contract: ticket.contract_address,
+        function: 'cancelar_venta',
+        args: [
+          nativeToScVal(ticket.ticket_root_id, { type: 'u32' }),
+        ],
+      }))
+      .setTimeout(60)
+      .build();
+
+    const simResponse = await sorobanServer.simulateTransaction(tx);
+    if (SorobanRpc.Api.isSimulationError(simResponse)) {
+      console.error('[SOROBAN] Cancel listing simulation failed:', (simResponse as any).error);
+      res.status(500).json({ error: 'Error en simulación blockchain' });
+      return;
+    }
+
+    const assembled = SorobanRpc.assembleTransaction(tx, simResponse).build();
+    assembled.sign(organizerKeypair);
+
+    const sendResponse = await sorobanServer.sendTransaction(assembled);
+    if (sendResponse.status === 'ERROR') {
+      res.status(500).json({ error: 'Error enviando transacción' });
+      return;
+    }
+
+    let getResponse: SorobanRpc.Api.GetTransactionResponse;
+    let attempts = 0;
+    do {
+      await new Promise((r) => setTimeout(r, 2000));
+      getResponse = await sorobanServer.getTransaction(sendResponse.hash);
+      attempts++;
+    } while (getResponse.status === 'NOT_FOUND' && attempts < 30);
+
+    if (getResponse.status !== 'SUCCESS') {
+      res.status(500).json({ error: 'Transacción de cancelación fallida' });
+      return;
+    }
+
+    await prisma.tickets.update({
+      where: { id: ticketId },
+      data: { is_for_sale: false, resale_price: null },
+    });
+
+    console.log(`[SOROBAN] Listing cancelled! root_id=${ticket.ticket_root_id}, tx=${sendResponse.hash}`);
+    res.json({ success: true, txHash: sendResponse.hash });
+  } catch (error: any) {
+    console.error('[SOROBAN] cancel-listing error:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -540,8 +629,18 @@ app.post('/api/transactions/build-buy-xdr', authMiddleware, async (req, res) => 
     // Simulate to get footprint and auth entries
     const simResponse = await sorobanServer.simulateTransaction(tx);
     if (SorobanRpc.Api.isSimulationError(simResponse)) {
-      console.error('[SOROBAN] Buy simulation failed:', (simResponse as any).error);
-      res.status(500).json({ error: 'Error en simulación: ' + ((simResponse as any).error || 'desconocido') });
+      const simError = (simResponse as any).error || 'desconocido';
+      console.error('[SOROBAN] Buy simulation failed:', simError);
+      // Parse common errors for user-friendly messages
+      if (simError.includes('not within the allowed range') || simError.includes('balance')) {
+        res.status(400).json({ error: 'Saldo insuficiente en tu billetera Stellar. Necesitas más XLM para completar la compra. Puedes obtener XLM de prueba en friendbot.stellar.org' });
+        return;
+      }
+      if (simError.includes('#8')) {
+        res.status(400).json({ error: 'No puedes comprar tu propio boleto' });
+        return;
+      }
+      res.status(500).json({ error: 'Error en simulación: ' + simError });
       return;
     }
 

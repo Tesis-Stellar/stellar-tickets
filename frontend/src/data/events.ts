@@ -40,6 +40,7 @@ export interface LiveTicket {
   version: number;
   sellerWallet: string;
   contractAddress: string;
+  resalePrice?: number | null;
 }
 
 interface EventListItemDto {

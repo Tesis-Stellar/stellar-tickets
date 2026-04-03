@@ -4,12 +4,23 @@ import { Header } from "@/components/layout/Header";
 import { Footer } from "@/components/layout/Footer";
 import { useAppContext } from "@/context/AppContext";
 
+const Field = ({ label, name, type = "text", ph = "", value, error, onChange }: { label: string; name: string; type?: string; ph?: string; value: string; error?: string; onChange: (name: string, value: string) => void }) => (
+  <div>
+    <label className="text-xs font-bold text-muted-foreground uppercase tracking-wider mb-1 block">{label}</label>
+    <input type={type} value={value} onChange={(e) => onChange(name, e.target.value)} placeholder={ph}
+      className={`w-full py-2.5 px-3 bg-secondary rounded-lg text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary ${error ? "ring-2 ring-destructive" : ""}`} />
+    {error && <p className="text-xs text-destructive mt-1">{error}</p>}
+  </div>
+);
+
 const Register = () => {
   const { register } = useAppContext();
   const navigate = useNavigate();
   const [form, setForm] = useState({ name: "", email: "", phone: "", document: "", password: "", confirm: "" });
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const handleChange = (name: string, value: string) => setForm((p) => ({ ...p, [name]: value }));
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -33,15 +44,6 @@ const Register = () => {
     }
   };
 
-  const F = ({ label, name, type = "text", ph = "" }: { label: string; name: string; type?: string; ph?: string }) => (
-    <div>
-      <label className="text-xs font-bold text-muted-foreground uppercase tracking-wider mb-1 block">{label}</label>
-      <input type={type} value={(form as any)[name]} onChange={(e) => setForm((p) => ({ ...p, [name]: e.target.value }))} placeholder={ph}
-        className={`w-full py-2.5 px-3 bg-secondary rounded-lg text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary ${errors[name] ? "ring-2 ring-destructive" : ""}`} />
-      {errors[name] && <p className="text-xs text-destructive mt-1">{errors[name]}</p>}
-    </div>
-  );
-
   return (
     <div className="min-h-screen bg-background flex flex-col">
       <Header />
@@ -52,12 +54,12 @@ const Register = () => {
             <p className="text-sm text-muted-foreground mt-1">Unete a TuTicket</p>
           </div>
           <form onSubmit={handleSubmit} className="space-y-4">
-            <F label="Nombre completo" name="name" ph="Juan Pérez" />
-            <F label="Correo electrónico" name="email" type="email" ph="tu@email.com" />
-            <F label="Teléfono" name="phone" type="tel" ph="3001234567" />
-            <F label="Documento de identidad" name="document" ph="1020304050" />
-            <F label="Contraseña" name="password" type="password" ph="••••••••" />
-            <F label="Confirmar contraseña" name="confirm" type="password" ph="••••••••" />
+            <Field label="Nombre completo" name="name" ph="Juan Pérez" value={form.name} error={errors.name} onChange={handleChange} />
+            <Field label="Correo electrónico" name="email" type="email" ph="tu@email.com" value={form.email} error={errors.email} onChange={handleChange} />
+            <Field label="Teléfono" name="phone" type="tel" ph="3001234567" value={form.phone} error={errors.phone} onChange={handleChange} />
+            <Field label="Documento de identidad" name="document" ph="1020304050" value={form.document} error={errors.document} onChange={handleChange} />
+            <Field label="Contraseña" name="password" type="password" ph="••••••••" value={form.password} error={errors.password} onChange={handleChange} />
+            <Field label="Confirmar contraseña" name="confirm" type="password" ph="••••••••" value={form.confirm} error={errors.confirm} onChange={handleChange} />
             {errors.submit && <p className="text-xs text-destructive">{errors.submit}</p>}
             <button disabled={isSubmitting} type="submit" className="w-full py-3 bg-accent hover:bg-accent/90 text-accent-foreground font-black rounded-lg text-sm transition-colors disabled:opacity-60">{isSubmitting ? "Creando..." : "Registrarse"}</button>
           </form>

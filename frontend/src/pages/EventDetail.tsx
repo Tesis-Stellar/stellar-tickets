@@ -15,7 +15,8 @@ const EventDetail = () => {
   const [loading, setLoading] = useState(true);
   const [liveTickets, setLiveTickets] = useState<LiveTicket[]>([]);
   const [buyingId, setBuyingId] = useState<string | null>(null);
-  const { buyResaleTicket, linkWallet, walletAddress } = useAppContext();
+  const [cancellingId, setCancellingId] = useState<string | null>(null);
+  const { buyResaleTicket, cancelResaleListing, linkWallet, walletAddress } = useAppContext();
 
   useEffect(() => {
     if (!slug) return;
@@ -150,35 +151,66 @@ const EventDetail = () => {
                         <p className="text-[10px] text-muted-foreground mt-0.5 flex items-center gap-1">
                           Vendedor: <span className="font-mono text-foreground font-medium">{lt.sellerWallet ? `${lt.sellerWallet.slice(0, 4)}...${lt.sellerWallet.slice(-3)}` : "?"}</span>
                         </p>
+                        {lt.resalePrice != null && (
+                          <p className="text-xs font-black text-purple-600 mt-0.5">
+                            {(lt.resalePrice / 10_000_000).toFixed(2)} XLM
+                          </p>
+                        )}
                       </div>
-                      <button
-                        disabled={buyingId === lt.id}
-                        onClick={async () => {
-                          try {
-                            if (!walletAddress) return alert("Conecta tu billetera Freighter desde el botón del header primero.");
-                            if (walletAddress === lt.sellerWallet) return alert("No puedes comprar tu propio boleto.");
-                            const pk = walletAddress;
-                            setBuyingId(lt.id);
-                            await linkWallet(pk).catch(() => {});
-                            const buyResult = await buyResaleTicket(lt.contractAddress, lt.ticketRootId, pk);
-                            if (buyResult.success) {
-                              alert("Compra exitosa! Tx: " + buyResult.txHash?.slice(0, 12) + "...");
-                              setLiveTickets((prev) => prev.filter((t) => t.id !== lt.id));
-                            } else {
-                              alert("Error: " + buyResult.error);
+                      {walletAddress && walletAddress === lt.sellerWallet ? (
+                        <button
+                          disabled={cancellingId === lt.id}
+                          onClick={async () => {
+                            try {
+                              setCancellingId(lt.id);
+                              const result = await cancelResaleListing(lt.id);
+                              if (result.success) {
+                                alert("Reventa cancelada. Tu boleto ha sido retirado del mercado.");
+                                setLiveTickets((prev) => prev.filter((t) => t.id !== lt.id));
+                              } else {
+                                alert("Error: " + result.error);
+                              }
+                            } catch (e: any) {
+                              console.error("[CANCEL] Error:", e);
+                              alert("Error: " + e.message);
+                            } finally {
+                              setCancellingId(null);
                             }
-                          } catch (e: any) {
-                            console.error("[BUY] Error:", e);
-                            alert("Error: " + e.message);
-                          } finally {
-                            setBuyingId(null);
-                          }
-                        }}
-                        className="bg-purple-600 hover:bg-purple-700 text-white text-xs font-bold px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1 shadow-md shadow-purple-900/20 disabled:opacity-50"
-                      >
-                        {buyingId === lt.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <Lock className="w-3 h-3" />}
-                        {buyingId === lt.id ? "Firmando..." : "Comprar"}
-                      </button>
+                          }}
+                          className="bg-red-600 hover:bg-red-700 text-white text-xs font-bold px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1 shadow-md shadow-red-900/20 disabled:opacity-50"
+                        >
+                          {cancellingId === lt.id ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
+                          {cancellingId === lt.id ? "Cancelando..." : "Cancelar Reventa"}
+                        </button>
+                      ) : (
+                        <button
+                          disabled={buyingId === lt.id}
+                          onClick={async () => {
+                            try {
+                              if (!walletAddress) return alert("Conecta tu billetera Freighter desde el botón del header primero.");
+                              const pk = walletAddress;
+                              setBuyingId(lt.id);
+                              await linkWallet(pk).catch(() => {});
+                              const buyResult = await buyResaleTicket(lt.contractAddress, lt.ticketRootId, pk);
+                              if (buyResult.success) {
+                                alert("Compra exitosa! Tx: " + buyResult.txHash?.slice(0, 12) + "...");
+                                setLiveTickets((prev) => prev.filter((t) => t.id !== lt.id));
+                              } else {
+                                alert("Error: " + buyResult.error);
+                              }
+                            } catch (e: any) {
+                              console.error("[BUY] Error:", e);
+                              alert("Error: " + e.message);
+                            } finally {
+                              setBuyingId(null);
+                            }
+                          }}
+                          className="bg-purple-600 hover:bg-purple-700 text-white text-xs font-bold px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1 shadow-md shadow-purple-900/20 disabled:opacity-50"
+                        >
+                          {buyingId === lt.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <Lock className="w-3 h-3" />}
+                          {buyingId === lt.id ? "Firmando..." : "Comprar"}
+                        </button>
+                      )}
                     </div>
                   ))
                 )}

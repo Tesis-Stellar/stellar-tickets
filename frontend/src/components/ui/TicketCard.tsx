@@ -4,11 +4,12 @@ import { useAppContext } from "@/context/AppContext";
 import { useState } from "react";
 
 export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
-  const { secureTicketOnChain, listTicketForSale } = useAppContext();
+  const { secureTicketOnChain, listTicketForSale, cancelResaleListing } = useAppContext();
   const [isMinting, setIsMinting] = useState(false);
   const [isMinted, setIsMinted] = useState(ticket.isSecuredOnChain ?? false);
   const [isListing, setIsListing] = useState(false);
   const [isListed, setIsListed] = useState(ticket.isForSale ?? false);
+  const [isCancelling, setIsCancelling] = useState(false);
   const [txHash, setTxHash] = useState<string | null>(null);
 
   const claimTicket = async () => {
@@ -94,9 +95,34 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
                 <ShieldCheck className="w-4 h-4" /> Asegurado en Blockchain
               </span>
               {isListed && (
-                <span className="inline-flex items-center gap-1 px-3 py-1 bg-blue-500/10 text-blue-400 text-xs font-black rounded-lg border border-blue-500/20">
-                  <Tag className="w-3.5 h-3.5" /> En Venta
-                </span>
+                <>
+                  <span className="inline-flex items-center gap-1 px-3 py-1 bg-blue-500/10 text-blue-400 text-xs font-black rounded-lg border border-blue-500/20">
+                    <Tag className="w-3.5 h-3.5" /> En Venta
+                  </span>
+                  <button
+                    onClick={async () => {
+                      try {
+                        setIsCancelling(true);
+                        const result = await cancelResaleListing(ticket.id);
+                        if (result.success) {
+                          setIsListed(false);
+                          setTxHash(result.txHash ?? txHash);
+                        } else {
+                          alert(`Error: ${result.error}`);
+                        }
+                      } catch (e) {
+                        console.error(e);
+                        alert("Error al cancelar reventa");
+                      } finally {
+                        setIsCancelling(false);
+                      }
+                    }}
+                    disabled={isCancelling}
+                    className={`inline-flex items-center gap-1 px-3 py-1 text-xs font-black rounded-lg transition-colors w-fit ${isCancelling ? "bg-muted text-muted-foreground" : "bg-red-600 hover:bg-red-700 text-white shadow-md shadow-red-900/20"}`}
+                  >
+                    {isCancelling ? "Cancelando..." : "Cancelar Reventa"}
+                  </button>
+                </>
               )}
               {stellarExplorerUrl && (
                 <a

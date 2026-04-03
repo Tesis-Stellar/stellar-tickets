@@ -155,6 +155,7 @@ model tickets {
   ticket_root_id Int?
   version       Int?
   is_for_sale   Boolean       @default(false)
+  resale_price  BigInt?
   qr_payload    String?
   status        ticket_status @default(ACTIVE)
   issued_at     DateTime      @default(now()) @db.Timestamptz(6)

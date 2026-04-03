@@ -159,15 +159,16 @@ npm start                     # Run compiled output
 - `GET /api/events/:id/ticket-types` — Ticket types for an event
 - `GET /api/events/:id/related` — Related events (same category, max 4)
 - `POST /api/transactions/buy` — **XDR Builder**: returns unsigned transaction payload for Freighter signing
-- `POST /api/transactions/secure-ticket` — **Soroban on-chain registration**: calls `crear_boleto` on event contract (organizer-signed server-side), updates DB with `contract_address`, `ticket_root_id`, `version`. Returns `{txHash, contractAddress, ticketRootId}`. Auth required.
-- `POST /api/transactions/list-ticket` — **Soroban list for resale**: calls `listar_boleto` on-chain (organizer-signed). Accepts `{ticketId, price}` (price in stroops). Updates DB `is_for_sale = true`. Auth required.
-- `POST /api/transactions/build-buy-xdr` — **XDR Builder for resale**: builds unsigned `comprar_boleto` transaction with buyer as source account. Returns `{xdr, networkPassphrase}` for Freighter signing. Auth required.
+- `POST /api/transactions/secure-ticket` — **Soroban on-chain registration**: calls `crear_boleto` on event contract (organizer-signed server-side), updates DB with `contract_address`, `ticket_root_id`, `version`, `owner_wallet` (user's wallet, not organizer's). Returns `{txHash, contractAddress, ticketRootId}`. Auth required.
+- `POST /api/transactions/list-ticket` — **Soroban list for resale**: calls `listar_boleto` on-chain (organizer-signed). Accepts `{ticketId, price}` (price in stroops). Updates DB `is_for_sale = true`, `resale_price`, `owner_wallet`. Auth required.
+- `POST /api/transactions/cancel-listing` — **Soroban cancel resale**: calls `cancelar_venta` on-chain (organizer-signed). Accepts `{ticketId}`. Updates DB `is_for_sale = false`, `resale_price = null`. Auth required.
+- `POST /api/transactions/build-buy-xdr` — **XDR Builder for resale**: builds unsigned `comprar_boleto` transaction with buyer as source account. Returns `{xdr, networkPassphrase}` for Freighter signing. User-friendly error on insufficient balance. Auth required.
 - `POST /api/transactions/submit` — Receives Freighter-signed XDR, submits to Soroban RPC, polls for result. Returns `{success, txHash}`. Auth required.
 
 **Auth endpoints (real bcrypt + JWT):**
 - `POST /api/auth/login` — bcrypt.compare against DB `password_hash`, returns JWT (7d expiry) + user DTO
 - `POST /api/auth/register` — bcrypt.hash(10 rounds), creates user in DB, returns JWT + user DTO. Checks duplicate email (409).
-- `GET /api/users/me` — Protected by `authMiddleware` (Bearer JWT), returns user DTO from DB
+- `GET /api/users/me` — Protected by `authMiddleware` (Bearer JWT), returns user DTO from DB (includes `walletAddress`)
 - `PATCH /api/users/me` — Update profile (firstName, lastName, phone, documentType, documentNumber)
 - `PATCH /api/users/me/wallet` — Link Freighter wallet address to user account. Auth required.
 - `authMiddleware` — Extracts `userId` from JWT, attaches to `req.userId`. Returns 401 on missing/invalid token.
@@ -209,14 +210,15 @@ Polls Soroban RPC every 5 seconds. Processes events from all contracts with `con
 
 ### Known limitations
 
-1. **On-chain registration is organizer-signed** — `crear_boleto` and `listar_boleto` are signed server-side with organizer key. `comprar_boleto` is signed by buyer via Freighter. Post-purchase UI doesn't auto-refresh buyer's ticket list (requires page reload).
+1. **On-chain registration is organizer-signed** — `crear_boleto`, `listar_boleto`, and `cancelar_venta` are signed server-side with organizer key. `comprar_boleto` is signed by buyer via Freighter.
 2. **Seated events cart constraint** — DB check constraint requires `event_seat_inventory_id` for ticket types with `venue_section_id`. Only general-admission events work with the current cart flow.
 3. **Event images are hardcoded** — No DB column; images mapped by slug in `EVENT_IMAGES` dict in server.ts (Unsplash URLs). Fallback by category via `CATEGORY_IMAGES`.
 4. **node_modules workaround** — `plain-crypto-js` directory lock on Windows prevented normal `npm install`. Dependencies were installed via `npx yarn install` (yarn.lock present). If issues recur, delete node_modules fully and re-run `npx --yes yarn install && npx prisma generate`.
+5. **One Freighter wallet per browser** — Freighter extension has one active wallet. If a wallet is already linked to user A, user B logging in on the same browser will see a 409 error and the wallet won't connect. Use incognito or switch Freighter accounts.
 
 ### Database Schema (Prisma)
 
-**PostgreSQL schemas:** `public` + `ticketing`. Hosted on Supabase.
+**PostgreSQL schema:** `ticketing` (all tables). Hosted on Supabase.
 
 **Key models with Web3 fields:**
 
@@ -224,8 +226,10 @@ Polls Soroban RPC every 5 seconds. Processes events from all contracts with `con
 |---|---|
 | `users` | `wallet_address` (unique, optional) |
 | `events` | `contract_address` (unique, nullable) |
-| `tickets` | `contract_address`, `ticket_root_id`, `version`, `is_for_sale`, `owner_wallet`. Unique constraint: `(contract_address, ticket_root_id, version)` |
+| `tickets` | `contract_address`, `ticket_root_id`, `version`, `is_for_sale`, `resale_price` (BigInt, stroops), `owner_wallet`. Unique constraint: `(contract_address, ticket_root_id, version)` |
 | `indexer_state` | `last_ledger` (cursor for Soroban sync) |
+
+**NOTE:** `resale_price` column was added via migration script (`backend/scripts/migrate-tickets.ts`), not via `prisma migrate`. The DB diagram in thesis docs needs updating to reflect this column.
 
 **Full Web2 models:** users (CUSTOMER/ADMIN), events, organizers, venues, venue_sections, seats, event_ticket_types, event_seat_inventory (AVAILABLE/HELD/SOLD/BLOCKED), carts, cart_items, seat_holds (TTL), orders, order_items, payments (CARD/PSE/CASHPOINT), tickets (ACTIVE/USED/CANCELLED/REFUNDED), event_categories, cities
 
@@ -260,16 +264,17 @@ npm run lint          # ESLint
 - React Context for cart, orders, purchased tickets, user data, JWT auth
 - `apiFetch<T>(path, init?)` — Centralized fetch with Bearer token from `localStorage.authToken`
 - `VITE_API_BASE_URL` (defaults to `http://localhost:3000`)
-- API calls: auth (login/register/me), cart CRUD, checkout (preview/confirm), orders, tickets, `secureTicketOnChain`, `listTicketForSale`, `buyResaleTicket`, `linkWallet`
-- `walletAddress` / `setWalletAddress` — Shared Freighter wallet state set by ConnectWallet, consumed by EventDetail for resale purchases
+- API calls: auth (login/register/me), cart CRUD, checkout (preview/confirm), orders, tickets, `secureTicketOnChain`, `listTicketForSale`, `cancelResaleListing`, `buyResaleTicket`, `linkWallet`
+- `walletAddress` / `setWalletAddress` — Shared wallet state. Loaded from user profile (`/api/users/me` returns `walletAddress`) on login/refresh, AND from Freighter on connect. Consumed by EventDetail for resale purchases and seller detection.
+- Checkout refreshes tickets from `GET /api/tickets` after confirm to get real DB UUIDs (no more fake `ticket-xxx` IDs)
 
 ### Key components
 
 **Web3 integration:**
-- `ConnectWallet.tsx` — Freighter wallet connection via dynamic import. Uses Freighter v6 API (`isConnected`, `isAllowed`, `getAddress`, `requestAccess`). Sets `walletAddress` in AppContext for other components. All Freighter v6 responses are objects (e.g., `{ isConnected: bool }`, `{ address: string }`), not primitives.
-- `TicketCard.tsx` — "Asegurar en Blockchain" button calls `POST /api/transactions/secure-ticket` → real Soroban `crear_boleto` → shows "Asegurado en Blockchain" badge + Stellar Explorer link. "Revender NFT" button calls `POST /api/transactions/list-ticket` → real Soroban `listar_boleto` → shows "En Venta" badge.
-- `EventDetail.tsx` — "Reventa P2P Segura" section shows live tickets for sale from DB. Buy button: reads `walletAddress` from AppContext (no direct Freighter calls), prevents self-purchase, calls `buyResaleTicket` → backend builds XDR → Freighter signs → backend submits to Soroban.
-- `AppContext.tsx` — `secureTicketOnChain`, `listTicketForSale`, `buyResaleTicket`, `linkWallet` functions. `PurchasedTicket` type includes Web3 fields (`isSecuredOnChain`, `isForSale`, `contractAddress`, `ticketRootId`, `version`, `ownerWallet`). `walletAddress`/`setWalletAddress` shared state for Freighter address.
+- `ConnectWallet.tsx` — **Only renders when user is logged in.** Freighter wallet connection via dynamic import. Uses Freighter v6 API (`isConnected`, `isAllowed`, `getAddress`, `requestAccess`). Auto-links wallet to backend on connect via `linkWallet()`. Handles 409 (wallet already linked to another account) with user-friendly alert. All Freighter v6 responses are objects (e.g., `{ isConnected: bool }`, `{ address: string }`), not primitives.
+- `TicketCard.tsx` — "Asegurar en Blockchain" button calls `POST /api/transactions/secure-ticket` → real Soroban `crear_boleto` → shows "Asegurado en Blockchain" badge + Stellar Explorer link. "Revender NFT" button calls `POST /api/transactions/list-ticket` → shows "En Venta" badge + **"Cancelar Reventa"** button (calls `cancelResaleListing`).
+- `EventDetail.tsx` — "Reventa P2P Segura" section shows live tickets with **resale price in XLM**. If `walletAddress === sellerWallet`: shows **"Cancelar Reventa"** (red button). Otherwise: shows "Comprar" button → `buyResaleTicket` → backend builds XDR → Freighter signs → backend submits to Soroban.
+- `AppContext.tsx` — `secureTicketOnChain`, `listTicketForSale`, `cancelResaleListing`, `buyResaleTicket`, `linkWallet` functions. `PurchasedTicket` type includes Web3 fields (`isSecuredOnChain`, `isForSale`, `contractAddress`, `ticketRootId`, `version`, `ownerWallet`). `walletAddress` loaded from user profile AND Freighter.
 
 **Layout:** Header (nav + ConnectWallet), Footer, HeroSearch, CategorySection, AccountSidebar
 
@@ -334,17 +339,30 @@ npm run lint          # ESLint
 
 - **Phase 3.7 (secondary market)** — Full resale marketplace working end-to-end on Soroban testnet (2026-03-31). Backend: `POST /api/transactions/list-ticket` (organizer-signed `listar_boleto`), `POST /api/transactions/build-buy-xdr` (unsigned XDR for `comprar_boleto`), `POST /api/transactions/submit` (signed XDR submission), `PATCH /api/users/me/wallet` (link Freighter). Frontend: ConnectWallet rewritten for Freighter v6 API (objects not primitives), `walletAddress` shared via AppContext, TicketCard "Revender NFT" button with real on-chain listing, EventDetail "Reventa P2P Segura" section with live marketplace + Freighter-signed purchases, self-purchase prevention. Indexer updated with all 7 snake_case event handlers. Tested: listing + purchase confirmed on testnet (tx `3f93a54c3a66...`).
 
+- **Phase 3.8 (resale UX polish)** — Implemented 2026-04-02:
+  - **Wallet-user binding**: ConnectWallet only renders when logged in, auto-links wallet to backend on connect. Handles 409 (duplicate wallet across accounts). `walletAddress` loaded from user profile on login (not just Freighter), so seller detection works even without extension open.
+  - **Cancel listing flow**: New `POST /api/transactions/cancel-listing` endpoint calls `cancelar_venta` on-chain. `cancelResaleListing` in AppContext. "Cancelar Reventa" button in both TicketCard (Mis Entradas) and EventDetail (P2P marketplace when seller views own listing).
+  - **Resale price display**: New `resale_price` (BigInt) column on `tickets` table. Stored in stroops on list, cleared on cancel. EventDetail P2P section shows price in XLM.
+  - **Post-checkout refresh**: After checkout/confirm, frontend fetches real tickets from `GET /api/tickets` to get DB UUIDs instead of fake `ticket-xxx` IDs. Fixes "Asegurar en Blockchain" failing with UUID parse error.
+  - **owner_wallet fix**: `secure-ticket` and `list-ticket` now save user's `wallet_address` (not organizer key) as `owner_wallet`. Migration script `backend/scripts/migrate-tickets.ts` fixes existing records.
+  - **Event images in Mis Entradas**: Fixed mapping `posterImage` → `image` when loading tickets from API.
+  - **Register form focus fix**: Extracted `Field` component outside `Register` to prevent re-mount on each keystroke.
+  - **Better buy errors**: `build-buy-xdr` detects insufficient balance and returns user-friendly message.
+  - **DB migration**: `resale_price BIGINT` column added to `ticketing.tickets`. Run `node --import tsx scripts/migrate-tickets.ts` from backend dir to apply (also fixes `owner_wallet`).
+
 ### Pending — NEXT SESSION START HERE
-- **Phase 3.8 (resale UX polish)** — Post-purchase UI updates: bought ticket appears immediately in "Mis Entradas" without page reload, seller sees sale confirmation and amount received, wallet balance display in header, cancel listing flow (`cancelar_venta`), resale price display in marketplace
+- **Phase 3.9 (remaining UX)** — Seller sees sale confirmation and amount received after resale completes, wallet XLM balance display in header, post-purchase auto-refresh of buyer's ticket list without page reload
 - **Phase 4** — Verifier UI for check-in (`redimir_boleto` flow), E2E demo scripts, latency/cost metrics (Stroops)
-- **Phase 5** — Thesis documentation: updated architecture diagrams, Web2 problem mitigation analysis, test evidence
+- **Phase 5** — Thesis documentation: **updated DB diagram** (new `resale_price` column), updated architecture diagrams, Web2 problem mitigation analysis, test evidence
 
 ### Key architectural rules
-- Backend signs `crear_boleto` and `listar_boleto` server-side with organizer key. For buyer-facing operations (`comprar_boleto`), backend builds unsigned XDR and frontend signs with **Freighter wallet**
-- `ORGANIZER_SECRET` env var required for on-chain ticket creation and listing
-- **Freighter v6 API** returns objects, not primitives (e.g., `{ isConnected: bool }`, `{ address: string }`, `{ signedTxXdr: string }`). ConnectWallet shares wallet address via AppContext — other components should NOT call Freighter directly
+- Backend signs `crear_boleto`, `listar_boleto`, and `cancelar_venta` server-side with organizer key. For buyer-facing operations (`comprar_boleto`), backend builds unsigned XDR and frontend signs with **Freighter wallet**
+- `ORGANIZER_SECRET` env var required for on-chain ticket creation, listing, and cancel
+- **Freighter v6 API** returns objects, not primitives (e.g., `{ isConnected: bool }`, `{ address: string }`, `{ signedTxXdr: string }`). ConnectWallet only renders when logged in, auto-links wallet to backend, handles duplicate wallet (409). Other components should NOT call Freighter directly
+- **Wallet identity**: `owner_wallet` on tickets must be user's `wallet_address` (not organizer key). `toUserDto` returns `walletAddress` so frontend loads it on login. This enables seller detection in EventDetail P2P section
 - **Indexer** keeps PostgreSQL in sync with on-chain state (polls Soroban events every 5s, 7 event handlers)
 - Web2 purchase flow (cart -> checkout -> order) remains intact; blockchain is an **opt-in layer** on top
 - `payments.provider_reference` stores blockchain transaction hashes
 - `tickets` table uses `(contract_address, ticket_root_id, version)` unique constraint to mirror on-chain state
-- Frontend prevents self-purchase (seller wallet === buyer wallet check)
+- Frontend seller detection: if `walletAddress === sellerWallet`, show "Cancelar Reventa" instead of "Comprar"
+- **DB schema changes** are applied via `backend/scripts/migrate-tickets.ts` (not prisma migrate), must be run manually
