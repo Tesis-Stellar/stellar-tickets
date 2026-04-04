@@ -136,16 +136,44 @@ export async function runIndexer() {
             ? await prisma.users.findUnique({ where: { wallet_address: newOwnerWallet } })
             : null;
 
-          // Primary sale: ownership changes in-place, no version bump
-          await prisma.tickets.updateMany({
+          // Check if ticket was listed for P2P sale (has resale_price)
+          const existing = await prisma.tickets.findFirst({
             where: { contract_address: contractId, ticket_root_id: rootId, status: 'ACTIVE' },
-            data: {
-              owner_wallet: newOwnerWallet,
-              owner_user_id: user?.id ?? null,
-              is_for_sale: false,
-            }
+            select: { id: true, is_for_sale: true, resale_price: true, order_item_id: true },
           });
-          console.log(`[INDEXER] Primary sale root_id=${rootId} -> ${newOwnerWallet.slice(0, 8)}`);
+
+          if (existing?.resale_price != null) {
+            // P2P sale via primary flow: cancel old ticket (keep resale_price for sale history)
+            // and create new one for buyer, similar to boleto_revendido
+            await prisma.tickets.updateMany({
+              where: { contract_address: contractId, ticket_root_id: rootId, status: 'ACTIVE' },
+              data: { status: 'CANCELLED', is_for_sale: false }
+            });
+            await prisma.tickets.create({
+              data: {
+                contract_address: contractId,
+                ticket_root_id: rootId,
+                version: 1,
+                owner_wallet: newOwnerWallet,
+                owner_user_id: user?.id ?? null,
+                order_item_id: existing.order_item_id,
+                is_for_sale: false,
+                status: 'ACTIVE',
+              }
+            });
+            console.log(`[INDEXER] Primary P2P sale root_id=${rootId} -> ${newOwnerWallet.slice(0, 8)} (seller ticket cancelled)`);
+          } else {
+            // Normal primary sale: ownership changes in-place, no version bump
+            await prisma.tickets.updateMany({
+              where: { contract_address: contractId, ticket_root_id: rootId, status: 'ACTIVE' },
+              data: {
+                owner_wallet: newOwnerWallet,
+                owner_user_id: user?.id ?? null,
+                is_for_sale: false,
+              }
+            });
+            console.log(`[INDEXER] Primary sale root_id=${rootId} -> ${newOwnerWallet.slice(0, 8)}`);
+          }
         }
 
         else if (eventName === 'boleto_revendido') {
@@ -157,6 +185,12 @@ export async function runIndexer() {
           const user = newOwnerWallet !== 'unknown'
             ? await prisma.users.findUnique({ where: { wallet_address: newOwnerWallet } })
             : null;
+
+          // Get order_item_id from old version to preserve event linkage
+          const oldTicket = await prisma.tickets.findFirst({
+            where: { contract_address: contractId, ticket_root_id: rootId, status: 'ACTIVE' },
+            select: { order_item_id: true },
+          });
 
           // Cancel old version
           await prisma.tickets.updateMany({
@@ -172,6 +206,7 @@ export async function runIndexer() {
               version: newVersion,
               owner_wallet: newOwnerWallet,
               owner_user_id: user?.id ?? null,
+              order_item_id: oldTicket?.order_item_id ?? null,
               is_for_sale: false,
               status: 'ACTIVE',
             }

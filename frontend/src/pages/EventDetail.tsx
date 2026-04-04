@@ -6,6 +6,7 @@ import { getEventBySlug, getEventTicketTypes, getRelatedEvents, type EventData, 
 import { MapPin, Calendar, Clock, ChevronLeft, User, Info, ShieldCheck, Lock, Loader2 } from "lucide-react";
 import { EventCard } from "@/components/ui/EventCard";
 import { useAppContext } from "@/context/AppContext";
+import { useXlmPrice, formatCOP } from "@/hooks/useXlmPrice";
 
 const EventDetail = () => {
   const { id: slug } = useParams<{ id: string }>();
@@ -17,6 +18,7 @@ const EventDetail = () => {
   const [buyingId, setBuyingId] = useState<string | null>(null);
   const [cancellingId, setCancellingId] = useState<string | null>(null);
   const { buyResaleTicket, cancelResaleListing, linkWallet, walletAddress } = useAppContext();
+  const xlmCop = useXlmPrice();
 
   useEffect(() => {
     if (!slug) return;
@@ -29,7 +31,11 @@ const EventDetail = () => {
           setRelated([]);
           return;
         }
-        const [ticketTypes, relatedEvents] = await Promise.all([getEventTicketTypes(detail.id), getRelatedEvents(detail.id)]);
+        // Only fetch ticket types if not already included in detail response
+        const [ticketTypes, relatedEvents] = await Promise.all([
+          detail.ticketTypes.length ? Promise.resolve(detail.ticketTypes) : getEventTicketTypes(detail.id),
+          getRelatedEvents(detail.id),
+        ]);
         setEvent({ ...detail, ticketTypes });
         setLiveTickets(detail.liveTickets ?? []);
         setRelated(relatedEvents);
@@ -154,6 +160,7 @@ const EventDetail = () => {
                         {lt.resalePrice != null && (
                           <p className="text-xs font-black text-purple-600 mt-0.5">
                             {(lt.resalePrice / 10_000_000).toFixed(2)} XLM
+                            {xlmCop ? <span className="font-medium text-muted-foreground ml-1">(~ {formatCOP((lt.resalePrice / 10_000_000) * xlmCop)})</span> : ""}
                           </p>
                         )}
                       </div>
@@ -193,7 +200,7 @@ const EventDetail = () => {
                               await linkWallet(pk).catch(() => {});
                               const buyResult = await buyResaleTicket(lt.contractAddress, lt.ticketRootId, pk);
                               if (buyResult.success) {
-                                alert("Compra exitosa! Tx: " + buyResult.txHash?.slice(0, 12) + "...");
+                                alert("¡Compra exitosa! Tu boleto aparecerá en Mis Entradas en unos segundos.\nTx: " + buyResult.txHash?.slice(0, 12) + "...");
                                 setLiveTickets((prev) => prev.filter((t) => t.id !== lt.id));
                               } else {
                                 alert("Error: " + buyResult.error);

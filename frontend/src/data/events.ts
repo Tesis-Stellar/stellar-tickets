@@ -147,11 +147,26 @@ export const getFeaturedEvents = async (): Promise<EventData[]> => {
 };
 
 export const getEventBySlug = async (slug: string): Promise<EventData | null> => {
-  const raw = await apiGet<EventListItemDto & { live_tickets?: LiveTicket[]; contractAddress?: string }>(`/api/events/${slug}`);
+  const raw = await apiGet<EventListItemDto & {
+    live_tickets?: LiveTicket[];
+    contractAddress?: string;
+    ticketTypes?: Array<{ id: string; name: string; price: number; serviceFee: number; availability: number; maxPerOrder: number }>;
+  }>(`/api/events/${slug}`);
   if (!raw) return null;
   const event = mapEvent(raw);
   event.liveTickets = raw.live_tickets ?? [];
   event.contractAddress = raw.contractAddress;
+  // Use ticket types from detail response if available (avoids extra API call)
+  if (raw.ticketTypes?.length) {
+    event.ticketTypes = raw.ticketTypes.map((t) => ({
+      id: t.id,
+      name: t.name,
+      price: t.price,
+      serviceFee: t.serviceFee,
+      available: t.availability ?? 0,
+      maxPerOrder: t.maxPerOrder ?? 10,
+    }));
+  }
   return event;
 };
 

@@ -3,15 +3,16 @@ import { Header } from "@/components/layout/Header";
 import { Footer } from "@/components/layout/Footer";
 import { AccountSidebar } from "@/components/layout/AccountSidebar";
 import { useAppContext } from "@/context/AppContext";
-import { Ticket, ShoppingBag, User, Settings } from "lucide-react";
+import { Ticket, ShoppingBag, User, Settings, ArrowRightLeft } from "lucide-react";
 
 const Account = () => {
-  const { isLoggedIn, user, purchasedTickets, orders } = useAppContext();
+  const { isLoggedIn, user, purchasedTickets, orders, soldTickets } = useAppContext();
   if (!isLoggedIn) return <Navigate to="/login" replace />;
 
   const cards = [
     { to: "/mi-cuenta/entradas", icon: Ticket, label: "Mis Entradas", value: `${purchasedTickets.length} boleto${purchasedTickets.length !== 1 ? "s" : ""}` },
     { to: "/mi-cuenta/compras", icon: ShoppingBag, label: "Mis Compras", value: `${orders.length} orden${orders.length !== 1 ? "es" : ""}` },
+    { to: "/mi-cuenta/ventas-p2p", icon: ArrowRightLeft, label: "Mis Ventas P2P", value: `${soldTickets.length} venta${soldTickets.length !== 1 ? "s" : ""}` },
     { to: "/mi-cuenta/perfil", icon: User, label: "Mi Perfil", value: user?.name ?? "" },
     { to: "/contactanos", icon: Settings, label: "Ayuda", value: "Soporte y FAQ" },
   ];

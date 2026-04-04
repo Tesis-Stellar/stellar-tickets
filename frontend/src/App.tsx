@@ -19,6 +19,7 @@ import Account from "./pages/Account";
 import MyTicketsAccount from "./pages/MyTicketsAccount";
 import PurchaseHistory from "./pages/PurchaseHistory";
 import Profile from "./pages/Profile";
+import MySalesP2P from "./pages/MySalesP2P";
 import Contact from "./pages/Contact";
 import NotFound from "./pages/NotFound";
 
@@ -48,6 +49,7 @@ const App = () => (
             <Route path="/mi-cuenta/entradas" element={<MyTicketsAccount />} />
             <Route path="/mi-cuenta/compras" element={<PurchaseHistory />} />
             <Route path="/mi-cuenta/perfil" element={<Profile />} />
+            <Route path="/mi-cuenta/ventas-p2p" element={<MySalesP2P />} />
             <Route path="/contactanos" element={<Contact />} />
             <Route path="*" element={<NotFound />} />
           </Routes>

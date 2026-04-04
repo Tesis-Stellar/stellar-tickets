@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { Wallet } from "lucide-react";
 import { useAppContext } from "@/context/AppContext";
+import { useXlmPrice, formatCOP } from "@/hooks/useXlmPrice";
 
 // Freighter v6 returns objects, not primitives. Helper to safely call its API.
 const freighterApi = () => import("@stellar/freighter-api");
@@ -11,7 +12,8 @@ export const ConnectWallet = () => {
   const [address, setAddress] = useState<string | null>(null);
   const [balance, setBalance] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const { setWalletAddress, linkWallet, isLoggedIn } = useAppContext();
+  const { setWalletAddress, linkWallet, isLoggedIn, balanceVersion } = useAppContext();
+  const xlmCop = useXlmPrice();
 
   const fetchBalance = async (pk: string) => {
     try {
@@ -39,6 +41,11 @@ export const ConnectWallet = () => {
       return true;
     }
   };
+
+  // Refresh balance when balanceVersion changes (after buy/list/cancel)
+  useEffect(() => {
+    if (address && balanceVersion > 0) fetchBalance(address);
+  }, [balanceVersion]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Only auto-detect wallet when user is logged in
   useEffect(() => {
@@ -127,6 +134,7 @@ export const ConnectWallet = () => {
       {balance && (
         <span className="text-[10px] bg-purple-800/50 px-1.5 py-0.5 rounded font-mono">
           {balance} XLM
+          {xlmCop ? ` ~ ${formatCOP(parseFloat(balance) * xlmCop)}` : ""}
         </span>
       )}
     </button>

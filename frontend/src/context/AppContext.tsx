@@ -27,6 +27,19 @@ export interface PurchasedTicket {
   ownerWallet?: string;
 }
 
+/* ── Sold ticket ── */
+export interface SoldTicket {
+  id: string;
+  soldAt: string;
+  resalePrice: number; // stroops
+  contractAddress?: string;
+  ticketRootId?: number;
+  version?: number;
+  buyerWallet?: string;
+  ticketType?: { id: string; name: string; price: number };
+  event?: EventData;
+}
+
 /* ── Order ── */
 export interface OrderData {
   id: string;
@@ -59,8 +72,10 @@ interface AppState {
   cart: CartItem[];
   orders: OrderData[];
   purchasedTickets: PurchasedTicket[];
+  soldTickets: SoldTicket[];
   user: UserData | null;
   isLoggedIn: boolean;
+  balanceVersion: number;
   addToCart: (item: Omit<CartItem, "id">) => Promise<void>;
   removeFromCart: (id: string) => Promise<void>;
   updateCartQuantity: (id: string, quantity: number) => Promise<void>;
@@ -75,6 +90,7 @@ interface AppState {
   cancelResaleListing: (ticketId: string) => Promise<{ success: boolean; txHash?: string; error?: string }>;
   buyResaleTicket: (contractAddress: string, ticketRootId: number, buyerPublicKey: string) => Promise<{ success: boolean; txHash?: string; error?: string }>;
   linkWallet: (walletAddress: string) => Promise<void>;
+  refreshTickets: () => Promise<void>;
   walletAddress: string | null;
   setWalletAddress: (address: string | null) => void;
   lastOrder: OrderData | null;
@@ -97,6 +113,8 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   const [lastOrder, setLastOrder] = useState<OrderData | null>(null);
   const [token, setToken] = useState<string | null>(() => localStorage.getItem("authToken"));
   const [walletAddress, setWalletAddress] = useState<string | null>(null);
+  const [soldTickets, setSoldTickets] = useState<SoldTicket[]>([]);
+  const [balanceVersion, setBalanceVersion] = useState(0);
 
   const isLoggedIn = useMemo(() => Boolean(token && user), [token, user]);
 
@@ -164,19 +182,60 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     void refreshUserData();
   }, [refreshUserData, token]);
 
+  const mapTicketsResponse = useCallback(
+    (ticketsData: Array<{ id: string; purchasedAt?: string; quantity: number; seatIds?: string[]; ticketType?: { id: string; name: string; price: number; serviceFee: number }; event?: Partial<EventData>; isSecuredOnChain?: boolean; isForSale?: boolean; contractAddress?: string; ticketRootId?: number; version?: number; ownerWallet?: string }>): PurchasedTicket[] =>
+      ticketsData.map((ticket) => ({
+        id: ticket.id,
+        event: { ...ticket.event, image: (ticket.event as any)?.posterImage || (ticket.event as any)?.bannerImage || ticket.event?.image || "", bannerImage: (ticket.event as any)?.bannerImage || (ticket.event as any)?.posterImage || ticket.event?.bannerImage || "" } as EventData,
+        ticketType: {
+          id: ticket.ticketType?.id ?? "unknown",
+          name: ticket.ticketType?.name ?? "Boleta",
+          price: ticket.ticketType?.price ?? 0,
+          serviceFee: ticket.ticketType?.serviceFee ?? 0,
+          available: 0,
+          maxPerOrder: 10,
+        },
+        quantity: ticket.quantity,
+        seats: ticket.seatIds,
+        purchasedAt: ticket.purchasedAt ?? new Date().toISOString(),
+        isSecuredOnChain: ticket.isSecuredOnChain,
+        isForSale: ticket.isForSale,
+        contractAddress: ticket.contractAddress,
+        ticketRootId: ticket.ticketRootId,
+        version: ticket.version,
+        ownerWallet: ticket.ownerWallet,
+      })),
+    []
+  );
+
+  const refreshTickets = useCallback(async () => {
+    const ticketsData = await apiFetch<Array<{ id: string; purchasedAt?: string; quantity: number; seatIds?: string[]; ticketType?: { id: string; name: string; price: number; serviceFee: number }; event?: Partial<EventData>; isSecuredOnChain?: boolean; isForSale?: boolean; contractAddress?: string; ticketRootId?: number; version?: number; ownerWallet?: string }>>("/api/tickets");
+    setPurchasedTickets(mapTicketsResponse(ticketsData));
+  }, [apiFetch, mapTicketsResponse]);
+
+  const refreshSoldTickets = useCallback(async () => {
+    const data = await apiFetch<Array<{ id: string; soldAt: string; resalePrice: number; contractAddress?: string; ticketRootId?: number; version?: number; ticketType?: { id: string; name: string; price: number }; event?: Partial<EventData> }>>("/api/tickets/sold");
+    setSoldTickets(data.map((t) => ({
+      ...t,
+      event: t.event ? { ...t.event, image: (t.event as any)?.posterImage || (t.event as any)?.bannerImage || t.event?.image || "", bannerImage: (t.event as any)?.bannerImage || (t.event as any)?.posterImage || t.event?.bannerImage || "" } as EventData : undefined,
+    })));
+  }, [apiFetch]);
+
   useEffect(() => {
     if (!token) {
       setCart([]);
       setOrders([]);
       setPurchasedTickets([]);
+      setSoldTickets([]);
       return;
     }
     void (async () => {
       try {
-        const [cartData, ordersData, ticketsData] = await Promise.all([
+        const [cartData, ordersData, ticketsData, soldData] = await Promise.all([
           apiFetch<Array<{ id: string; quantity: number; seatIds?: string[]; ticketType?: { id: string; name: string; price: number; serviceFee: number } }>>("/api/cart"),
           apiFetch<Array<{ id: string; orderNumber?: string; createdAt: string; total: number; subtotal?: number; serviceFees?: number; status?: string }>>("/api/orders"),
           apiFetch<Array<{ id: string; purchasedAt?: string; quantity: number; seatIds?: string[]; ticketType?: { id: string; name: string; price: number; serviceFee: number }; event?: Partial<EventData>; isSecuredOnChain?: boolean; isForSale?: boolean; contractAddress?: string; ticketRootId?: number; version?: number; ownerWallet?: string }>>("/api/tickets"),
+          apiFetch<Array<{ id: string; soldAt: string; resalePrice: number; contractAddress?: string; ticketRootId?: number; version?: number; ticketType?: { id: string; name: string; price: number }; event?: Partial<EventData> }>>("/api/tickets/sold"),
         ]);
 
         setCart(
@@ -213,36 +272,20 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
           }))
         );
 
-        setPurchasedTickets(
-          ticketsData.map((ticket) => ({
-            id: ticket.id,
-            event: { ...ticket.event, image: (ticket.event as any)?.posterImage || (ticket.event as any)?.bannerImage || ticket.event?.image || "" , bannerImage: (ticket.event as any)?.bannerImage || (ticket.event as any)?.posterImage || ticket.event?.bannerImage || "" } as EventData,
-            ticketType: {
-              id: ticket.ticketType?.id ?? "unknown",
-              name: ticket.ticketType?.name ?? "Boleta",
-              price: ticket.ticketType?.price ?? 0,
-              serviceFee: ticket.ticketType?.serviceFee ?? 0,
-              available: 0,
-              maxPerOrder: 10,
-            },
-            quantity: ticket.quantity,
-            seats: ticket.seatIds,
-            purchasedAt: ticket.purchasedAt ?? new Date().toISOString(),
-            isSecuredOnChain: ticket.isSecuredOnChain,
-            isForSale: ticket.isForSale,
-            contractAddress: ticket.contractAddress,
-            ticketRootId: ticket.ticketRootId,
-            version: ticket.version,
-            ownerWallet: ticket.ownerWallet,
-          }))
-        );
+        setPurchasedTickets(mapTicketsResponse(ticketsData));
+
+        setSoldTickets(soldData.map((t) => ({
+          ...t,
+          event: t.event ? { ...t.event, image: (t.event as any)?.posterImage || (t.event as any)?.bannerImage || t.event?.image || "", bannerImage: (t.event as any)?.bannerImage || (t.event as any)?.posterImage || t.event?.bannerImage || "" } as EventData : undefined,
+        })));
       } catch {
         setCart([]);
         setOrders([]);
         setPurchasedTickets([]);
+        setSoldTickets([]);
       }
     })();
-  }, [apiFetch, token, user]);
+  }, [apiFetch, token, user, mapTicketsResponse]);
 
   const addToCart = useCallback(
     async (item: Omit<CartItem, "id">) => {
@@ -323,34 +366,8 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       setCart([]);
 
       // Refresh real tickets and orders from API to get DB UUIDs
-      const [ticketsData, ordersData] = await Promise.all([
-        apiFetch<Array<{ id: string; purchasedAt?: string; quantity: number; seatIds?: string[]; ticketType?: { id: string; name: string; price: number; serviceFee: number }; event?: Partial<EventData>; isSecuredOnChain?: boolean; isForSale?: boolean; contractAddress?: string; ticketRootId?: number; version?: number; ownerWallet?: string }>>("/api/tickets"),
-        apiFetch<Array<{ id: string; orderNumber?: string; createdAt: string; total: number; subtotal?: number; serviceFees?: number; status?: string }>>("/api/orders"),
-      ]);
-
-      setPurchasedTickets(
-        ticketsData.map((ticket) => ({
-          id: ticket.id,
-          event: { ...ticket.event, image: (ticket.event as any)?.posterImage || (ticket.event as any)?.bannerImage || ticket.event?.image || "", bannerImage: (ticket.event as any)?.bannerImage || (ticket.event as any)?.posterImage || ticket.event?.bannerImage || "" } as EventData,
-          ticketType: {
-            id: ticket.ticketType?.id ?? "unknown",
-            name: ticket.ticketType?.name ?? "Boleta",
-            price: ticket.ticketType?.price ?? 0,
-            serviceFee: ticket.ticketType?.serviceFee ?? 0,
-            available: 0,
-            maxPerOrder: 10,
-          },
-          quantity: ticket.quantity,
-          seats: ticket.seatIds,
-          purchasedAt: ticket.purchasedAt ?? new Date().toISOString(),
-          isSecuredOnChain: ticket.isSecuredOnChain,
-          isForSale: ticket.isForSale,
-          contractAddress: ticket.contractAddress,
-          ticketRootId: ticket.ticketRootId,
-          version: ticket.version,
-          ownerWallet: ticket.ownerWallet,
-        }))
-      );
+      const ordersData = await apiFetch<Array<{ id: string; orderNumber?: string; createdAt: string; total: number; subtotal?: number; serviceFees?: number; status?: string }>>("/api/orders");
+      await refreshTickets();
 
       setOrders(
         ordersData.map((o) => ({
@@ -552,12 +569,21 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
           method: "POST",
           body: JSON.stringify({ signedXdr }),
         });
+
+        // Refresh balance and schedule ticket list refresh (indexer needs ~5-7s)
+        setBalanceVersion((v) => v + 1);
+        void (async () => {
+          await new Promise((r) => setTimeout(r, 7000));
+          await refreshTickets().catch(() => {});
+          await refreshSoldTickets().catch(() => {});
+        })();
+
         return { success: true, txHash: submitResult.txHash };
       } catch (error: any) {
         return { success: false, error: error.message || "Error comprando ticket" };
       }
     },
-    [apiFetch]
+    [apiFetch, refreshTickets, refreshSoldTickets]
   );
 
   const linkWallet = useCallback(
@@ -576,8 +602,10 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         cart,
         orders,
         purchasedTickets,
+        soldTickets,
         user,
         isLoggedIn,
+        balanceVersion,
         addToCart,
         removeFromCart,
         updateCartQuantity,
@@ -592,6 +620,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         cancelResaleListing,
         buyResaleTicket,
         linkWallet,
+        refreshTickets,
         walletAddress,
         setWalletAddress,
         lastOrder,

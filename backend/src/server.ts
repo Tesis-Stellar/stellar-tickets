@@ -71,6 +71,18 @@ function authMiddleware(req: Request, res: Response, next: NextFunction) {
 app.use(cors());
 app.use(express.json());
 
+// ── In-memory cache (avoids repeated Supabase round-trips ~150ms each) ──
+const cache = new Map<string, { data: any; expires: number }>();
+function cached<T>(key: string, ttlMs: number, fn: () => Promise<T>): Promise<T> {
+  const hit = cache.get(key);
+  if (hit && Date.now() < hit.expires) return Promise.resolve(hit.data as T);
+  return fn().then((data) => { cache.set(key, { data, expires: Date.now() + ttlMs }); return data; });
+}
+function invalidateCache(prefix?: string) {
+  if (!prefix) { cache.clear(); return; }
+  for (const key of cache.keys()) { if (key.startsWith(prefix)) cache.delete(key); }
+}
+
 // Basic health check
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', service: 'stellar-tickets-backend' });
@@ -141,11 +153,9 @@ const eventIncludes = {
 // GET /api/events - List published events
 app.get('/api/events', async (req, res) => {
   try {
-    const events = await prisma.events.findMany({
-      where: { status: 'PUBLISHED' },
-      include: eventIncludes,
-      orderBy: { starts_at: 'asc' }
-    });
+    const events = await cached('events:all', 60_000, () =>
+      prisma.events.findMany({ where: { status: 'PUBLISHED' }, include: eventIncludes, orderBy: { starts_at: 'asc' } })
+    );
     res.json(events.map(toEventDto));
   } catch (error: any) {
     console.error(error);
@@ -156,12 +166,9 @@ app.get('/api/events', async (req, res) => {
 // GET /api/events/featured - Featured events
 app.get('/api/events/featured', async (req, res) => {
   try {
-    const events = await prisma.events.findMany({
-      where: { status: 'PUBLISHED' },
-      include: eventIncludes,
-      orderBy: { starts_at: 'asc' },
-      take: 6,
-    });
+    const events = await cached('events:featured', 60_000, () =>
+      prisma.events.findMany({ where: { status: 'PUBLISHED' }, include: eventIncludes, orderBy: { starts_at: 'asc' }, take: 6 })
+    );
     res.json(events.map(toEventDto));
   } catch (error: any) {
     console.error(error);
@@ -172,17 +179,17 @@ app.get('/api/events/featured', async (req, res) => {
 // GET /api/events/:slug - Event details
 app.get('/api/events/:slug', async (req, res) => {
   try {
-    const event = await prisma.events.findFirst({
-      where: { slug: req.params.slug },
-      include: eventIncludes,
-    });
+    const slug = req.params.slug;
+    const event = await cached(`events:slug:${slug}`, 30_000, () =>
+      prisma.events.findFirst({ where: { slug }, include: eventIncludes })
+    );
 
     if (!event) {
       res.status(404).json({ error: 'Evento no encontrado' });
       return;
     }
 
-    // Fetch live ticket data mapped from Web3 contract via indexer
+    // Live tickets are NOT cached (change frequently with resale)
     let live_tickets: any[] = [];
     if (event.contract_address) {
        const rawTickets = await prisma.tickets.findMany({
@@ -201,7 +208,17 @@ app.get('/api/events/:slug', async (req, res) => {
        }));
     }
 
-    res.json({ ...toEventDto(event), live_tickets, contractAddress: event.contract_address });
+    // Include ticket types in detail response to avoid extra API call
+    const ticketTypes = (event.event_ticket_types ?? []).map((t: any) => ({
+      id: t.id,
+      name: t.ticket_type_name,
+      price: Number(t.price_amount),
+      serviceFee: Number(t.service_fee_amount),
+      availability: t.inventory_quantity ?? 0,
+      maxPerOrder: t.max_per_order ?? 10,
+    }));
+
+    res.json({ ...toEventDto(event), live_tickets, contractAddress: event.contract_address, ticketTypes });
   } catch (error: any) {
     console.error(error);
     res.status(500).json({ error: error.message });
@@ -224,14 +241,18 @@ app.get('/api/events/:id/ticket-types', async (req, res) => {
 // GET /api/events/:id/related - Related events (same category)
 app.get('/api/events/:id/related', async (req, res) => {
   try {
-    const event = await prisma.events.findUnique({ where: { id: req.params.id }, select: { category_id: true } });
-    if (!event) { res.json([]); return; }
-    const related = await prisma.events.findMany({
-      where: { category_id: event.category_id, status: 'PUBLISHED', id: { not: req.params.id } },
-      include: eventIncludes,
-      take: 4,
+    const id = req.params.id;
+    const result = await cached(`events:related:${id}`, 60_000, async () => {
+      const event = await prisma.events.findUnique({ where: { id }, select: { category_id: true } });
+      if (!event) return [];
+      const related = await prisma.events.findMany({
+        where: { category_id: event.category_id, status: 'PUBLISHED', id: { not: id } },
+        include: eventIncludes,
+        take: 4,
+      });
+      return related.map(toEventDto);
     });
-    res.json(related.map(toEventDto));
+    res.json(result);
   } catch (error: any) {
     console.error(error);
     res.status(500).json({ error: error.message });
@@ -1151,6 +1172,72 @@ app.get('/api/tickets', authMiddleware, async (req, res) => {
     }));
   } catch (error: any) {
     console.error('[TICKETS] GET error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/tickets/sold — tickets the user sold via resale
+app.get('/api/tickets/sold', authMiddleware, async (req, res) => {
+  try {
+    const userId = (req as any).userId;
+    // Sold tickets = CANCELLED + had a resale_price (distinguishes from invalidated)
+    const tickets = await prisma.tickets.findMany({
+      where: {
+        owner_user_id: userId,
+        status: 'CANCELLED',
+        resale_price: { not: null },
+      },
+      include: {
+        order_items: {
+          include: {
+            event_ticket_types: {
+              include: { events: { include: eventIncludes } },
+            },
+          },
+        },
+      },
+      orderBy: { updated_at: 'desc' },
+    });
+
+    // For each sold ticket, find the buyer (next version of same ticket_root_id)
+    const results = await Promise.all(tickets.map(async (t) => {
+      const tt = t.order_items?.event_ticket_types;
+      const evt = tt?.events;
+
+      // The buyer is the owner of the next version
+      let buyerWallet: string | null = null;
+      if (t.contract_address && t.ticket_root_id != null && t.version != null) {
+        const nextVersion = await prisma.tickets.findFirst({
+          where: {
+            contract_address: t.contract_address,
+            ticket_root_id: t.ticket_root_id,
+            version: t.version + 1,
+          },
+          select: { owner_wallet: true },
+        });
+        buyerWallet = nextVersion?.owner_wallet ?? null;
+      }
+
+      return {
+        id: t.id,
+        ticketCode: t.ticket_code,
+        soldAt: t.updated_at.toISOString(),
+        resalePrice: Number(t.resale_price),
+        contractAddress: t.contract_address,
+        ticketRootId: t.ticket_root_id,
+        version: t.version,
+        buyerWallet,
+        ticketType: tt ? {
+          id: tt.id,
+          name: tt.ticket_type_name,
+          price: Number(tt.price_amount),
+        } : undefined,
+        event: evt ? toEventDto(evt) : undefined,
+      };
+    }));
+    res.json(results);
+  } catch (error: any) {
+    console.error('[TICKETS/SOLD] GET error:', error);
     res.status(500).json({ error: error.message });
   }
 });

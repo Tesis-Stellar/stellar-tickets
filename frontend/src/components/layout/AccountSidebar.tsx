@@ -1,11 +1,12 @@
 import { Link, useLocation } from "react-router-dom";
-import { Ticket, ShoppingBag, User, Settings, LogOut } from "lucide-react";
+import { Ticket, ShoppingBag, User, Settings, LogOut, ArrowRightLeft } from "lucide-react";
 import { useAppContext } from "@/context/AppContext";
 
 const links = [
   { to: "/mi-cuenta", label: "Panel", icon: Settings, exact: true },
   { to: "/mi-cuenta/entradas", label: "Mis Entradas", icon: Ticket },
   { to: "/mi-cuenta/compras", label: "Mis Compras", icon: ShoppingBag },
+  { to: "/mi-cuenta/ventas-p2p", label: "Mis Ventas P2P", icon: ArrowRightLeft },
   { to: "/mi-cuenta/perfil", label: "Mi Perfil", icon: User },
 ];
 
