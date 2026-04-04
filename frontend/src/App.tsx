@@ -9,6 +9,8 @@ import EventDetail from "./pages/EventDetail";
 import EventsList from "./pages/EventsList";
 import SearchResults from "./pages/SearchResults";
 import TicketPurchase from "./pages/TicketPurchase";
+import AdminDashboard from "./pages/AdminDashboard";
+import { ScannerPage } from "./pages/Scanner";
 import SeatSelection from "./pages/SeatSelection";
 import Cart from "./pages/Cart";
 import Checkout from "./pages/Checkout";
@@ -40,6 +42,7 @@ const App = () => (
             <Route path="/evento/:id" element={<EventDetail />} />
             <Route path="/evento/:id/boletas" element={<TicketPurchase />} />
             <Route path="/evento/:id/asientos" element={<SeatSelection />} />
+            <Route path="/admin" element={<AdminDashboard />} />
             <Route path="/carrito" element={<Cart />} />
             <Route path="/checkout" element={<Checkout />} />
             <Route path="/confirmacion" element={<Confirmation />} />
@@ -50,6 +53,7 @@ const App = () => (
             <Route path="/mi-cuenta/compras" element={<PurchaseHistory />} />
             <Route path="/mi-cuenta/perfil" element={<Profile />} />
             <Route path="/mi-cuenta/ventas-p2p" element={<MySalesP2P />} />
+            <Route path="/escanear" element={<ScannerPage />} />
             <Route path="/contactanos" element={<Contact />} />
             <Route path="*" element={<NotFound />} />
           </Routes>

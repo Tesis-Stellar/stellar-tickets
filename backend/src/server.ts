@@ -15,6 +15,10 @@ import {
 } from '@stellar/stellar-sdk';
 import { rpc as SorobanRpc } from '@stellar/stellar-sdk';
 import { runIndexer } from './indexer';
+import { exec } from 'child_process';
+import util from 'util';
+
+const execPromise = util.promisify(exec);
 
 dotenv.config();
 
@@ -39,7 +43,7 @@ const ORGANIZER_SECRET = process.env.ORGANIZER_SECRET;
 const organizerKeypair = ORGANIZER_SECRET ? Keypair.fromSecret(ORGANIZER_SECRET) : null;
 
 // Helper: build user DTO for frontend
-function toUserDto(user: { id: string; first_name: string; last_name: string; email: string; phone: string | null; document_type: string; document_number: string; wallet_address?: string | null }) {
+function toUserDto(user: { id: string; first_name: string; last_name: string; email: string; phone: string | null; document_type: string; document_number: string; wallet_address?: string | null; role?: string }) {
   return {
     id: user.id,
     firstName: user.first_name,
@@ -49,6 +53,7 @@ function toUserDto(user: { id: string; first_name: string; last_name: string; em
     documentType: user.document_type,
     documentNumber: user.document_number,
     walletAddress: user.wallet_address ?? null,
+    role: user.role || 'CUSTOMER',
   };
 }
 
@@ -712,6 +717,184 @@ app.post('/api/transactions/submit', authMiddleware, async (req, res) => {
     res.json({ success: true, txHash: sendResponse.hash });
   } catch (error: any) {
     console.error('[SOROBAN] submit error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// --- ADMIN ENDPOINTS (Restringido) ---
+app.get('/api/admin/venues', authMiddleware, async (req, res) => {
+  try {
+    const user = await prisma.users.findUnique({ where: { id: (req as any).userId } });
+    if (user?.role !== 'ADMIN') { res.status(403).json({ error: 'Acceso denegado' }); return; }
+
+    const venues = await prisma.venues.findMany({ include: { venue_sections: true } });
+    res.json(venues.map(v => ({
+      id: v.id,
+      name: v.name,
+      type: v.venue_type,
+      address: v.address_line,
+      sections: v.venue_sections.map(s => ({
+        id: s.id,
+        name: s.section_name,
+        capacity: s.capacity
+      }))
+    })));
+  } catch (error: any) { res.status(500).json({ error: error.message }); }
+});
+
+// POST /api/admin/scan — Redeem a ticket
+app.post('/api/admin/scan', authMiddleware, async (req, res) => {
+  try {
+    const user = await prisma.users.findUnique({ where: { id: (req as any).userId } });
+    if (!user || !['ADMIN', 'STAFF'].includes(user.role)) { res.status(403).json({ error: 'Acceso denegado' }); return; }
+
+    const { ticketId } = req.body;
+    if (!ticketId) { res.status(400).json({ error: 'ticketId es requerido' }); return; }
+
+    // Check if the ticket exists
+    const ticket = await prisma.tickets.findUnique({ where: { id: ticketId } });
+    
+    if (!ticket) {
+      res.status(404).json({ error: 'Boleto no encontrado en la base de datos' });
+      return;
+    }
+
+    if (ticket.status !== 'ACTIVE') {
+      res.status(400).json({ error: `Boleto inhabilitado: ${ticket.status}` });
+      return;
+    }
+
+    // In a real Web3 environment, if ticket.contract_address exists, we'd trigger a Soroban burn here via CLI
+    // For this simulation/hybrid speed, we update Postgres linearly to avoid gate delays.
+    await prisma.tickets.update({
+       where: { id: ticket.id },
+       data: { status: 'CANCELLED' } // 'CANCELLED' is the generic inactive state in Prisma schema for this thesis demo
+    });
+
+    res.json({ success: true, message: 'Boleto redimido exitosamente' });
+  } catch (error: any) {
+    console.error('[SCAN] Error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/admin/contracts
+app.get('/api/admin/contracts', authMiddleware, async (req, res) => {
+  try {
+    const user = await prisma.users.findUnique({ where: { id: (req as any).userId } });
+    if (!user || user.role !== 'ADMIN') { res.status(403).json({ error: 'Acceso denegado' }); return; }
+
+    const factoryId = process.env.FACTORY_CONTRACT_ID || '';
+    
+    // Fetch events that have a deployed contract
+    const deployedEvents = await prisma.events.findMany({
+      where: { contract_address: { not: null } },
+      select: {
+        id: true,
+        title: true,
+        contract_address: true,
+        created_at: true,
+      },
+      orderBy: { created_at: 'desc' }
+    });
+
+    res.json({
+      factoryContractId: factoryId,
+      events: deployedEvents
+    });
+  } catch (error: any) { res.status(500).json({ error: error.message }); }
+});
+
+app.get('/api/admin/events', authMiddleware, async (req, res) => {
+  try {
+    const user = await prisma.users.findUnique({ where: { id: (req as any).userId } });
+    if (user?.role !== 'ADMIN') { res.status(403).json({ error: 'Acceso denegado' }); return; }
+
+    const events = await prisma.events.findMany({
+      include: eventIncludes,
+      orderBy: { created_at: 'desc' }
+    });
+    res.json(events.map(toEventDto));
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/admin/events', authMiddleware, async (req, res) => {
+  try {
+    const user = await prisma.users.findUnique({ where: { id: (req as any).userId } });
+    if (user?.role !== 'ADMIN') { res.status(403).json({ error: 'Acceso denegado' }); return; }
+
+    const { title, slug, category_id, date, venue_id, sections } = req.body;
+    
+    // Hardcode organizer for MVP
+    const organizer = await prisma.organizers.findFirst();
+    const firstCat = await prisma.event_categories.findFirst();
+
+    const newEvent = await prisma.events.create({
+      data: {
+        title,
+        slug,
+        category_id: category_id || firstCat?.id || 'cat-1-concert',
+        status: 'PUBLISHED',
+        starts_at: new Date(date),
+        ends_at: new Date(new Date(date).getTime() + 4 * 60 * 60 * 1000), // +4 horas
+        organizer_id: organizer!.id,
+        venue_id: venue_id,
+      }
+    });
+
+    if (sections && Array.isArray(sections)) {
+      for (const s of sections) {
+        await prisma.event_ticket_types.create({
+          data: {
+            event_id: newEvent.id,
+            venue_section_id: s.id,
+            ticket_type_name: s.name,
+            description: `Boleto habilitado para ${s.name}`,
+            price_amount: s.price || 0,
+            service_fee_amount: (s.price || 0) * 0.10, // 10% fee
+            inventory_quantity: s.capacity,
+            is_active: true,
+          }
+        });
+      }
+    }
+
+    invalidateCache('events:');
+    res.json({ success: true, eventId: newEvent.id });
+  } catch (error: any) {
+    console.error('[ADMIN] Create event error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/admin/events/:id/deploy', authMiddleware, async (req, res) => {
+  try {
+    const user = await prisma.users.findUnique({ where: { id: (req as any).userId } });
+    if (user?.role !== 'ADMIN') { res.status(403).json({ error: 'Acceso denegado' }); return; }
+
+    const eventId = req.params.id as string;
+    const event = await prisma.events.findUnique({ where: { id: eventId } });
+    if (!event) { res.status(404).json({ error: 'Evento no encontrado' }); return; }
+    if (event.contract_address) { res.status(400).json({ error: 'El evento ya tiene contrato' }); return; }
+
+    // Run the Soroban deploy script inside Node Environment
+    const { stdout, stderr } = await execPromise('npx tsx scripts/deploy-contracts.ts', { cwd: require('path').resolve(__dirname, '..') });
+    console.log(`[ADMIN] Deploy Output:\n${stdout}`);
+    if (stderr) console.error(`[ADMIN] Deploy Stderr:\n${stderr}`);
+
+    // Wait to let prisma updates settle
+    await new Promise(r => setTimeout(r, 2000));
+    
+    const updatedEvent = await prisma.events.findUnique({ where: { id: eventId } });
+    res.json({ 
+      success: !!updatedEvent?.contract_address, 
+      contractAddress: updatedEvent?.contract_address,
+      log: stdout || ''
+    });
+  } catch (error: any) {
+    console.error('[ADMIN] Deploy event error:', error);
     res.status(500).json({ error: error.message });
   }
 });

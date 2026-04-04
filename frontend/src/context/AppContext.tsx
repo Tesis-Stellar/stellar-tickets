@@ -13,6 +13,7 @@ export interface CartItem {
 /* ── Purchased ticket ── */
 export interface PurchasedTicket {
   id: string;
+  ticketCode?: string;
   event: EventData;
   ticketType: TicketType;
   quantity: number;
@@ -66,6 +67,7 @@ export interface UserData {
   phone: string;
   document: string;
   documentType: "CC" | "CE" | "TI" | "PP";
+  role: "CUSTOMER" | "ADMIN" | "STAFF";
 }
 
 interface AppState {
@@ -94,6 +96,7 @@ interface AppState {
   walletAddress: string | null;
   setWalletAddress: (address: string | null) => void;
   lastOrder: OrderData | null;
+  apiFetch: <T>(path: string, init?: RequestInit) => Promise<T>;
 }
 
 const AppContext = createContext<AppState | null>(null);
@@ -143,6 +146,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       phone: string;
       documentType: "CC" | "CE" | "TI" | "PP";
       documentNumber: string;
+      role?: string;
     }): UserData => ({
       id: raw.id,
       name: `${raw.firstName} ${raw.lastName}`.trim(),
@@ -152,6 +156,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       phone: raw.phone,
       document: raw.documentNumber,
       documentType: raw.documentType,
+      role: (raw.role as "CUSTOMER" | "ADMIN" | "STAFF") || "CUSTOMER",
     }),
     []
   );
@@ -167,6 +172,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         documentType: "CC" | "CE" | "TI" | "PP";
         documentNumber: string;
         walletAddress?: string | null;
+        role?: string;
       }>("/api/users/me");
       setUser(normalizeUser(profile));
       if (profile.walletAddress) setWalletAddress(profile.walletAddress);
@@ -187,6 +193,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       ticketsData.map((ticket) => ({
         id: ticket.id,
         event: { ...ticket.event, image: (ticket.event as any)?.posterImage || (ticket.event as any)?.bannerImage || ticket.event?.image || "", bannerImage: (ticket.event as any)?.bannerImage || (ticket.event as any)?.posterImage || ticket.event?.bannerImage || "" } as EventData,
+        ticketCode: (ticket as any)?.ticketCode,
         ticketType: {
           id: ticket.ticketType?.id ?? "unknown",
           name: ticket.ticketType?.name ?? "Boleta",
@@ -624,6 +631,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         walletAddress,
         setWalletAddress,
         lastOrder,
+        apiFetch,
       }}
     >
       {children}

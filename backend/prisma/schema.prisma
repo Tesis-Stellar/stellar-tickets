@@ -371,6 +371,7 @@ enum event_status {
 enum user_role {
   CUSTOMER
   ADMIN
+  STAFF
 
   @@schema("ticketing")
 }

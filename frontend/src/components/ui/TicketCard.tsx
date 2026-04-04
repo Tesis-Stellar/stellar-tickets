@@ -1,4 +1,5 @@
 import { QrCode, MapPin, Calendar, ShieldCheck, Lock, ExternalLink, Tag } from "lucide-react";
+import { QRCodeCanvas } from "qrcode.react";
 import type { PurchasedTicket } from "@/context/AppContext";
 import { useAppContext } from "@/context/AppContext";
 import { useState } from "react";
@@ -156,12 +157,18 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
           </button>
         )}
       </div>
-      {/* QR placeholder */}
-      <div className="flex items-center justify-center sm:border-l sm:border-border sm:pl-4">
-        <div className="w-20 h-20 bg-secondary rounded-lg flex flex-col items-center justify-center gap-1">
-          <QrCode className="w-8 h-8 text-muted-foreground" />
-          <span className="text-[9px] text-muted-foreground font-medium">Codigo QR</span>
+      {/* Real QR */}
+      <div className="flex flex-col items-center justify-center sm:border-l sm:border-border sm:pl-4 min-w-[120px]">
+        <div className="p-2 bg-white rounded-lg shadow-sm">
+          <QRCodeCanvas 
+             value={JSON.stringify({ ticketId: ticket.id, code: ticket.ticketCode || ticket.id })} 
+             size={80} 
+             level={"H"}
+             bgColor={"#ffffff"}
+             fgColor={"#000000"}
+          />
         </div>
+        <span className="text-[10px] text-muted-foreground font-bold mt-2 uppercase tracking-tight">{ticket.ticketCode?.slice(0, 10) || "QR-CODE"}</span>
       </div>
     </div>
   );
