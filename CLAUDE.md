@@ -155,9 +155,9 @@ npm start                     # Run compiled output
 - `GET /health` — Health check
 - `GET /api/events` — List PUBLISHED events (transformed: category, city, venue, organizer, minPrice, startsAt)
 - `GET /api/events/featured` — Top 6 events
-- `GET /api/events/:slug` — Event detail + `live_tickets` (Web3 tickets with is_for_sale=true)
+- `GET /api/events/:slug` — Event detail + `live_tickets` (Web3 tickets with is_for_sale=true) + `ticketTypes` (formatted, eliminates extra call). Cached 30s.
 - `GET /api/events/:id/ticket-types` — Ticket types for an event
-- `GET /api/events/:id/related` — Related events (same category, max 4)
+- `GET /api/events/:id/related` — Related events (same category, max 4). Cached 60s.
 - `POST /api/transactions/buy` — **XDR Builder**: returns unsigned transaction payload for Freighter signing
 - `POST /api/transactions/secure-ticket` — **Soroban on-chain registration**: calls `crear_boleto` on event contract (organizer-signed server-side), updates DB with `contract_address`, `ticket_root_id`, `version`, `owner_wallet` (user's wallet, not organizer's). Returns `{txHash, contractAddress, ticketRootId}`. Auth required.
 - `POST /api/transactions/list-ticket` — **Soroban list for resale**: calls `listar_boleto` on-chain (organizer-signed). Accepts `{ticketId, price}` (price in stroops). Updates DB `is_for_sale = true`, `resale_price`, `owner_wallet`. Auth required.
@@ -187,6 +187,9 @@ npm start                     # Run compiled output
 **Order & ticket endpoints (real, auth required):**
 - `GET /api/orders` — User's order history `{id, orderNumber, createdAt, total, subtotal, serviceFees, status}`
 - `GET /api/tickets` — User's active tickets with event + ticketType data + Web3 fields (`isSecuredOnChain`, `contractAddress`, `ticketRootId`, `version`, `ownerWallet`)
+- `GET /api/tickets/sold` — Tickets the user sold via P2P resale (status CANCELLED + resale_price not null). Includes `buyerWallet` (looked up from next version of same ticket_root_id), `resalePrice` (stroops), event + ticketType data. Auth required.
+
+**Performance: In-memory cache** — `cached(key, ttlMs, fn)` helper caches DB results in a Map. `invalidateCache(prefix?)` clears entries. Events list + featured cached 60s, event detail 30s, related 60s. Live tickets (resale) are NOT cached. `connection_limit=5` in DATABASE_URL (was 1, caused pool timeouts).
 
 ### Indexer (indexer.ts)
 
@@ -197,8 +200,8 @@ Polls Soroban RPC every 5 seconds. Processes events from all contracts with `con
 | `boleto_creado` | Create ticket record if not already tracked |
 | `boleto_listado` | Set `is_for_sale = true` |
 | `venta_cancelada` | Set `is_for_sale = false` |
-| `boleto_comprado_primario` | Update owner (primary sale, no version bump) |
-| `boleto_revendido` | Cancel old version, create new version with new owner |
+| `boleto_comprado_primario` | If ticket has `resale_price` (P2P sale): cancel seller ticket + create new ticket for buyer (version+1, copies `order_item_id`). Otherwise: update owner in-place (normal primary sale) |
+| `boleto_revendido` | Cancel old version (preserves `resale_price`), create new version with new owner (copies `order_item_id`) |
 | `boleto_redimido` | Set status = USED |
 | `boleto_invalidado_evt` | Set status = CANCELLED |
 
@@ -255,36 +258,44 @@ npm run test          # Vitest
 npm run lint          # ESLint
 ```
 
-### Routing (20 routes)
+### Routing (21 routes)
 
-`/`, `/eventos`, `/eventos/:category`, `/buscar`, `/evento/:id`, `/evento/:id/boletas`, `/evento/:id/asientos`, `/carrito`, `/checkout`, `/confirmacion`, `/login`, `/registro`, `/mi-cuenta`, `/mi-cuenta/entradas`, `/mi-cuenta/compras`, `/mi-cuenta/perfil`, `/contactanos`, `*` (404)
+`/`, `/eventos`, `/eventos/:category`, `/buscar`, `/evento/:id`, `/evento/:id/boletas`, `/evento/:id/asientos`, `/carrito`, `/checkout`, `/confirmacion`, `/login`, `/registro`, `/mi-cuenta`, `/mi-cuenta/entradas`, `/mi-cuenta/compras`, `/mi-cuenta/ventas-p2p`, `/mi-cuenta/perfil`, `/contactanos`, `*` (404)
 
 ### State & API (AppContext.tsx)
 
-- React Context for cart, orders, purchased tickets, user data, JWT auth
+- React Context for cart, orders, purchased tickets, sold tickets, user data, JWT auth
 - `apiFetch<T>(path, init?)` — Centralized fetch with Bearer token from `localStorage.authToken`
 - `VITE_API_BASE_URL` (defaults to `http://localhost:3000`)
 - API calls: auth (login/register/me), cart CRUD, checkout (preview/confirm), orders, tickets, `secureTicketOnChain`, `listTicketForSale`, `cancelResaleListing`, `buyResaleTicket`, `linkWallet`
 - `walletAddress` / `setWalletAddress` — Shared wallet state. Loaded from user profile (`/api/users/me` returns `walletAddress`) on login/refresh, AND from Freighter on connect. Consumed by EventDetail for resale purchases and seller detection.
-- Checkout refreshes tickets from `GET /api/tickets` after confirm to get real DB UUIDs (no more fake `ticket-xxx` IDs)
+- `soldTickets` — `SoldTicket[]` state fetched from `GET /api/tickets/sold`. Each has `buyerWallet`, `resalePrice` (stroops), event data.
+- `refreshTickets()` / `refreshSoldTickets()` — Reusable callbacks to re-fetch ticket lists. Called with 7s delay after `buyResaleTicket` (indexer polling cycle).
+- `balanceVersion` — Counter incremented after buy/list/cancel, triggers ConnectWallet to re-fetch XLM balance from Horizon.
+- `mapTicketsResponse()` — Extracted helper for ticket mapping (de-duplicated from initial load + checkout).
+- Checkout refreshes tickets via `refreshTickets()` after confirm to get real DB UUIDs (no more fake `ticket-xxx` IDs)
 
 ### Key components
 
 **Web3 integration:**
-- `ConnectWallet.tsx` — **Only renders when user is logged in.** Freighter wallet connection via dynamic import. Uses Freighter v6 API (`isConnected`, `isAllowed`, `getAddress`, `requestAccess`). Auto-links wallet to backend on connect via `linkWallet()`. Handles 409 (wallet already linked to another account) with user-friendly alert. All Freighter v6 responses are objects (e.g., `{ isConnected: bool }`, `{ address: string }`), not primitives.
+- `ConnectWallet.tsx` — **Only renders when user is logged in.** Freighter wallet connection via dynamic import. Uses Freighter v6 API (`isConnected`, `isAllowed`, `getAddress`, `requestAccess`). Auto-links wallet to backend on connect via `linkWallet()`. Handles 409 (wallet already linked to another account) with user-friendly alert. Shows XLM balance + COP equivalent (via `useXlmPrice` hook). Balance refreshes on `balanceVersion` change.
 - `TicketCard.tsx` — "Asegurar en Blockchain" button calls `POST /api/transactions/secure-ticket` → real Soroban `crear_boleto` → shows "Asegurado en Blockchain" badge + Stellar Explorer link. "Revender NFT" button calls `POST /api/transactions/list-ticket` → shows "En Venta" badge + **"Cancelar Reventa"** button (calls `cancelResaleListing`).
-- `EventDetail.tsx` — "Reventa P2P Segura" section shows live tickets with **resale price in XLM**. If `walletAddress === sellerWallet`: shows **"Cancelar Reventa"** (red button). Otherwise: shows "Comprar" button → `buyResaleTicket` → backend builds XDR → Freighter signs → backend submits to Soroban.
-- `AppContext.tsx` — `secureTicketOnChain`, `listTicketForSale`, `cancelResaleListing`, `buyResaleTicket`, `linkWallet` functions. `PurchasedTicket` type includes Web3 fields (`isSecuredOnChain`, `isForSale`, `contractAddress`, `ticketRootId`, `version`, `ownerWallet`). `walletAddress` loaded from user profile AND Freighter.
+- `EventDetail.tsx` — "Reventa P2P Segura" section shows live tickets with **resale price in XLM + COP equivalent**. If `walletAddress === sellerWallet`: shows **"Cancelar Reventa"** (red button). Otherwise: shows "Comprar" button → `buyResaleTicket` → backend builds XDR → Freighter signs → backend submits to Soroban. Uses `ticketTypes` from detail response (avoids extra API call).
+- `AppContext.tsx` — `secureTicketOnChain`, `listTicketForSale`, `cancelResaleListing`, `buyResaleTicket`, `linkWallet`, `refreshTickets` functions. `PurchasedTicket` and `SoldTicket` types. `walletAddress` loaded from user profile AND Freighter.
 
 **Layout:** Header (nav + ConnectWallet), Footer, HeroSearch, CategorySection, AccountSidebar
 
 **UI:** EventCard, TicketCard, TicketSelector, SeatMap (3 sections: VIP/Platea/General), BannerCarousel, FilterPanel, PromoStrip, CheckoutStepper
 
-**Pages:** Index (home + featured), EventsList (filter/search), EventDetail, TicketPurchase, SeatSelection, Cart, Checkout (3-step), Confirmation, Account, MyTickets, PurchaseHistory, Profile, Login, Register, Contact, SearchResults, NotFound
+**Hooks:**
+- `useXlmPrice.ts` — Fetches XLM/COP price from CoinGecko API, cached in localStorage for 5 minutes. Exports `useXlmPrice()` (returns COP price or null), `formatCOP(amount)`, `stroopsToXLM(stroops)`.
+
+**Pages:** Index (home + featured), EventsList (filter/search), EventDetail, TicketPurchase, SeatSelection, Cart, Checkout (3-step), Confirmation, Account, MyTickets, MySalesP2P, PurchaseHistory, Profile, Login, Register, Contact, SearchResults, NotFound
 
 ### Data fetching (src/data/events.ts)
 
 - `getEvents(filters?)`, `getFeaturedEvents()`, `getEventBySlug(slug)`, `getEventById(id)`, `getRelatedEvents(eventId)`, `getEventTicketTypes(eventId)`
+- `getEventBySlug` now uses `ticketTypes` from detail response if available (avoids extra `/ticket-types` call)
 - Maps API responses to `EventData` type (dates parsed to Spanish month names, prices formatted as COP)
 - Static banner data for carousel
 
@@ -350,8 +361,19 @@ npm run lint          # ESLint
   - **Better buy errors**: `build-buy-xdr` detects insufficient balance and returns user-friendly message.
   - **DB migration**: `resale_price BIGINT` column added to `ticketing.tickets`. Run `node --import tsx scripts/migrate-tickets.ts` from backend dir to apply (also fixes `owner_wallet`).
 
+- **Phase 3.9 (P2P sales, COP balance, performance)** — Implemented 2026-04-03:
+  - **Mis Ventas P2P page** (`/mi-cuenta/ventas-p2p`): New page showing completed P2P sales with buyer wallet address, event info, amount received in XLM + COP equivalent. Summary card with total earnings. Added to AccountSidebar + Account panel.
+  - **XLM/COP conversion**: `useXlmPrice` hook fetches XLM/COP from CoinGecko (cached 5min in localStorage). Displayed in ConnectWallet header, MySalesP2P page, and EventDetail resale prices.
+  - **Sold tickets endpoint** (`GET /api/tickets/sold`): Returns tickets with `status: CANCELLED` + `resale_price != null`. Looks up `buyerWallet` from next version of same `ticket_root_id`.
+  - **Indexer fix for P2P primary sales**: `boleto_comprado_primario` handler now detects P2P sales (ticket has `resale_price`) and cancels seller ticket + creates buyer ticket (like `boleto_revendido`). Previously it just updated owner in-place, leaving no sale record.
+  - **Indexer preserves order_item_id**: Both `boleto_comprado_primario` (P2P) and `boleto_revendido` handlers now copy `order_item_id` from old ticket to new ticket, preserving event data linkage for the buyer.
+  - **Post-purchase auto-refresh**: `refreshTickets()` and `refreshSoldTickets()` reusable callbacks. Called 7s after `buyResaleTicket` (indexer polling delay). `balanceVersion` counter triggers ConnectWallet balance re-fetch.
+  - **Backend in-memory cache**: `cached(key, ttlMs, fn)` caches events list (60s), featured (60s), event detail (30s), related (60s). Live tickets NOT cached. Reduces Supabase round-trips (~150ms each from Colombia to US West).
+  - **Event detail includes ticketTypes**: `/api/events/:slug` now returns formatted `ticketTypes`, eliminating the separate `/ticket-types` API call from frontend.
+  - **Connection pool fix**: `connection_limit=5` (was 1) in DATABASE_URL prevents Prisma pool timeouts when indexer + API compete for connections.
+  - **AppContext refactor**: Extracted `mapTicketsResponse()` helper, `refreshTickets()` callback. Checkout uses `refreshTickets()` instead of duplicated mapping code.
+
 ### Pending — NEXT SESSION START HERE
-- **Phase 3.9 (remaining UX)** — Seller sees sale confirmation and amount received after resale completes, wallet XLM balance display in header, post-purchase auto-refresh of buyer's ticket list without page reload
 - **Phase 4** — Verifier UI for check-in (`redimir_boleto` flow), E2E demo scripts, latency/cost metrics (Stroops)
 - **Phase 5** — Thesis documentation: **updated DB diagram** (new `resale_price` column), updated architecture diagrams, Web2 problem mitigation analysis, test evidence
 
@@ -360,9 +382,12 @@ npm run lint          # ESLint
 - `ORGANIZER_SECRET` env var required for on-chain ticket creation, listing, and cancel
 - **Freighter v6 API** returns objects, not primitives (e.g., `{ isConnected: bool }`, `{ address: string }`, `{ signedTxXdr: string }`). ConnectWallet only renders when logged in, auto-links wallet to backend, handles duplicate wallet (409). Other components should NOT call Freighter directly
 - **Wallet identity**: `owner_wallet` on tickets must be user's `wallet_address` (not organizer key). `toUserDto` returns `walletAddress` so frontend loads it on login. This enables seller detection in EventDetail P2P section
-- **Indexer** keeps PostgreSQL in sync with on-chain state (polls Soroban events every 5s, 7 event handlers)
+- **Indexer** keeps PostgreSQL in sync with on-chain state (polls Soroban events every 5s, 7 event handlers). P2P sales (both `boleto_comprado_primario` with `resale_price` and `boleto_revendido`) cancel old ticket + create new with `order_item_id` preserved
 - Web2 purchase flow (cart -> checkout -> order) remains intact; blockchain is an **opt-in layer** on top
 - `payments.provider_reference` stores blockchain transaction hashes
 - `tickets` table uses `(contract_address, ticket_root_id, version)` unique constraint to mirror on-chain state
 - Frontend seller detection: if `walletAddress === sellerWallet`, show "Cancelar Reventa" instead of "Comprar"
 - **DB schema changes** are applied via `backend/scripts/migrate-tickets.ts` (not prisma migrate), must be run manually
+- **Backend cache**: In-memory Map with TTL for event queries. `invalidateCache(prefix?)` to clear. Live ticket data (resale) is never cached
+- **XLM/COP price**: Frontend hook `useXlmPrice` fetches from CoinGecko, cached 5min in localStorage. Used in ConnectWallet, MySalesP2P, EventDetail. Purely informational — all on-chain values remain in XLM/stroops
+- **Connection pool**: `connection_limit=5` in DATABASE_URL (Supabase pgbouncer). Must be >1 to avoid timeouts when indexer + API run concurrently
