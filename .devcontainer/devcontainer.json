@@ -1,0 +1,27 @@
+{
+  "name": "stellar-tickets-dev",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": ".."
+  },
+  "features": {
+    "ghcr.io/devcontainers/features/node:1": {
+      "version": "20"
+    }
+  },
+  "postCreateCommand": "bash .devcontainer/postCreate.sh",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "rust-lang.rust-analyzer",
+        "tamasfe.even-better-toml",
+        "ms-vscode.vscode-typescript-next",
+        "bradlc.vscode-tailwindcss",
+        "ms-azuretools.vscode-docker",
+        "github.copilot",
+        "github.copilot-chat"
+      ]
+    }
+  },
+  "remoteUser": "vscode"
+}
