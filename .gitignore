@@ -35,11 +35,9 @@ git_log_tmp*.txt
 target/
 **/target/
 
-# Playwright / reports
-test-results/
-playwright-report/
-blob-report/
-playwright/.cache/
+# Bun
+bun.lock
+bun.lockb
 
 # Contract WASM builds (downloaded from CI)
 contracts/wasm/
