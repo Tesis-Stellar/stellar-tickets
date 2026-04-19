@@ -88,6 +88,13 @@ function invalidateCache(prefix?: string) {
   for (const key of cache.keys()) { if (key.startsWith(prefix)) cache.delete(key); }
 }
 
+// Root: API only (SPA runs on Vite, typically http://localhost:8080)
+app.get('/', (_req, res) => {
+  res.type('text').send(
+    'Stellar Tickets API. Usa GET /health o rutas /api/... . El frontend (Vite) suele estar en http://localhost:8080'
+  );
+});
+
 // Basic health check
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', service: 'stellar-tickets-backend' });
@@ -1425,10 +1432,16 @@ app.get('/api/tickets/sold', authMiddleware, async (req, res) => {
   }
 });
 
-// START THE SERVER
-app.listen(PORT, () => {
-  console.log(`[HTTP] Express server listening on http://localhost:${PORT}`);
-  
-  // Start the background indexer loop
-  runIndexer().catch(err => console.error('[INDEXER] Fatal Error:', err));
-});
+const isServerless = Boolean(process.env.VERCEL);
+
+// START THE SERVER (local/self-hosted mode)
+if (!isServerless) {
+  app.listen(PORT, () => {
+    console.log(`[HTTP] Express server listening on http://localhost:${PORT}`);
+
+    // Indexer only runs in long-lived process environments (not serverless)
+    runIndexer().catch(err => console.error('[INDEXER] Fatal Error:', err));
+  });
+}
+
+export default app;

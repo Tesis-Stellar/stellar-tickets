@@ -9,6 +9,13 @@ const RPC_URL = process.env.SOROBAN_RPC_URL || 'https://soroban-testnet.stellar.
 const server = new rpc.Server(RPC_URL);
 const SLEEP_MS = 5000;
 
+/** Public Soroban RPC only retains recent ledgers; cursor older than min causes getEvents to fail. */
+function parseRpcLedgerRangeError(message: string): { min: number; max: number } | null {
+  const m = message.match(/ledger range:\s*(\d+)\s*-\s*(\d+)/i);
+  if (!m) return null;
+  return { min: Number(m[1]), max: Number(m[2]) };
+}
+
 export async function runIndexer() {
   console.log('[INDEXER] Starting Soroban Event Indexer...');
 
@@ -51,14 +58,40 @@ export async function runIndexer() {
       // Soroban RPC allows max 5 contract IDs per filter — chunk them
       const CHUNK_SIZE = 5;
       let allEvents: any[] = [];
-      for (let i = 0; i < contractIds.length; i += CHUNK_SIZE) {
-        const chunk = contractIds.slice(i, i + CHUNK_SIZE);
-        const eventsRes = await server.getEvents({
-          startLedger,
-          filters: [{ type: 'contract', contractIds: chunk, topics: [] } as any],
-          limit: 1000,
-        });
-        allEvents = allEvents.concat(eventsRes.events);
+      try {
+        for (let i = 0; i < contractIds.length; i += CHUNK_SIZE) {
+          const chunk = contractIds.slice(i, i + CHUNK_SIZE);
+          const eventsRes = await server.getEvents({
+            startLedger,
+            filters: [{ type: 'contract', contractIds: chunk, topics: [] } as any],
+            limit: 1000,
+          });
+          allEvents = allEvents.concat(eventsRes.events);
+        }
+      } catch (rpcErr: any) {
+        const msg = String(rpcErr?.message ?? rpcErr ?? '');
+        const range = parseRpcLedgerRangeError(msg);
+        if (range && startLedger < range.min) {
+          console.warn(
+            `[INDEXER] Cursor last_ledger=${startLedger} está antes del histórico del RPC (${range.min}–${range.max}). Se ajusta a ${range.min}.`
+          );
+          await prisma.indexer_state.update({
+            where: { id: 1 },
+            data: { last_ledger: range.min, updated_at: new Date() },
+          });
+          await sleep(SLEEP_MS);
+          continue;
+        }
+        if (range && startLedger > range.max) {
+          console.warn(`[INDEXER] Cursor last_ledger=${startLedger} por encima del rango del RPC; se ajusta a ${range.max}.`);
+          await prisma.indexer_state.update({
+            where: { id: 1 },
+            data: { last_ledger: range.max, updated_at: new Date() },
+          });
+          await sleep(SLEEP_MS);
+          continue;
+        }
+        throw rpcErr;
       }
 
       // 4. Process each event — names match contract #[contractevent] struct names

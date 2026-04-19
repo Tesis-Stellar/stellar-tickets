@@ -1,6 +1,33 @@
-# Rust's output directory
-target
+# Rust build outputs
+target/
+**/target/
 
-# Local settings
-.soroban
-.stellar
+# Soroban / Stellar local state
+.soroban/
+.stellar/
+
+# Local env files
+.env
+.env.*
+!.env.example
+
+# Generated contract artifacts
+wasm/
+*.wasm
+*.wasm.gz
+
+# Local deployment outputs
+deployment_report*.md
+deploy_report*.md
+*.xdr
+
+# Logs / temp
+*.log
+*.tmp
+tmp/
+.temp/
+
+# OS / editor noise
+.DS_Store
+**/.DS_Store
+Thumbs.db
