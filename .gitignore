@@ -1,19 +1,48 @@
-```gitignore
-# AI tooling
+# AI / IDE
 .gemini/
 .cursor/
 .vscode/
 .idea/
 
-# Local env files
+# Secrets / env
 .env
-.env.local
+.env.*
+!.env.example
 .env.deploy
+
+# OS
+.DS_Store
+**/.DS_Store
+Thumbs.db
+
+# Node / build
+node_modules/
+dist/
+build/
+coverage/
+*.tsbuildinfo
+
+# Logs / temp
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+tsc_output.txt
+git_log_tmp*.txt
+
+# Rust
+target/
+**/target/
+
+# Playwright / reports
+test-results/
+playwright-report/
+blob-report/
+playwright/.cache/
 
 # Contract WASM builds (downloaded from CI)
 contracts/wasm/
 
-# Node
-node_modules/
-dist/
-```
+# Optional generated artifacts
+frontend/openapi.v1.json
