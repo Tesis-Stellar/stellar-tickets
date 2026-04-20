@@ -1,3 +1,6 @@
+> Este es el flujo principal recomendado del proyecto para trabajo reproducible con contratos.
+> Si trabajas con Devcontainer, consulta `ONBOARDING.md` como flujo alternativo.
+
 # Flujo recomendado: Docker CLI (sin Devcontainer)
 
 Este flujo evita depender de Rust o Stellar CLI instalados en el host y reduce carga del IDE.

@@ -1,3 +1,6 @@
+> Este documento describe un flujo alternativo de trabajo usando Devcontainer (VS Code / Cursor).
+> El flujo principal recomendado del proyecto para validación reproducible de contratos está en `DOCKER_CLI_WORKFLOW.md`.
+
 # Onboarding del entorno (Mac + Devcontainer)
 
 ## 1. Pre-requisitos globales (host)
