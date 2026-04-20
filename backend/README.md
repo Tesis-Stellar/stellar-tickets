@@ -85,13 +85,13 @@ Si la indexación continua se ejecuta por separado en tu despliegue, debe apunta
 |---------------------|------------|-------------|
 | `DATABASE_URL`      | Sí         | URL de PostgreSQL (incluye `?schema=ticketing` si aplica). |
 | `PORT`              | No         | Puerto HTTP (por defecto `3000`). |
-| `JWT_SECRET`        | No*        | Firma de tokens JWT. En cualquier despliegue serio debe definirse explícitamente y ser fuerte. |
+| `JWT_SECRET`        | Sí en producción* | Firma de tokens JWT. Debe definirse explícitamente y ser fuerte en producción. |
 | `SOROBAN_RPC_URL`   | No         | RPC Soroban (por defecto testnet público). |
 | `ORGANIZER_SECRET`  | No**       | Secret key del organizador para operaciones que construyen/envían transacciones desde el backend. |
 | `ORGANIZER_PUBLIC`  | No         | Clave pública del organizador usada en rutas admin/contratos si no quieres el valor por defecto del código. |
 | `VERCEL`            | No         | En despliegues serverless la define el proveedor; si existe, `server.ts` no ejecuta el bloque de proceso largo (`listen` + `runIndexer()`). |
 
-\* En desarrollo puede existir un valor por defecto en el código, pero no debe usarse en entornos compartidos, demos públicas o producción.
+\* En desarrollo local, si `JWT_SECRET` no está definido, el servidor permite un fallback inseguro y muestra un warning en consola. Ese fallback no debe usarse en entornos compartidos, demos públicas ni producción; con `NODE_ENV=production`, la aplicación falla al iniciar si falta `JWT_SECRET`.
 
 \*\* Sin `ORGANIZER_SECRET`, algunas rutas on-chain responderán con error de servicio no configurado.
 
