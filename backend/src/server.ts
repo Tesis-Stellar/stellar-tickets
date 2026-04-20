@@ -30,7 +30,18 @@ dotenv.config();
 const app = express();
 const prisma = new PrismaClient();
 const PORT = process.env.PORT || 3000;
-const JWT_SECRET = process.env.JWT_SECRET || 'stellar-tickets-dev-secret-change-in-prod';
+const NODE_ENV = process.env.NODE_ENV || 'development';
+const isProduction = NODE_ENV === 'production';
+const configuredJwtSecret = process.env.JWT_SECRET;
+
+if (!configuredJwtSecret && isProduction) {
+  throw new Error('Missing required environment variable: JWT_SECRET');
+}
+
+const EFFECTIVE_JWT_SECRET = configuredJwtSecret || 'stellar-tickets-dev-secret-change-in-prod';
+if (!configuredJwtSecret) {
+  console.warn('[WARN] JWT_SECRET is not set. Using insecure development fallback; do not use this in shared, demo, or production environments.');
+}
 const JWT_EXPIRES_IN = '7d';
 
 // Soroban / Stellar config
@@ -65,7 +76,7 @@ function authMiddleware(req: Request, res: Response, next: NextFunction) {
     return;
   }
   try {
-    const payload = jwt.verify(header.slice(7), JWT_SECRET) as { userId: string };
+    const payload = jwt.verify(header.slice(7), EFFECTIVE_JWT_SECRET) as { userId: string };
     (req as any).userId = payload.userId;
     next();
   } catch {
@@ -930,7 +941,7 @@ app.post('/api/auth/login', async (req, res) => {
     // Update last login
     await prisma.users.update({ where: { id: user.id }, data: { last_login_at: new Date() } });
 
-    const accessToken = jwt.sign({ userId: user.id }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
+    const accessToken = jwt.sign({ userId: user.id }, EFFECTIVE_JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
     res.json({ accessToken, user: toUserDto(user) });
   } catch (error: any) {
     console.error('[AUTH] Login error:', error);
@@ -966,7 +977,7 @@ app.post('/api/auth/register', async (req, res) => {
       },
     });
 
-    const accessToken = jwt.sign({ userId: user.id }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
+    const accessToken = jwt.sign({ userId: user.id }, EFFECTIVE_JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
     res.json({ accessToken, user: toUserDto(user) });
   } catch (error: any) {
     console.error('[AUTH] Register error:', error);
