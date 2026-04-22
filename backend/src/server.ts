@@ -1130,12 +1130,23 @@ app.post('/api/cart/items', authMiddleware, async (req, res) => {
 // PATCH /api/cart/items/:id — update quantity
 app.patch('/api/cart/items/:id', authMiddleware, async (req, res) => {
   try {
+    const userId = (req as any).userId;
     const { quantity } = req.body;
     if (!quantity || quantity < 1) {
       res.status(400).json({ error: 'quantity debe ser >= 1' });
       return;
     }
-    await prisma.cart_items.update({ where: { id: req.params.id as string }, data: { quantity } });
+    const result = await prisma.cart_items.updateMany({
+      where: {
+        id: req.params.id as string,
+        carts: { is: { user_id: userId, status: 'ACTIVE' } },
+      },
+      data: { quantity },
+    });
+    if (result.count === 0) {
+      res.status(404).json({ error: 'Item de carrito no encontrado' });
+      return;
+    }
     res.status(204).send();
   } catch (error: any) {
     console.error('[CART] PATCH error:', error);
@@ -1146,7 +1157,17 @@ app.patch('/api/cart/items/:id', authMiddleware, async (req, res) => {
 // DELETE /api/cart/items/:id — remove single item
 app.delete('/api/cart/items/:id', authMiddleware, async (req, res) => {
   try {
-    await prisma.cart_items.delete({ where: { id: req.params.id as string } });
+    const userId = (req as any).userId;
+    const result = await prisma.cart_items.deleteMany({
+      where: {
+        id: req.params.id as string,
+        carts: { is: { user_id: userId, status: 'ACTIVE' } },
+      },
+    });
+    if (result.count === 0) {
+      res.status(404).json({ error: 'Item de carrito no encontrado' });
+      return;
+    }
     res.status(204).send();
   } catch (error: any) {
     console.error('[CART] DELETE error:', error);
