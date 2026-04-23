@@ -8,6 +8,7 @@ import {
   Keypair,
   Networks,
   TransactionBuilder,
+  FeeBumpTransaction,
   Operation,
   Account,
   Address,
@@ -635,9 +636,20 @@ app.post('/api/transactions/cancel-listing', authMiddleware, async (req, res) =>
 // POST /api/transactions/build-buy-xdr — Build unsigned XDR for comprar_boleto (Freighter signs)
 app.post('/api/transactions/build-buy-xdr', authMiddleware, async (req, res) => {
   try {
+    const userId = (req as any).userId;
     const { contractAddress, ticketRootId, buyerPublicKey } = req.body;
     if (!contractAddress || ticketRootId === undefined || !buyerPublicKey) {
       res.status(400).json({ error: 'contractAddress, ticketRootId y buyerPublicKey son requeridos' });
+      return;
+    }
+
+    const user = await prisma.users.findUnique({ where: { id: userId }, select: { wallet_address: true } });
+    if (!user?.wallet_address) {
+      res.status(400).json({ error: 'Debes vincular una wallet antes de construir una transacción' });
+      return;
+    }
+    if (buyerPublicKey !== user.wallet_address) {
+      res.status(403).json({ error: 'buyerPublicKey no coincide con la wallet vinculada al usuario' });
       return;
     }
 
@@ -703,13 +715,28 @@ app.post('/api/transactions/build-buy-xdr', authMiddleware, async (req, res) => 
 // POST /api/transactions/submit — Submit Freighter-signed XDR to Soroban
 app.post('/api/transactions/submit', authMiddleware, async (req, res) => {
   try {
+    const userId = (req as any).userId;
     const { signedXdr } = req.body;
     if (!signedXdr) {
       res.status(400).json({ error: 'signedXdr es requerido' });
       return;
     }
 
+    const user = await prisma.users.findUnique({ where: { id: userId }, select: { wallet_address: true } });
+    if (!user?.wallet_address) {
+      res.status(400).json({ error: 'Debes vincular una wallet antes de enviar una transacción' });
+      return;
+    }
+
     const tx = TransactionBuilder.fromXDR(signedXdr, NETWORK_PASSPHRASE);
+    if (tx instanceof FeeBumpTransaction) {
+      res.status(400).json({ error: 'Las transacciones fee-bump no están soportadas en este endpoint' });
+      return;
+    }
+    if (tx.source !== user.wallet_address) {
+      res.status(403).json({ error: 'La transacción firmada no corresponde a la wallet vinculada al usuario' });
+      return;
+    }
 
     const sendResponse = await sorobanServer.sendTransaction(tx);
     if (sendResponse.status === 'ERROR') {
