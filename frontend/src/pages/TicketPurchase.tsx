@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useParams, useNavigate } from "react-router-dom";
+import { useParams, useNavigate, useLocation } from "react-router-dom";
 import { Header } from "@/components/layout/Header";
 import { Footer } from "@/components/layout/Footer";
 import { getEventById, getEventTicketTypes, type EventData } from "@/data/events";
@@ -10,7 +10,8 @@ import { ChevronLeft, ShoppingCart } from "lucide-react";
 const TicketPurchase = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { addToCart } = useAppContext();
+  const location = useLocation();
+  const { addToCart, isLoggedIn } = useAppContext();
   const [event, setEvent] = useState<EventData | null>(null);
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<Record<string, number>>({});
@@ -56,6 +57,15 @@ const TicketPurchase = () => {
   }, 0);
 
   const handleAdd = async () => {
+    if (!isLoggedIn) {
+      navigate("/login", {
+        state: {
+          from: location.pathname,
+          message: "Inicia sesión para agregar boletos al carrito.",
+        },
+      });
+      return;
+    }
     await Promise.all(Object.entries(selected).map(async ([tid, qty]) => {
       const tt = event.ticketTypes.find((t) => t.id === tid);
       if (tt && qty > 0) await addToCart({ event, ticketType: tt, quantity: qty });

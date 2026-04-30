@@ -1,12 +1,19 @@
 import { useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { Header } from "@/components/layout/Header";
 import { Footer } from "@/components/layout/Footer";
 import { useAppContext } from "@/context/AppContext";
 
+type LoginLocationState = {
+  from?: string;
+  message?: string;
+};
+
 const Login = () => {
   const { login } = useAppContext();
   const navigate = useNavigate();
+  const location = useLocation();
+  const locationState = location.state as LoginLocationState | null;
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -20,7 +27,7 @@ const Login = () => {
       setError("");
       setIsSubmitting(true);
       await login(email, password);
-      navigate("/mi-cuenta");
+      navigate(locationState?.from ?? "/mi-cuenta", { replace: true });
     } catch {
       setError("No fue posible iniciar sesión");
     } finally {
@@ -38,6 +45,7 @@ const Login = () => {
             <h1 className="text-2xl font-black text-foreground">Iniciar Sesión</h1>
             <p className="text-sm text-muted-foreground mt-1">Accede a tu cuenta TuTicket</p>
           </div>
+          {locationState?.message && <p className="text-sm text-primary font-semibold text-center bg-primary/10 rounded-lg px-3 py-2">{locationState.message}</p>}
           <form onSubmit={handleSubmit} className="space-y-4">
             <div>
               <label className="text-xs font-bold text-muted-foreground uppercase tracking-wider mb-1 block">Correo electrónico</label>

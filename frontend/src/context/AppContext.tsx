@@ -101,6 +101,16 @@ interface AppState {
 
 const AppContext = createContext<AppState | null>(null);
 
+class ApiRequestError extends Error {
+  status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = "ApiRequestError";
+    this.status = status;
+  }
+}
+
 export const useAppContext = () => {
   const ctx = useContext(AppContext);
   if (!ctx) throw new Error("useAppContext must be used within AppProvider");
@@ -128,8 +138,15 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       if (token) headers.set("Authorization", `Bearer ${token}`);
       const response = await fetch(`${API_BASE_URL}${path}`, { ...init, headers });
       if (!response.ok) {
-        const message = await response.text();
-        throw new Error(message || `Request failed: ${response.status}`);
+        const rawMessage = await response.text();
+        let message = rawMessage;
+        try {
+          const parsed = JSON.parse(rawMessage) as { error?: string; message?: string };
+          message = parsed.error ?? parsed.message ?? rawMessage;
+        } catch {
+          // Keep the plain response body when it is not JSON.
+        }
+        throw new ApiRequestError(response.status, message || `Request failed: ${response.status}`);
       }
       if (response.status === 204) return undefined as T;
       return response.json() as Promise<T>;

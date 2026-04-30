@@ -542,6 +542,45 @@ impl ContratoEvento {
         let organizador = Self::obtener_organizador(&entorno)?;
         organizador.require_auth();
 
+        Self::crear_boleto_con_propietario(&entorno, id_evento, organizador, precio)
+    }
+
+    /*
+      Crea un nuevo boleto asignándolo directamente a una dirección concreta.
+      Este flujo se usa cuando el backend ya validó el checkout off-chain y el
+      organizador emite el boleto on-chain a la wallet vinculada del comprador.
+
+      Seguridad:
+      - Solo el organizador puede emitir el boleto.
+      - El propietario guardado en Soroban es el mismo que PostgreSQL debe
+        proyectar después de la confirmación.
+    */
+    pub fn crear_boleto_para(
+        entorno: Env,
+        id_evento: u32,
+        propietario: Address,
+        precio: i128,
+    ) -> Result<u32, ErrorContrato> {
+        if precio <= 0 {
+            return Err(ErrorContrato::PrecioInvalido);
+        }
+
+        let organizador = Self::obtener_organizador(&entorno)?;
+        organizador.require_auth();
+
+        Self::crear_boleto_con_propietario(&entorno, id_evento, propietario, precio)
+    }
+
+    fn crear_boleto_con_propietario(
+        entorno: &Env,
+        id_evento: u32,
+        propietario: Address,
+        precio: i128,
+    ) -> Result<u32, ErrorContrato> {
+        if precio <= 0 {
+            return Err(ErrorContrato::PrecioInvalido);
+        }
+
         // El contador funciona como auto-incremento: cada boleto nuevo
         // recibe el valor actual del contador como su ticket_root_id
         let mut contador_boletos: u32 = entorno
@@ -556,7 +595,7 @@ impl ContratoEvento {
             ticket_root_id,
             version,
             id_evento,
-            propietario: organizador.clone(),
+            propietario: propietario.clone(),
             precio,
             en_venta: false,
             es_reventa: false,
@@ -584,10 +623,10 @@ impl ContratoEvento {
         BoletoCreado {
             ticket_root_id,
             id_evento,
-            propietario: organizador,
+            propietario,
             precio,
         }
-        .publish(&entorno);
+        .publish(entorno);
 
         Ok(ticket_root_id)
     }
