@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useNavigate, Link } from "react-router-dom";
+import { Navigate, useNavigate, Link, useLocation } from "react-router-dom";
 import { Header } from "@/components/layout/Header";
 import { Footer } from "@/components/layout/Footer";
 import { CheckoutStepper } from "@/components/ui/CheckoutStepper";
@@ -16,8 +16,9 @@ const Field = ({ label, name, type = "text", placeholder = "", value, onChange, 
 );
 
 const Checkout = () => {
-  const { cart, checkout } = useAppContext();
+  const { cart, checkout, isLoggedIn } = useAppContext();
   const navigate = useNavigate();
+  const location = useLocation();
   const [step, setStep] = useState(1);
   const [form, setForm] = useState({ name: "", email: "", phone: "", document: "", docType: "CC", payMethod: "card", terms: false });
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -25,6 +26,10 @@ const Checkout = () => {
   const subtotal = cart.reduce((s, c) => s + c.ticketType.price * c.quantity, 0);
   const fees = cart.reduce((s, c) => s + c.ticketType.serviceFee * c.quantity, 0);
   const total = subtotal + fees;
+
+  if (!isLoggedIn) {
+    return <Navigate to="/login" replace state={{ from: location.pathname, message: "Inicia sesión para finalizar la compra." }} />;
+  }
 
   if (cart.length === 0 && step < 3) return (
     <div className="min-h-screen bg-background flex flex-col"><Header />

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useParams, useNavigate } from "react-router-dom";
+import { useParams, useNavigate, useLocation } from "react-router-dom";
 import { Header } from "@/components/layout/Header";
 import { Footer } from "@/components/layout/Footer";
 import { getEventById, getEventTicketTypes, type EventData } from "@/data/events";
@@ -10,7 +10,8 @@ import { ChevronLeft, ShoppingCart } from "lucide-react";
 const SeatSelection = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { addToCart } = useAppContext();
+  const location = useLocation();
+  const { addToCart, isLoggedIn } = useAppContext();
   const [event, setEvent] = useState<EventData | null>(null);
   const [loading, setLoading] = useState(true);
   const [selectedSeats, setSelectedSeats] = useState<Seat[]>([]);
@@ -48,6 +49,15 @@ const SeatSelection = () => {
 
   const handleAdd = async () => {
     if (selectedSeats.length === 0) return;
+    if (!isLoggedIn) {
+      navigate("/login", {
+        state: {
+          from: location.pathname,
+          message: "Inicia sesión para agregar asientos al carrito.",
+        },
+      });
+      return;
+    }
     const grouped = selectedSeats.reduce<Record<string, Seat[]>>((acc, s) => {
       (acc[s.section] ??= []).push(s);
       return acc;
