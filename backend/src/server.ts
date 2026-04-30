@@ -318,7 +318,7 @@ app.post('/api/transactions/buy', async (req, res) => {
 });
 
 // POST /api/transactions/secure-ticket — Register ticket on Soroban blockchain
-// The organizer signs crear_boleto server-side, proving the ticket exists on-chain
+// The organizer issues the ticket on-chain directly to the user's linked wallet.
 app.post('/api/transactions/secure-ticket', authMiddleware, async (req, res) => {
   try {
     if (!organizerKeypair) {
@@ -359,6 +359,15 @@ app.post('/api/transactions/secure-ticket', authMiddleware, async (req, res) => 
       return;
     }
 
+    const ownerUser = await prisma.users.findUnique({
+      where: { id: (req as any).userId },
+      select: { wallet_address: true },
+    });
+    if (!ownerUser?.wallet_address) {
+      res.status(400).json({ error: 'Debes vincular una wallet antes de asegurar el ticket en blockchain' });
+      return;
+    }
+
     const event = ticket.order_items?.event_ticket_types?.events;
     if (!event?.contract_address) {
       res.status(400).json({ error: 'Evento sin contrato desplegado' });
@@ -368,8 +377,8 @@ app.post('/api/transactions/secure-ticket', authMiddleware, async (req, res) => 
     const contractAddress = event.contract_address;
     const price = Number(ticket.order_items?.event_ticket_types?.price_amount || 0);
 
-    // Build and submit crear_boleto transaction
-    console.log(`[SOROBAN] Creating ticket on-chain for contract ${contractAddress.slice(0, 8)}...`);
+    // Build and submit crear_boleto_para transaction so on-chain owner matches PostgreSQL owner_wallet
+    console.log(`[SOROBAN] Creating ticket on-chain for ${ownerUser.wallet_address.slice(0, 8)} on contract ${contractAddress.slice(0, 8)}...`);
 
     const accountResponse = await sorobanServer.getAccount(organizerKeypair.publicKey());
     const account = new Account(accountResponse.accountId(), accountResponse.sequenceNumber());
@@ -380,10 +389,11 @@ app.post('/api/transactions/secure-ticket', authMiddleware, async (req, res) => 
     })
       .addOperation(Operation.invokeContractFunction({
         contract: contractAddress,
-        function: 'crear_boleto',
+        function: 'crear_boleto_para',
         args: [
-          nativeToScVal(1, { type: 'u32' }),        // id_evento (1 for all, each contract is per-event)
-          nativeToScVal(price, { type: 'i128' }),    // precio
+          nativeToScVal(1, { type: 'u32' }),              // id_evento (1 for all, each contract is per-event)
+          new Address(ownerUser.wallet_address).toScVal(), // propietario on-chain
+          nativeToScVal(price, { type: 'i128' }),          // precio
         ],
       }))
       .setTimeout(60)
@@ -437,9 +447,6 @@ app.post('/api/transactions/secure-ticket', authMiddleware, async (req, res) => 
       }
     }
 
-    // Get the user's linked wallet address
-    const ownerUser = await prisma.users.findUnique({ where: { id: (req as any).userId }, select: { wallet_address: true } });
-
     // Update DB with on-chain data
     await prisma.tickets.update({
       where: { id: ticketId },
@@ -447,7 +454,7 @@ app.post('/api/transactions/secure-ticket', authMiddleware, async (req, res) => 
         contract_address: contractAddress,
         ticket_root_id: ticketRootId,
         version: 0,
-        owner_wallet: ownerUser?.wallet_address ?? null,
+        owner_wallet: ownerUser.wallet_address,
       },
     });
 

@@ -186,6 +186,28 @@ fn test_create_ticket_success() {
     assert_eq!(boleto_2.id_evento, 1002);
 }
 
+// Crea un boleto asignado directamente a la wallet del comprador
+// Se espera que Soroban y la proyección off-chain puedan compartir el mismo owner
+#[test]
+fn test_create_ticket_for_owner_success() {
+    let (entorno, cliente, _admin, _organizador, _, _) = configurar_entorno();
+    let comprador = Address::generate(&entorno);
+
+    let root_id = cliente.crear_boleto_para(&1001, &comprador, &1_000_000);
+    assert_eq!(root_id, 0);
+
+    let boleto = cliente.obtener_boleto(&root_id);
+    assert_eq!(boleto.ticket_root_id, root_id);
+    assert_eq!(boleto.version, 0);
+    assert_eq!(boleto.id_evento, 1001);
+    assert_eq!(boleto.precio, 1_000_000);
+    assert_eq!(boleto.propietario, comprador);
+    assert!(!boleto.en_venta);
+    assert!(!boleto.es_reventa);
+    assert!(!boleto.usado);
+    assert!(!boleto.invalidado);
+}
+
 // Intenta crear un boleto con precio negativo
 // Se espera error PrecioInvalido
 #[test]
