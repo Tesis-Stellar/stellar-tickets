@@ -473,17 +473,18 @@ app.post('/api/transactions/secure-ticket', authMiddleware, async (req, res) => 
   }
 });
 
-// POST /api/transactions/list-ticket — List a ticket for resale on Soroban
+// POST /api/transactions/list-ticket — Build owner-signed XDR to list a ticket for resale on Soroban
 app.post('/api/transactions/list-ticket', authMiddleware, async (req, res) => {
   try {
-    if (!organizerKeypair) {
-      res.status(503).json({ error: 'Blockchain no configurada' });
-      return;
-    }
-
     const { ticketId, price } = req.body; // price in XLM stroops (1 XLM = 10_000_000)
     if (!ticketId || !price || price <= 0) {
       res.status(400).json({ error: 'ticketId y price son requeridos' });
+      return;
+    }
+
+    const user = await prisma.users.findUnique({ where: { id: (req as any).userId }, select: { wallet_address: true } });
+    if (!user?.wallet_address) {
+      res.status(400).json({ error: 'Debes vincular una wallet antes de listar un ticket' });
       return;
     }
 
@@ -492,10 +493,14 @@ app.post('/api/transactions/list-ticket', authMiddleware, async (req, res) => {
     if (ticket.owner_user_id !== (req as any).userId) { res.status(403).json({ error: 'No autorizado' }); return; }
     if (!ticket.contract_address || ticket.ticket_root_id === null) { res.status(400).json({ error: 'Ticket no registrado en blockchain' }); return; }
     if (ticket.is_for_sale) { res.status(409).json({ error: 'Ticket ya está en venta' }); return; }
+    if (!ticket.owner_wallet || ticket.owner_wallet !== user.wallet_address) {
+      res.status(403).json({ error: 'La wallet vinculada no coincide con el propietario on-chain registrado' });
+      return;
+    }
 
-    console.log(`[SOROBAN] Listing ticket root_id=${ticket.ticket_root_id} for ${price} stroops...`);
+    console.log(`[SOROBAN] Building list XDR root_id=${ticket.ticket_root_id}, owner=${user.wallet_address.slice(0, 8)}...`);
 
-    const accountResponse = await sorobanServer.getAccount(organizerKeypair.publicKey());
+    const accountResponse = await sorobanServer.getAccount(user.wallet_address);
     const account = new Account(accountResponse.accountId(), accountResponse.sequenceNumber());
 
     const tx = new TransactionBuilder(account, {
@@ -515,61 +520,32 @@ app.post('/api/transactions/list-ticket', authMiddleware, async (req, res) => {
 
     const simResponse = await sorobanServer.simulateTransaction(tx);
     if (SorobanRpc.Api.isSimulationError(simResponse)) {
-      console.error('[SOROBAN] List simulation failed:', (simResponse as any).error);
-      res.status(500).json({ error: 'Error en simulación blockchain' });
+      const simError = (simResponse as any).error || 'desconocido';
+      console.error('[SOROBAN] List simulation failed:', simError);
+      res.status(400).json({ error: 'No fue posible preparar la firma de reventa: ' + simError });
       return;
     }
 
     const assembled = SorobanRpc.assembleTransaction(tx, simResponse).build();
-    assembled.sign(organizerKeypair);
-
-    const sendResponse = await sorobanServer.sendTransaction(assembled);
-    if (sendResponse.status === 'ERROR') {
-      res.status(500).json({ error: 'Error enviando transacción' });
-      return;
-    }
-
-    let getResponse: SorobanRpc.Api.GetTransactionResponse;
-    let attempts = 0;
-    do {
-      await new Promise((r) => setTimeout(r, 2000));
-      getResponse = await sorobanServer.getTransaction(sendResponse.hash);
-      attempts++;
-    } while (getResponse.status === 'NOT_FOUND' && attempts < 30);
-
-    if (getResponse.status !== 'SUCCESS') {
-      res.status(500).json({ error: 'Transacción de listado fallida' });
-      return;
-    }
-
-    // Get the user's linked wallet address
-    const listingUser = await prisma.users.findUnique({ where: { id: (req as any).userId }, select: { wallet_address: true } });
-
-    // Optimistic DB update (indexer will also pick this up)
-    await prisma.tickets.update({
-      where: { id: ticketId },
-      data: { is_for_sale: true, resale_price: BigInt(price), owner_wallet: listingUser?.wallet_address ?? ticket.owner_wallet },
-    });
-
-    console.log(`[SOROBAN] Ticket listed! root_id=${ticket.ticket_root_id}, tx=${sendResponse.hash}`);
-    res.json({ success: true, txHash: sendResponse.hash });
+    res.json({ xdr: assembled.toXDR(), networkPassphrase: NETWORK_PASSPHRASE });
   } catch (error: any) {
     console.error('[SOROBAN] list-ticket error:', error);
     res.status(500).json({ error: error.message });
   }
 });
 
-// POST /api/transactions/cancel-listing — Cancel a resale listing on Soroban (cancelar_venta)
+// POST /api/transactions/cancel-listing — Build owner-signed XDR to cancel a resale listing on Soroban
 app.post('/api/transactions/cancel-listing', authMiddleware, async (req, res) => {
   try {
-    if (!organizerKeypair) {
-      res.status(503).json({ error: 'Blockchain no configurada' });
-      return;
-    }
-
     const { ticketId } = req.body;
     if (!ticketId) {
       res.status(400).json({ error: 'ticketId es requerido' });
+      return;
+    }
+
+    const user = await prisma.users.findUnique({ where: { id: (req as any).userId }, select: { wallet_address: true } });
+    if (!user?.wallet_address) {
+      res.status(400).json({ error: 'Debes vincular una wallet antes de cancelar una reventa' });
       return;
     }
 
@@ -578,10 +554,14 @@ app.post('/api/transactions/cancel-listing', authMiddleware, async (req, res) =>
     if (ticket.owner_user_id !== (req as any).userId) { res.status(403).json({ error: 'No autorizado' }); return; }
     if (!ticket.contract_address || ticket.ticket_root_id === null) { res.status(400).json({ error: 'Ticket no registrado en blockchain' }); return; }
     if (!ticket.is_for_sale) { res.status(409).json({ error: 'Ticket no está en venta' }); return; }
+    if (!ticket.owner_wallet || ticket.owner_wallet !== user.wallet_address) {
+      res.status(403).json({ error: 'La wallet vinculada no coincide con el propietario on-chain registrado' });
+      return;
+    }
 
-    console.log(`[SOROBAN] Cancelling listing for ticket root_id=${ticket.ticket_root_id}...`);
+    console.log(`[SOROBAN] Building cancel listing XDR root_id=${ticket.ticket_root_id}, owner=${user.wallet_address.slice(0, 8)}...`);
 
-    const accountResponse = await sorobanServer.getAccount(organizerKeypair.publicKey());
+    const accountResponse = await sorobanServer.getAccount(user.wallet_address);
     const account = new Account(accountResponse.accountId(), accountResponse.sequenceNumber());
 
     const tx = new TransactionBuilder(account, {
@@ -600,40 +580,14 @@ app.post('/api/transactions/cancel-listing', authMiddleware, async (req, res) =>
 
     const simResponse = await sorobanServer.simulateTransaction(tx);
     if (SorobanRpc.Api.isSimulationError(simResponse)) {
-      console.error('[SOROBAN] Cancel listing simulation failed:', (simResponse as any).error);
-      res.status(500).json({ error: 'Error en simulación blockchain' });
+      const simError = (simResponse as any).error || 'desconocido';
+      console.error('[SOROBAN] Cancel listing simulation failed:', simError);
+      res.status(400).json({ error: 'No fue posible preparar la firma de cancelación: ' + simError });
       return;
     }
 
     const assembled = SorobanRpc.assembleTransaction(tx, simResponse).build();
-    assembled.sign(organizerKeypair);
-
-    const sendResponse = await sorobanServer.sendTransaction(assembled);
-    if (sendResponse.status === 'ERROR') {
-      res.status(500).json({ error: 'Error enviando transacción' });
-      return;
-    }
-
-    let getResponse: SorobanRpc.Api.GetTransactionResponse;
-    let attempts = 0;
-    do {
-      await new Promise((r) => setTimeout(r, 2000));
-      getResponse = await sorobanServer.getTransaction(sendResponse.hash);
-      attempts++;
-    } while (getResponse.status === 'NOT_FOUND' && attempts < 30);
-
-    if (getResponse.status !== 'SUCCESS') {
-      res.status(500).json({ error: 'Transacción de cancelación fallida' });
-      return;
-    }
-
-    await prisma.tickets.update({
-      where: { id: ticketId },
-      data: { is_for_sale: false, resale_price: null },
-    });
-
-    console.log(`[SOROBAN] Listing cancelled! root_id=${ticket.ticket_root_id}, tx=${sendResponse.hash}`);
-    res.json({ success: true, txHash: sendResponse.hash });
+    res.json({ xdr: assembled.toXDR(), networkPassphrase: NETWORK_PASSPHRASE });
   } catch (error: any) {
     console.error('[SOROBAN] cancel-listing error:', error);
     res.status(500).json({ error: error.message });
@@ -748,7 +702,7 @@ app.post('/api/transactions/submit', authMiddleware, async (req, res) => {
     const sendResponse = await sorobanServer.sendTransaction(tx);
     if (sendResponse.status === 'ERROR') {
       console.error('[SOROBAN] Submit failed:', sendResponse);
-      res.status(500).json({ error: 'Error enviando transacción firmada' });
+      res.status(400).json({ error: 'La red rechazó la transacción firmada' });
       return;
     }
 
@@ -761,7 +715,7 @@ app.post('/api/transactions/submit', authMiddleware, async (req, res) => {
     } while (getResponse.status === 'NOT_FOUND' && attempts < 30);
 
     if (getResponse.status !== 'SUCCESS') {
-      res.status(500).json({ error: 'Transacción fallida: ' + getResponse.status });
+      res.status(400).json({ error: 'Transacción fallida: ' + getResponse.status });
       return;
     }
 
@@ -1286,9 +1240,24 @@ app.post('/api/checkout/confirm', authMiddleware, async (req, res) => {
     const randPart = Math.random().toString(36).slice(2, 7).toUpperCase();
     const orderNumber = `TT-${datePart}-${randPart}`;
 
-    // Create order + order_items + payment + tickets in a transaction
-    const order = await prisma.$transaction(async (tx) => {
-      const newOrder = await tx.orders.create({
+    const orderItemCreates = cart.cart_items.map((cartItem) => ({
+      event_ticket_type_id: cartItem.event_ticket_type_id,
+      quantity: cartItem.quantity,
+      unit_price_amount: cartItem.unit_price_amount,
+      service_fee_amount: cartItem.service_fee_amount,
+      tickets: {
+        create: Array.from({ length: cartItem.quantity }, (_, i) => ({
+          owner_user_id: userId,
+          ticket_code: `TK-${randPart}-${cartItem.id.slice(-4).toUpperCase()}-${i + 1}`,
+          status: 'ACTIVE' as const,
+        })),
+      },
+    }));
+
+    // Use a batch transaction instead of an interactive tx callback. Supabase/pgBouncer
+    // can drop long-lived interactive transactions in local/demo environments.
+    const [order] = await prisma.$transaction([
+      prisma.orders.create({
         data: {
           user_id: userId,
           order_number: orderNumber,
@@ -1300,51 +1269,19 @@ app.post('/api/checkout/confirm', authMiddleware, async (req, res) => {
           buyer_phone: buyerPhone || user.phone,
           buyer_document_type: user.document_type,
           buyer_document_number: user.document_number,
-        },
-      });
-
-      // Create order_items and tickets for each cart item
-      for (const cartItem of cart.cart_items) {
-        const orderItem = await tx.order_items.create({
-          data: {
-            order_id: newOrder.id,
-            event_ticket_type_id: cartItem.event_ticket_type_id,
-            quantity: cartItem.quantity,
-            unit_price_amount: cartItem.unit_price_amount,
-            service_fee_amount: cartItem.service_fee_amount,
-          },
-        });
-
-        // Create one ticket per quantity unit
-        for (let i = 0; i < cartItem.quantity; i++) {
-          const ticketCode = `TK-${randPart}-${orderItem.id.slice(-4).toUpperCase()}-${i + 1}`;
-          await tx.tickets.create({
-            data: {
-              order_item_id: orderItem.id,
-              owner_user_id: userId,
-              ticket_code: ticketCode,
-              status: 'ACTIVE',
+          order_items: { create: orderItemCreates },
+          payments: {
+            create: {
+              payment_method: paymentMethod || 'CARD',
+              status: 'PAID',
+              amount: total,
+              processed_at: now,
             },
-          });
-        }
-      }
-
-      // Create payment record (simulated as PAID for thesis demo)
-      await tx.payments.create({
-        data: {
-          order_id: newOrder.id,
-          payment_method: paymentMethod || 'CARD',
-          status: 'PAID',
-          amount: total,
-          processed_at: now,
+          },
         },
-      });
-
-      // Mark cart as CONVERTED
-      await tx.carts.update({ where: { id: cart.id }, data: { status: 'CONVERTED' } });
-
-      return newOrder;
-    });
+      }),
+      prisma.carts.update({ where: { id: cart.id }, data: { status: 'CONVERTED' } }),
+    ]);
 
     res.json({
       id: order.id,
@@ -1424,6 +1361,7 @@ app.get('/api/tickets', authMiddleware, async (req, res) => {
         ticketRootId: t.ticket_root_id,
         version: t.version,
         ownerWallet: t.owner_wallet,
+        resalePrice: t.resale_price ? Number(t.resale_price) : null,
       };
     }));
   } catch (error: any) {
@@ -1499,14 +1437,21 @@ app.get('/api/tickets/sold', authMiddleware, async (req, res) => {
 });
 
 const isServerless = Boolean(process.env.VERCEL);
+const shouldRunIndexer =
+  process.env.RUN_INDEXER === 'true' ||
+  (process.env.RUN_INDEXER !== 'false' && isProduction);
 
 // START THE SERVER (local/self-hosted mode)
 if (!isServerless) {
   app.listen(PORT, () => {
     console.log(`[HTTP] Express server listening on http://localhost:${PORT}`);
 
-    // Indexer only runs in long-lived process environments (not serverless)
-    runIndexer().catch(err => console.error('[INDEXER] Fatal Error:', err));
+    // The indexer competes for DB pool connections; enable it explicitly in local dev.
+    if (shouldRunIndexer) {
+      runIndexer().catch(err => console.error('[INDEXER] Fatal Error:', err));
+    } else {
+      console.log('[INDEXER] Disabled. Set RUN_INDEXER=true to enable it.');
+    }
   });
 }
 

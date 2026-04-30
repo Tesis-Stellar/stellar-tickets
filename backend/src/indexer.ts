@@ -143,9 +143,10 @@ export async function runIndexer() {
           // Topics: [boleto_listado, ticket_root_id, id_evento]
           // Value: { propietario, precio, version, es_reventa }
           const rootId = Number(topics[1]);
+          const resalePrice = data.precio != null ? BigInt(data.precio) : undefined;
           await prisma.tickets.updateMany({
             where: { contract_address: contractId, ticket_root_id: rootId, status: 'ACTIVE' },
-            data: { is_for_sale: true }
+            data: { is_for_sale: true, ...(resalePrice !== undefined ? { resale_price: resalePrice } : {}) }
           });
           console.log(`[INDEXER] Listed ticket root_id=${rootId}`);
         }
@@ -155,7 +156,7 @@ export async function runIndexer() {
           const rootId = Number(topics[1]);
           await prisma.tickets.updateMany({
             where: { contract_address: contractId, ticket_root_id: rootId, status: 'ACTIVE' },
-            data: { is_for_sale: false }
+            data: { is_for_sale: false, resale_price: null }
           });
           console.log(`[INDEXER] Cancelled listing root_id=${rootId}`);
         }
