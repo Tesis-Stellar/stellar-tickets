@@ -386,41 +386,8 @@ app.get('/api/events/:id/related', async (req, res) => {
   }
 });
 
-// GET /api/events/:id/occupied-seats — count of sold/active tickets per ticket_type
-app.get('/api/events/:id/occupied-seats', async (req, res) => {
-  try {
-    const { id } = req.params;
-    const event = await prisma.events.findFirst({
-      where: { OR: [{ id }, { slug: id }] },
-      select: { id: true },
-    });
-    if (!event) { res.status(404).json({ error: 'Evento no encontrado' }); return; }
-
-    const ticketTypes = await prisma.event_ticket_types.findMany({
-      where: { event_id: event.id },
-      select: { id: true },
-    });
-
-    const occupancyMap: Record<string, number> = {};
-    await Promise.all(
-      ticketTypes.map(async (tt) => {
-        const count = await prisma.tickets.count({
-          where: {
-            status: { in: ['ACTIVE', 'USED'] },
-            order_item_id: { not: null },
-            order_items: { event_ticket_type_id: tt.id },
-          },
-        });
-        occupancyMap[tt.id] = count;
-      })
-    );
-
-    res.json(occupancyMap);
-  } catch (error: any) {
-    console.error('[SEATS] occupied-seats error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
+// (Removed) GET /api/events/:id/occupied-seats
+// Replaced by GET /api/events/:id/seats which returns per-seat status from event_seat_inventory.
 
 // POST /api/transactions/buy - Prepare Web3 Transaction Payload
 app.post('/api/transactions/buy', async (req, res) => {
@@ -1183,10 +1150,12 @@ function toCartItemDto(item: any) {
   const tt = item.event_ticket_types;
   const evt = tt?.events;
   const base = evt ? toEventDto(evt) : undefined;
+  const seat = item.event_seat_inventory?.seats;
   return {
     id: item.id,
     quantity: item.quantity,
-    seatIds: [] as string[],
+    seatIds: seat ? [seat.id] : ([] as string[]),
+    seatLabels: seat ? [seat.seat_label] : ([] as string[]),
     ticketType: tt ? {
       id: tt.id,
       name: tt.ticket_type_name,
@@ -1203,6 +1172,9 @@ const cartItemIncludes = {
     include: {
       events: { include: eventIncludes },
     },
+  },
+  event_seat_inventory: {
+    include: { seats: true },
   },
 };
 
@@ -1222,12 +1194,15 @@ app.get('/api/cart', authMiddleware, async (req, res) => {
 });
 
 // POST /api/cart/items — add item to cart
+// Two modes:
+//   - General admission: { ticketTypeId, quantity }
+//   - Assigned seating: { ticketTypeId, seatIds: [seatUuid, ...] } — one cart_item per seat
 app.post('/api/cart/items', authMiddleware, async (req, res) => {
   try {
     const userId = (req as any).userId;
-    const { ticketTypeId, quantity } = req.body;
-    if (!ticketTypeId || !quantity || quantity < 1) {
-      res.status(400).json({ error: 'ticketTypeId y quantity son requeridos' });
+    const { ticketTypeId, quantity, seatIds } = req.body;
+    if (!ticketTypeId) {
+      res.status(400).json({ error: 'ticketTypeId es requerido' });
       return;
     }
 
@@ -1238,10 +1213,69 @@ app.post('/api/cart/items', authMiddleware, async (req, res) => {
     }
 
     const cart = await getOrCreateCart(userId);
+    const hasSeatIds = Array.isArray(seatIds) && seatIds.length > 0;
 
-    // If same ticket type already in cart, increment quantity instead of failing
+    if (hasSeatIds) {
+      // Assigned seating: one cart_item per seat. Mark each inventory row as HELD.
+      if (!ticketType.event_id) {
+        res.status(400).json({ error: 'Ticket type sin evento' });
+        return;
+      }
+
+      const inventoryRows = await prisma.event_seat_inventory.findMany({
+        where: {
+          event_id: ticketType.event_id,
+          seat_id: { in: seatIds as string[] },
+          event_ticket_type_id: ticketTypeId,
+        },
+      });
+
+      if (inventoryRows.length !== seatIds.length) {
+        res.status(400).json({ error: 'Uno o más asientos no existen en el inventario del evento' });
+        return;
+      }
+
+      const unavailable = inventoryRows.filter((r) => r.status !== 'AVAILABLE');
+      if (unavailable.length > 0) {
+        res.status(409).json({ error: 'Uno o más asientos ya no están disponibles' });
+        return;
+      }
+
+      const created = await prisma.$transaction(
+        inventoryRows.flatMap((inv) => [
+          prisma.event_seat_inventory.update({
+            where: { id: inv.id },
+            data: { status: 'HELD' },
+          }),
+          prisma.cart_items.create({
+            data: {
+              cart_id: cart.id,
+              event_ticket_type_id: ticketTypeId,
+              event_seat_inventory_id: inv.id,
+              quantity: 1,
+              unit_price_amount: ticketType.price_amount,
+              service_fee_amount: ticketType.service_fee_amount,
+            },
+            include: cartItemIncludes,
+          }),
+        ])
+      );
+
+      // Return the last cart_item created (or all of them — frontend treats them individually)
+      const cartItems = created.filter((r: any) => r && r.cart_id);
+      const last = cartItems[cartItems.length - 1];
+      res.json(toCartItemDto(last));
+      return;
+    }
+
+    // General admission flow (unchanged)
+    if (!quantity || quantity < 1) {
+      res.status(400).json({ error: 'quantity es requerido para admisión general' });
+      return;
+    }
+
     const existing = await prisma.cart_items.findFirst({
-      where: { cart_id: cart.id, event_ticket_type_id: ticketTypeId },
+      where: { cart_id: cart.id, event_ticket_type_id: ticketTypeId, event_seat_inventory_id: null },
     });
 
     const item = existing
@@ -1295,19 +1329,32 @@ app.patch('/api/cart/items/:id', authMiddleware, async (req, res) => {
   }
 });
 
-// DELETE /api/cart/items/:id — remove single item
+// DELETE /api/cart/items/:id — remove single item (releases HELD inventory)
 app.delete('/api/cart/items/:id', authMiddleware, async (req, res) => {
   try {
     const userId = (req as any).userId;
-    const result = await prisma.cart_items.deleteMany({
+    const item = await prisma.cart_items.findFirst({
       where: {
         id: req.params.id as string,
         carts: { is: { user_id: userId, status: 'ACTIVE' } },
       },
+      select: { id: true, event_seat_inventory_id: true },
     });
-    if (result.count === 0) {
+    if (!item) {
       res.status(404).json({ error: 'Item de carrito no encontrado' });
       return;
+    }
+
+    if (item.event_seat_inventory_id) {
+      await prisma.$transaction([
+        prisma.event_seat_inventory.update({
+          where: { id: item.event_seat_inventory_id },
+          data: { status: 'AVAILABLE' },
+        }),
+        prisma.cart_items.delete({ where: { id: item.id } }),
+      ]);
+    } else {
+      await prisma.cart_items.delete({ where: { id: item.id } });
     }
     res.status(204).send();
   } catch (error: any) {
@@ -1316,13 +1363,30 @@ app.delete('/api/cart/items/:id', authMiddleware, async (req, res) => {
   }
 });
 
-// DELETE /api/cart/clear — remove all items from active cart
+// DELETE /api/cart/clear — remove all items from active cart (releases HELD inventory)
 app.delete('/api/cart/clear', authMiddleware, async (req, res) => {
   try {
     const userId = (req as any).userId;
-    const cart = await prisma.carts.findFirst({ where: { user_id: userId, status: 'ACTIVE' } });
+    const cart = await prisma.carts.findFirst({
+      where: { user_id: userId, status: 'ACTIVE' },
+      include: { cart_items: { select: { id: true, event_seat_inventory_id: true } } },
+    });
     if (cart) {
-      await prisma.cart_items.deleteMany({ where: { cart_id: cart.id } });
+      const heldInventoryIds = cart.cart_items
+        .map((i) => i.event_seat_inventory_id)
+        .filter((v): v is string => Boolean(v));
+
+      const ops: any[] = [];
+      if (heldInventoryIds.length > 0) {
+        ops.push(
+          prisma.event_seat_inventory.updateMany({
+            where: { id: { in: heldInventoryIds }, status: 'HELD' },
+            data: { status: 'AVAILABLE' },
+          })
+        );
+      }
+      ops.push(prisma.cart_items.deleteMany({ where: { cart_id: cart.id } }));
+      await prisma.$transaction(ops);
     }
     res.status(204).send();
   } catch (error: any) {
@@ -1395,6 +1459,7 @@ app.post('/api/checkout/confirm', authMiddleware, async (req, res) => {
 
     const orderItemCreates = cart.cart_items.map((cartItem) => ({
       event_ticket_type_id: cartItem.event_ticket_type_id,
+      event_seat_inventory_id: cartItem.event_seat_inventory_id,
       quantity: cartItem.quantity,
       unit_price_amount: cartItem.unit_price_amount,
       service_fee_amount: cartItem.service_fee_amount,
@@ -1407,9 +1472,13 @@ app.post('/api/checkout/confirm', authMiddleware, async (req, res) => {
       },
     }));
 
+    const seatInventoryIdsToSell = cart.cart_items
+      .map((i) => i.event_seat_inventory_id)
+      .filter((v): v is string => Boolean(v));
+
     // Use a batch transaction instead of an interactive tx callback. Supabase/pgBouncer
     // can drop long-lived interactive transactions in local/demo environments.
-    const [order] = await prisma.$transaction([
+    const ops: any[] = [
       prisma.orders.create({
         data: {
           user_id: userId,
@@ -1434,7 +1503,18 @@ app.post('/api/checkout/confirm', authMiddleware, async (req, res) => {
         },
       }),
       prisma.carts.update({ where: { id: cart.id }, data: { status: 'CONVERTED' } }),
-    ]);
+    ];
+
+    if (seatInventoryIdsToSell.length > 0) {
+      ops.push(
+        prisma.event_seat_inventory.updateMany({
+          where: { id: { in: seatInventoryIdsToSell } },
+          data: { status: 'SOLD' },
+        })
+      );
+    }
+
+    const [order] = await prisma.$transaction(ops);
 
     res.json({
       id: order.id,

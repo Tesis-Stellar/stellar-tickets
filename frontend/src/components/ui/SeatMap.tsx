@@ -6,13 +6,24 @@ export type VenueType =
   | "STADIUM" | "THEATER" | "ARENA"
   | "CLUB" | "COLISEUM" | "CONVENTION_CENTER";
 
+export type SeatStatus = "AVAILABLE" | "HELD" | "SOLD" | "BLOCKED";
+
+export interface SeatData {
+  seatId: string;
+  label: string;
+  row: string;
+  number: number;
+  status: SeatStatus;
+}
+
 export interface SectionConfig {
   id: string;
   name: string;
+  ticketTypeId: string;
   price: number;
   serviceFee: number;
-  capacity: number;
   maxPerOrder: number;
+  seats: SeatData[];
 }
 
 export interface SelectedSeat {
@@ -36,8 +47,6 @@ interface SeatMapProps {
   selectedSeats: SelectedSeat[];
   onToggleSeat: (seat: SelectedSeat) => void;
   maxSeats?: number;
-  /** sold/active ticket count per sectionId (ticket_type id) */
-  occupancyPerSection?: Record<string, number>;
 }
 
 // ── Palette ────────────────────────────────────────────────────────────────
@@ -56,77 +65,80 @@ function hexAlpha(hex: string, alpha: number): string {
 
 // ── Row type ───────────────────────────────────────────────────────────────
 
+interface RenderSeat {
+  id: string;
+  row: string;
+  number: number;
+  status: SeatStatus;
+}
+
 interface MapRow {
   label: string;
-  seats: { id: string; row: string; number: number }[];
+  seats: RenderSeat[];
   sectionId: string;
   sectionIndex: number;
   isFirstRow: boolean;
 }
 
-// ── Build rows for a section ───────────────────────────────────────────────
+// ── Group real seats from the API into rows for rendering ──────────────────
+// Uses the seat's actual row_label and seat_number from the DB.
 
-function buildRows(section: SectionConfig, sectionIndex: number, colCount: number, maxRows: number): MapRow[] {
-  const cap = Math.min(section.capacity, colCount * maxRows);
-  const numRows = Math.min(maxRows, Math.ceil(cap / colCount));
-  const rows: MapRow[] = [];
-  let remaining = cap;
-  for (let r = 0; r < numRows; r++) {
-    const label = String.fromCharCode(65 + r);
-    const n = Math.min(colCount, remaining);
-    const seats = Array.from({ length: n }, (_, c) => ({
-      id: `${section.id}-${label}${c + 1}`,
-      row: label,
-      number: c + 1,
-    }));
-    rows.push({ label, seats, sectionId: section.id, sectionIndex, isFirstRow: r === 0 });
-    remaining -= n;
+function buildRowsFromSeats(section: SectionConfig, sectionIndex: number): MapRow[] {
+  const byRow = new Map<string, SeatData[]>();
+  for (const seat of section.seats) {
+    const key = seat.row || "";
+    const arr = byRow.get(key) ?? [];
+    arr.push(seat);
+    byRow.set(key, arr);
   }
-  return rows;
-}
 
-// ── Build occupied set from real occupancy counts ──────────────────────────
-// Marks the first N seat IDs (in row order) as occupied for each section.
-
-function buildOccupiedFromRows(rows: MapRow[], occupancyPerSection: Record<string, number>): Set<string> {
-  const occupied = new Set<string>();
-  const added: Record<string, number> = {};
-  for (const row of rows) {
-    const quota = occupancyPerSection[row.sectionId] ?? 0;
-    for (const seat of row.seats) {
-      if ((added[row.sectionId] ?? 0) >= quota) break;
-      occupied.add(seat.id);
-      added[row.sectionId] = (added[row.sectionId] ?? 0) + 1;
-    }
-  }
-  return occupied;
+  const sortedRowKeys = [...byRow.keys()].sort();
+  return sortedRowKeys.map((rowKey, i) => {
+    const seats = (byRow.get(rowKey) ?? [])
+      .slice()
+      .sort((a, b) => a.number - b.number)
+      .map<RenderSeat>((s) => ({
+        id: s.seatId,
+        row: s.row,
+        number: s.number,
+        status: s.status,
+      }));
+    return {
+      label: rowKey || String.fromCharCode(65 + i),
+      seats,
+      sectionId: section.id,
+      sectionIndex,
+      isFirstRow: i === 0,
+    };
+  });
 }
 
 // ── Shared seat button ─────────────────────────────────────────────────────
 
 interface SeatBtnProps {
-  seat: { id: string; row: string; number: number };
+  seat: RenderSeat;
   sectionId: string;
   sectionIndex: number;
   sectionMap: Record<string, SectionConfig>;
   selectedIds: Set<string>;
-  occupiedIds: Set<string>;
   maxReached: boolean;
   onToggle: (seat: SelectedSeat) => void;
   size?: "sm" | "xs";
 }
 
-function SeatBtn({ seat, sectionId, sectionIndex, sectionMap, selectedIds, occupiedIds, maxReached, onToggle, size = "sm" }: SeatBtnProps) {
+function SeatBtn({ seat, sectionId, sectionIndex, sectionMap, selectedIds, maxReached, onToggle, size = "sm" }: SeatBtnProps) {
   const isSel = selectedIds.has(seat.id);
-  const isOcc = occupiedIds.has(seat.id);
-  const isBlocked = !isSel && !isOcc && maxReached;
-  const disabled = isOcc || isBlocked;
+  const isOcc = seat.status === "SOLD" || seat.status === "HELD";
+  const isBlockedSeat = seat.status === "BLOCKED";
+  const isCapped = !isSel && !isOcc && !isBlockedSeat && maxReached;
+  const disabled = isOcc || isBlockedSeat || isCapped;
   const p = PALETTE[sectionIndex % PALETTE.length];
   const section = sectionMap[sectionId];
   const dim = size === "xs" ? "w-5 h-5 text-[7px]" : "w-6 h-6 text-[8px]";
 
   let bgStyle: React.CSSProperties = {};
   let extraClass = "";
+  let title = "";
 
   if (isSel) {
     bgStyle = {
@@ -135,9 +147,14 @@ function SeatBtn({ seat, sectionId, sectionIndex, sectionMap, selectedIds, occup
       boxShadow: `0 0 0 2px white, 0 0 0 3.5px ${p.available}`,
     };
     extraClass = "scale-110 cursor-pointer";
+    title = "Seleccionado";
   } else if (isOcc) {
     extraClass = "bg-muted-foreground/20 text-transparent cursor-not-allowed";
-  } else if (isBlocked) {
+    title = seat.status === "SOLD" ? "Asiento vendido" : "Asiento reservado";
+  } else if (isBlockedSeat) {
+    extraClass = "bg-muted/40 text-transparent cursor-not-allowed opacity-40";
+    title = "Asiento bloqueado";
+  } else if (isCapped) {
     extraClass = "bg-muted/60 text-transparent cursor-not-allowed opacity-50";
   } else {
     bgStyle = {
@@ -145,6 +162,7 @@ function SeatBtn({ seat, sectionId, sectionIndex, sectionMap, selectedIds, occup
       color: p.available,
     };
     extraClass = "hover:scale-105 active:scale-95 cursor-pointer";
+    title = `${seat.row}${seat.number} · ${section?.name} · $${section?.price.toLocaleString("es-CO")}`;
   }
 
   return (
@@ -159,16 +177,16 @@ function SeatBtn({ seat, sectionId, sectionIndex, sectionMap, selectedIds, occup
           label: `${section.name} ${seat.row}${seat.number}`,
           sectionId: section.id,
           sectionName: section.name,
-          ticketTypeId: section.id,
+          ticketTypeId: section.ticketTypeId,
           price: section.price,
           serviceFee: section.serviceFee,
         });
       }}
-      title={isOcc ? "Asiento ocupado" : `${seat.row}${seat.number} · ${section?.name} · $${section?.price.toLocaleString("es-CO")}`}
+      title={title}
       style={bgStyle}
       className={`${dim} rounded-sm font-bold flex items-center justify-center transition-transform select-none border-0 outline-none shrink-0 ${extraClass}`}
     >
-      {isSel ? "✓" : isOcc ? "" : seat.number}
+      {isSel ? "✓" : (isOcc || isBlockedSeat) ? "" : seat.number}
     </button>
   );
 }
@@ -204,12 +222,11 @@ interface HorizRowsProps {
   cols: number;
   sectionMap: Record<string, SectionConfig>;
   selectedIds: Set<string>;
-  occupiedIds: Set<string>;
   maxReached: boolean;
   onToggle: (seat: SelectedSeat) => void;
 }
 
-function HorizRows({ rows, cols, sectionMap, selectedIds, occupiedIds, maxReached, onToggle }: HorizRowsProps) {
+function HorizRows({ rows, cols, sectionMap, selectedIds, maxReached, onToggle }: HorizRowsProps) {
   return (
     <div className="space-y-[3px]">
       {rows.map((row) => (
@@ -218,9 +235,9 @@ function HorizRows({ rows, cols, sectionMap, selectedIds, occupiedIds, maxReache
           <div className="flex gap-[3px]">
             {row.seats.map((seat) => (
               <SeatBtn key={seat.id} seat={seat} sectionId={row.sectionId} sectionIndex={row.sectionIndex}
-                sectionMap={sectionMap} selectedIds={selectedIds} occupiedIds={occupiedIds} maxReached={maxReached} onToggle={onToggle} />
+                sectionMap={sectionMap} selectedIds={selectedIds} maxReached={maxReached} onToggle={onToggle} />
             ))}
-            {Array.from({ length: cols - row.seats.length }).map((_, i) => (
+            {Array.from({ length: Math.max(0, cols - row.seats.length) }).map((_, i) => (
               <div key={`pad${i}`} className="w-6 h-6 shrink-0" />
             ))}
           </div>
@@ -238,12 +255,11 @@ interface VertColsProps {
   reversed: boolean;
   sectionMap: Record<string, SectionConfig>;
   selectedIds: Set<string>;
-  occupiedIds: Set<string>;
   maxReached: boolean;
   onToggle: (seat: SelectedSeat) => void;
 }
 
-function VertCols({ rows, reversed, sectionMap, selectedIds, occupiedIds, maxReached, onToggle }: VertColsProps) {
+function VertCols({ rows, reversed, sectionMap, selectedIds, maxReached, onToggle }: VertColsProps) {
   const display = reversed ? [...rows].reverse() : rows;
   return (
     <div className="flex gap-[3px]">
@@ -251,7 +267,7 @@ function VertCols({ rows, reversed, sectionMap, selectedIds, occupiedIds, maxRea
         <div key={`${row.sectionId}-${row.label}`} className="flex flex-col gap-[3px]">
           {row.seats.map((seat) => (
             <SeatBtn key={seat.id} seat={seat} sectionId={row.sectionId} sectionIndex={row.sectionIndex}
-              sectionMap={sectionMap} selectedIds={selectedIds} occupiedIds={occupiedIds} maxReached={maxReached} onToggle={onToggle} size="xs" />
+              sectionMap={sectionMap} selectedIds={selectedIds} maxReached={maxReached} onToggle={onToggle} size="xs" />
           ))}
         </div>
       ))}
@@ -328,20 +344,14 @@ function getStadiumPos(name: string, index: number): StadiumPos {
 
 // ── Stadium layout ─────────────────────────────────────────────────────────
 
-const HORIZ_COLS = 14;
-const HORIZ_MAX_ROWS = 10;
-const VERT_SEATS = 10;
-const VERT_MAX_COLS = 8;
-
 interface StadiumLayoutProps {
   sections: SectionConfig[];
   selectedSeats: SelectedSeat[];
   onToggleSeat: (seat: SelectedSeat) => void;
   maxSeats: number;
-  occupancyPerSection: Record<string, number>;
 }
 
-function StadiumLayout({ sections, selectedSeats, onToggleSeat, maxSeats, occupancyPerSection }: StadiumLayoutProps) {
+function StadiumLayout({ sections, selectedSeats, onToggleSeat, maxSeats }: StadiumLayoutProps) {
   const maxReached = selectedSeats.length >= maxSeats;
   const selectedIds = useMemo(() => new Set(selectedSeats.map((s) => s.id)), [selectedSeats]);
   const sectionMap = useMemo(() => {
@@ -351,26 +361,17 @@ function StadiumLayout({ sections, selectedSeats, onToggleSeat, maxSeats, occupa
   }, [sections]);
 
   const positioned = useMemo(() => {
-    const r: Record<StadiumPos, Array<{ section: SectionConfig; rows: MapRow[]; pi: number }>> = {
+    const r: Record<StadiumPos, Array<{ section: SectionConfig; rows: MapRow[]; pi: number; cols: number }>> = {
       norte: [], sur: [], occidental: [], oriental: [], extra: [],
     };
     sections.forEach((s, i) => {
       const pos = getStadiumPos(s.name, i);
-      const isVert = pos === "occidental" || pos === "oriental";
-      const rows = buildRows(s, i, isVert ? VERT_SEATS : HORIZ_COLS, isVert ? VERT_MAX_COLS : HORIZ_MAX_ROWS);
-      r[pos].push({ section: s, rows, pi: i });
+      const rows = buildRowsFromSeats(s, i);
+      const cols = rows.reduce((m, r) => Math.max(m, r.seats.length), 0);
+      r[pos].push({ section: s, rows, pi: i, cols });
     });
     return r;
   }, [sections]);
-
-  // Build occupied set from all rows across all positions
-  const occupiedIds = useMemo(() => {
-    const allRows: MapRow[] = [];
-    for (const items of Object.values(positioned)) {
-      for (const { rows } of items) allRows.push(...rows);
-    }
-    return buildOccupiedFromRows(allRows, occupancyPerSection);
-  }, [positioned, occupancyPerSection]);
 
   const handleToggle = useCallback((seat: SelectedSeat) => onToggleSeat(seat), [onToggleSeat]);
 
@@ -408,9 +409,9 @@ function StadiumLayout({ sections, selectedSeats, onToggleSeat, maxSeats, occupa
             <div className="flex gap-2 mb-1">
               {positioned.norte.map(({ section, pi }) => <SectionBadge key={section.id} name={section.name} pi={pi} />)}
             </div>
-            {positioned.norte.map(({ section, rows }) => (
-              <HorizRows key={section.id} rows={rows} cols={HORIZ_COLS} sectionMap={sectionMap}
-                selectedIds={selectedIds} occupiedIds={occupiedIds} maxReached={maxReached} onToggle={handleToggle} />
+            {positioned.norte.map(({ section, rows, cols }) => (
+              <HorizRows key={section.id} rows={rows} cols={cols} sectionMap={sectionMap}
+                selectedIds={selectedIds} maxReached={maxReached} onToggle={handleToggle} />
             ))}
           </div>
         )}
@@ -422,7 +423,7 @@ function StadiumLayout({ sections, selectedSeats, onToggleSeat, maxSeats, occupa
                 <div key={section.id} className="flex flex-col items-center gap-1">
                   <SectionBadge name={section.name} pi={pi} />
                   <VertCols rows={rows} reversed sectionMap={sectionMap}
-                    selectedIds={selectedIds} occupiedIds={occupiedIds} maxReached={maxReached} onToggle={handleToggle} />
+                    selectedIds={selectedIds} maxReached={maxReached} onToggle={handleToggle} />
                 </div>
               ))}
             </div>
@@ -436,7 +437,7 @@ function StadiumLayout({ sections, selectedSeats, onToggleSeat, maxSeats, occupa
                 <div key={section.id} className="flex flex-col items-center gap-1">
                   <SectionBadge name={section.name} pi={pi} />
                   <VertCols rows={rows} reversed={false} sectionMap={sectionMap}
-                    selectedIds={selectedIds} occupiedIds={occupiedIds} maxReached={maxReached} onToggle={handleToggle} />
+                    selectedIds={selectedIds} maxReached={maxReached} onToggle={handleToggle} />
                 </div>
               ))}
             </div>
@@ -445,9 +446,9 @@ function StadiumLayout({ sections, selectedSeats, onToggleSeat, maxSeats, occupa
 
         {positioned.sur.length > 0 && (
           <div className="flex flex-col items-center gap-1">
-            {positioned.sur.map(({ section, rows }) => (
-              <HorizRows key={section.id} rows={rows} cols={HORIZ_COLS} sectionMap={sectionMap}
-                selectedIds={selectedIds} occupiedIds={occupiedIds} maxReached={maxReached} onToggle={handleToggle} />
+            {positioned.sur.map(({ section, rows, cols }) => (
+              <HorizRows key={section.id} rows={rows} cols={cols} sectionMap={sectionMap}
+                selectedIds={selectedIds} maxReached={maxReached} onToggle={handleToggle} />
             ))}
             <div className="flex gap-2 mt-1">
               {positioned.sur.map(({ section, pi }) => <SectionBadge key={section.id} name={section.name} pi={pi} />)}
@@ -457,11 +458,11 @@ function StadiumLayout({ sections, selectedSeats, onToggleSeat, maxSeats, occupa
 
         {positioned.extra.length > 0 && (
           <div className="flex flex-col items-center gap-2 mt-2 pt-2 border-t border-border/40 w-full">
-            {positioned.extra.map(({ section, rows, pi }) => (
+            {positioned.extra.map(({ section, rows, pi, cols }) => (
               <div key={section.id} className="flex flex-col items-center gap-1">
                 <SectionBadge name={section.name} pi={pi} />
-                <HorizRows rows={rows} cols={HORIZ_COLS} sectionMap={sectionMap}
-                  selectedIds={selectedIds} occupiedIds={occupiedIds} maxReached={maxReached} onToggle={handleToggle} />
+                <HorizRows rows={rows} cols={cols} sectionMap={sectionMap}
+                  selectedIds={selectedIds} maxReached={maxReached} onToggle={handleToggle} />
               </div>
             ))}
           </div>
@@ -475,57 +476,37 @@ function StadiumLayout({ sections, selectedSeats, onToggleSeat, maxSeats, occupa
 
 // ── Cinema layout ──────────────────────────────────────────────────────────
 
-const MAX_CINEMA_SEATS = 150;
-
-function buildCinemaLayout(sections: SectionConfig[]): { rows: MapRow[]; cols: number } {
-  const capped = sections.map((s) => ({ ...s, capacity: Math.min(s.capacity, MAX_CINEMA_SEATS) }));
-  const total = capped.reduce((a, s) => a + Math.max(1, s.capacity), 0);
-  const cols = Math.min(20, Math.max(8, Math.ceil(Math.sqrt(total * 1.5))));
-  const rows: MapRow[] = [];
-  let rowIdx = 0;
-  capped.forEach((s, si) => {
-    const cap = Math.max(1, s.capacity);
-    const numRows = Math.ceil(cap / cols);
-    let remaining = cap;
-    for (let r = 0; r < numRows; r++) {
-      const label = String.fromCharCode(65 + (rowIdx % 26));
-      const n = Math.min(cols, remaining);
-      const seats = Array.from({ length: n }, (_, c) => ({
-        id: `${s.id}-${label}${c + 1}`,
-        row: label,
-        number: c + 1,
-      }));
-      rows.push({ label, seats, sectionId: s.id, sectionIndex: si, isFirstRow: r === 0 });
-      remaining -= n;
-      rowIdx++;
-    }
-  });
-  return { rows, cols };
-}
-
 interface CinemaLayoutProps {
   venueType: VenueType;
   sections: SectionConfig[];
   selectedSeats: SelectedSeat[];
   onToggleSeat: (seat: SelectedSeat) => void;
   maxSeats: number;
-  occupancyPerSection: Record<string, number>;
 }
 
-function CinemaLayout({ venueType, sections, selectedSeats, onToggleSeat, maxSeats, occupancyPerSection }: CinemaLayoutProps) {
+function CinemaLayout({ venueType, sections, selectedSeats, onToggleSeat, maxSeats }: CinemaLayoutProps) {
   const maxReached = selectedSeats.length >= maxSeats;
   const selectedIds = useMemo(() => new Set(selectedSeats.map((s) => s.id)), [selectedSeats]);
-  const { rows, cols } = useMemo(() => buildCinemaLayout(sections), [sections]);
   const sectionMap = useMemo(() => {
     const m: Record<string, SectionConfig> = {};
     for (const s of sections) m[s.id] = s;
     return m;
   }, [sections]);
 
-  const occupiedIds = useMemo(
-    () => buildOccupiedFromRows(rows, occupancyPerSection),
-    [rows, occupancyPerSection]
-  );
+  const { rows, cols } = useMemo(() => {
+    const all: MapRow[] = [];
+    let rowIdx = 0;
+    let maxCols = 0;
+    sections.forEach((s, si) => {
+      const sectionRows = buildRowsFromSeats(s, si);
+      sectionRows.forEach((r, j) => {
+        all.push({ ...r, isFirstRow: j === 0 });
+        maxCols = Math.max(maxCols, r.seats.length);
+        rowIdx++;
+      });
+    });
+    return { rows: all, cols: maxCols };
+  }, [sections]);
 
   const handleToggle = useCallback((seat: SelectedSeat) => onToggleSeat(seat), [onToggleSeat]);
 
@@ -545,10 +526,10 @@ function CinemaLayout({ venueType, sections, selectedSeats, onToggleSeat, maxSea
                   <div className="flex gap-[4px]">
                     {row.seats.map((seat) => (
                       <SeatBtn key={seat.id} seat={seat} sectionId={row.sectionId} sectionIndex={row.sectionIndex}
-                        sectionMap={sectionMap} selectedIds={selectedIds} occupiedIds={occupiedIds}
+                        sectionMap={sectionMap} selectedIds={selectedIds}
                         maxReached={maxReached} onToggle={handleToggle} />
                     ))}
-                    {Array.from({ length: cols - row.seats.length }).map((_, i) => (
+                    {Array.from({ length: Math.max(0, cols - row.seats.length) }).map((_, i) => (
                       <div key={`pad-${i}`} className="w-6 h-6" />
                     ))}
                   </div>
@@ -588,7 +569,7 @@ function CinemaLayout({ venueType, sections, selectedSeats, onToggleSeat, maxSea
 
 // ── Main SeatMap ───────────────────────────────────────────────────────────
 
-export function SeatMap({ venueType, venueName, sections, selectedSeats, onToggleSeat, maxSeats = 10, occupancyPerSection = {} }: SeatMapProps) {
+export function SeatMap({ venueType, venueName, sections, selectedSeats, onToggleSeat, maxSeats = 10 }: SeatMapProps) {
   const maxReached = selectedSeats.length >= maxSeats;
   const isStadium = venueType === "STADIUM" || venueType === "COLISEUM";
 
@@ -609,7 +590,6 @@ export function SeatMap({ venueType, venueName, sections, selectedSeats, onToggl
           selectedSeats={selectedSeats}
           onToggleSeat={onToggleSeat}
           maxSeats={maxSeats}
-          occupancyPerSection={occupancyPerSection}
         />
       ) : (
         <CinemaLayout
@@ -618,7 +598,6 @@ export function SeatMap({ venueType, venueName, sections, selectedSeats, onToggl
           selectedSeats={selectedSeats}
           onToggleSeat={onToggleSeat}
           maxSeats={maxSeats}
-          occupancyPerSection={occupancyPerSection}
         />
       )}
     </div>

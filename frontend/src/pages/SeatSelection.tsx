@@ -2,10 +2,30 @@ import { useEffect, useState } from "react";
 import { useParams, useNavigate, useLocation } from "react-router-dom";
 import { Header } from "@/components/layout/Header";
 import { Footer } from "@/components/layout/Footer";
-import { SeatMap, type SelectedSeat, type VenueType } from "@/components/ui/SeatMap";
+import { SeatMap, type SectionConfig, type SelectedSeat, type VenueType } from "@/components/ui/SeatMap";
 import { useAppContext } from "@/context/AppContext";
 import { ChevronLeft, ShoppingCart, Loader2 } from "lucide-react";
 import { getEventBySlug, getEventById, type EventData } from "@/data/events";
+
+interface SeatsApiResponse {
+  venueType: VenueType;
+  venueName: string;
+  sections: Array<{
+    id: string;
+    name: string;
+    ticketTypeId: string | null;
+    price: number;
+    serviceFee: number;
+    maxPerOrder: number;
+    seats: Array<{
+      seatId: string;
+      label: string;
+      row: string;
+      number: number;
+      status: "AVAILABLE" | "HELD" | "SOLD" | "BLOCKED";
+    }>;
+  }>;
+}
 
 const SeatSelection = () => {
   const { id } = useParams<{ id: string }>();
@@ -13,15 +33,17 @@ const SeatSelection = () => {
   const location = useLocation();
   const { addToCart, apiFetch, isLoggedIn } = useAppContext();
   const [event, setEvent] = useState<EventData | null>(null);
+  const [seatsResponse, setSeatsResponse] = useState<SeatsApiResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [selectedSeats, setSelectedSeats] = useState<SelectedSeat[]>([]);
   const [addingToCart, setAddingToCart] = useState(false);
-  const [occupancyPerSection, setOccupancyPerSection] = useState<Record<string, number>>({});
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!id) return;
     void (async () => {
       setLoading(true);
+      setError(null);
       try {
         let ev: EventData | null = null;
         try { ev = await getEventBySlug(id); } catch { /* fall through */ }
@@ -30,12 +52,10 @@ const SeatSelection = () => {
 
         if (ev) {
           try {
-            const occupancy = await apiFetch<Record<string, number>>(
-              `/api/events/${ev.id}/occupied-seats`
-            );
-            setOccupancyPerSection(occupancy);
-          } catch {
-            // non-fatal: map shows all seats available
+            const data = await apiFetch<SeatsApiResponse>(`/api/events/${ev.id}/seats`);
+            setSeatsResponse(data);
+          } catch (e: any) {
+            setError(e?.message || "No fue posible cargar los asientos");
           }
         }
       } catch {
@@ -71,28 +91,39 @@ const SeatSelection = () => {
     setAddingToCart(true);
     try {
       const grouped = selectedSeats.reduce<Record<string, SelectedSeat[]>>((acc, s) => {
-        (acc[s.sectionId] ??= []).push(s);
+        (acc[s.ticketTypeId] ??= []).push(s);
         return acc;
       }, {});
 
-      for (const [, seats] of Object.entries(grouped)) {
-        const first = seats[0];
-        const tt = event.ticketTypes.find((t) => t.id === first.ticketTypeId) ?? {
-          id: first.ticketTypeId,
-          name: first.sectionName,
-          price: first.price,
-          serviceFee: first.serviceFee,
-          available: 100,
-          maxPerOrder: 10,
-        };
-        await addToCart({
-          event,
-          ticketType: tt,
-          quantity: seats.length,
-          seats: seats.map((s) => s.id),
-        });
+      try {
+        for (const [, seats] of Object.entries(grouped)) {
+          const first = seats[0];
+          const tt = event.ticketTypes.find((t) => t.id === first.ticketTypeId) ?? {
+            id: first.ticketTypeId,
+            name: first.sectionName,
+            price: first.price,
+            serviceFee: first.serviceFee,
+            available: 100,
+            maxPerOrder: 10,
+          };
+          await addToCart({
+            event,
+            ticketType: tt,
+            quantity: seats.length,
+            seats: seats.map((s) => s.id),
+          });
+        }
+        navigate("/carrito");
+      } catch (e: any) {
+        // Seats may have been taken by another user between selection and add.
+        alert(e?.message ?? "No fue posible reservar los asientos. Recarga la página y vuelve a intentar.");
+        // Refresh seat availability
+        try {
+          const data = await apiFetch<SeatsApiResponse>(`/api/events/${event.id}/seats`);
+          setSeatsResponse(data);
+          setSelectedSeats([]);
+        } catch { /* ignore */ }
       }
-      navigate("/carrito");
     } finally {
       setAddingToCart(false);
     }
@@ -123,14 +154,20 @@ const SeatSelection = () => {
     );
   }
 
-  const sections = event.ticketTypes.map((tt) => ({
-    id: tt.id,
-    name: tt.name,
-    price: tt.price,
-    serviceFee: tt.serviceFee,
-    capacity: tt.available > 0 ? tt.available : Math.max(tt.maxPerOrder * 10, 80),
-    maxPerOrder: tt.maxPerOrder,
-  }));
+  const sections: SectionConfig[] = (seatsResponse?.sections ?? [])
+    .filter((s) => s.ticketTypeId !== null)
+    .map((s) => ({
+      id: s.id,
+      name: s.name,
+      ticketTypeId: s.ticketTypeId as string,
+      price: s.price,
+      serviceFee: s.serviceFee,
+      maxPerOrder: s.maxPerOrder,
+      seats: s.seats,
+    }));
+
+  const venueType: VenueType = seatsResponse?.venueType ?? (event.venueType as VenueType) ?? "ARENA";
+  const venueName = seatsResponse?.venueName ?? event.venue;
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
@@ -148,15 +185,18 @@ const SeatSelection = () => {
         <div className="grid lg:grid-cols-3 gap-8">
           <div className="lg:col-span-2 bg-card rounded-xl border border-border p-6 overflow-x-auto">
             <h2 className="font-black text-foreground uppercase tracking-tight mb-6">Selecciona tus Asientos</h2>
-            <SeatMap
-              venueType={(event.venueType as VenueType) ?? "ARENA"}
-              venueName={event.venue}
-              sections={sections}
-              selectedSeats={selectedSeats}
-              onToggleSeat={toggleSeat}
-              maxSeats={10}
-              occupancyPerSection={occupancyPerSection}
-            />
+            {error ? (
+              <p className="text-sm text-destructive py-8 text-center">{error}</p>
+            ) : (
+              <SeatMap
+                venueType={venueType}
+                venueName={venueName}
+                sections={sections}
+                selectedSeats={selectedSeats}
+                onToggleSeat={toggleSeat}
+                maxSeats={10}
+              />
+            )}
           </div>
 
           <div>

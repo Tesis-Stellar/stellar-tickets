@@ -273,14 +273,14 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       };
 
       const cartData = await load("carrito", () =>
-        apiFetch<Array<{ id: string; quantity: number; seatIds?: string[]; ticketType?: { id: string; name: string; price: number; serviceFee: number } }>>("/api/cart")
+        apiFetch<Array<{ id: string; quantity: number; seatIds?: string[]; seatLabels?: string[]; ticketType?: { id: string; name: string; price: number; serviceFee: number } }>>("/api/cart")
       );
       if (cartData) {
         setCart(
           cartData.map((item) => ({
             id: item.id,
             quantity: item.quantity,
-            seats: item.seatIds,
+            seats: item.seatLabels ?? item.seatIds,
             ticketType: {
               id: item.ticketType?.id ?? "unknown",
               name: item.ticketType?.name ?? "Boleta",
@@ -343,29 +343,46 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     })();
   }, [apiFetch, token, user, mapTicketsResponse]);
 
+  const refreshCart = useCallback(async () => {
+    const cartData = await apiFetch<Array<{ id: string; quantity: number; seatIds?: string[]; seatLabels?: string[]; ticketType?: { id: string; name: string; price: number; serviceFee: number }; event?: Partial<EventData> }>>("/api/cart");
+    setCart(
+      cartData.map((item) => ({
+        id: item.id,
+        quantity: item.quantity,
+        seats: item.seatLabels ?? item.seatIds,
+        ticketType: {
+          id: item.ticketType?.id ?? "unknown",
+          name: item.ticketType?.name ?? "Boleta",
+          price: item.ticketType?.price ?? 0,
+          serviceFee: item.ticketType?.serviceFee ?? 0,
+          available: 0,
+          maxPerOrder: 10,
+        },
+        event: normalizeEventData(item.event),
+      }))
+    );
+  }, [apiFetch]);
+
   const addToCart = useCallback(
     async (item: Omit<CartItem, "id">) => {
-      const created = await apiFetch<{ id: string }>("/api/cart/items", {
+      // For seated tickets, item.seats holds seat UUIDs (from SeatSelection).
+      // For GA tickets, item.seats is undefined; only quantity matters.
+      const seatIds = item.seats;
+      const isSeated = Array.isArray(seatIds) && seatIds.length > 0;
+      await apiFetch<{ id: string }>("/api/cart/items", {
         method: "POST",
         body: JSON.stringify({
           eventId: item.event.id,
           ticketTypeId: item.ticketType.id,
-          quantity: item.quantity,
-          seatIds: item.seats,
+          quantity: isSeated ? undefined : item.quantity,
+          seatIds: isSeated ? seatIds : undefined,
         }),
       });
-      setCart((prev) => {
-        // If backend merged into existing item, replace it by ticket type
-        const existingIdx = prev.findIndex((c) => c.ticketType.id === item.ticketType.id && c.event.id === item.event.id);
-        if (existingIdx >= 0) {
-          const updated = [...prev];
-          updated[existingIdx] = { ...updated[existingIdx], id: created.id, quantity: updated[existingIdx].quantity + item.quantity };
-          return updated;
-        }
-        return [...prev, { ...item, id: created.id }];
-      });
+      // Re-fetch cart so seated tickets show real labels and per-seat rows
+      // (backend creates one cart_item per seat for assigned seating).
+      await refreshCart();
     },
-    [apiFetch]
+    [apiFetch, refreshCart]
   );
 
   const removeFromCart = useCallback(
