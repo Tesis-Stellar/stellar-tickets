@@ -157,6 +157,7 @@ function toEventDto(event: any) {
     city: event.venues?.cities?.city_name ?? null,
     organizer: event.organizers?.legal_name ?? '',
     venue: { name: event.venues?.name ?? '' },
+    venueType: event.venues?.venue_type ?? null,
     startsAt: event.starts_at,
     hasAssignedSeating: event.has_assigned_seating,
     minPrice: minPrice,
@@ -204,8 +205,12 @@ app.get('/api/events/featured', async (req, res) => {
 app.get('/api/events/:slug', async (req, res) => {
   try {
     const slug = req.params.slug;
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(slug);
     const event = await cached(`events:slug:${slug}`, 30_000, () =>
-      prisma.events.findFirst({ where: { slug }, include: eventIncludes })
+      prisma.events.findFirst({
+        where: isUuid ? { OR: [{ id: slug }, { slug }] } : { slug },
+        include: eventIncludes,
+      })
     );
 
     if (!event) {
@@ -262,6 +267,104 @@ app.get('/api/events/:id/ticket-types', async (req, res) => {
   }
 });
 
+// GET /api/events/:id/seats - Sections + seats + availability for seat-map rendering
+app.get('/api/events/:id/seats', async (req, res) => {
+  try {
+    const eventId = req.params.id;
+
+    const event = await prisma.events.findUnique({
+      where: { id: eventId },
+      include: {
+        venues: true,
+        event_ticket_types: {
+          where: { is_active: true, venue_section_id: { not: null } },
+          select: {
+            id: true,
+            venue_section_id: true,
+            ticket_type_name: true,
+            price_amount: true,
+            service_fee_amount: true,
+            max_per_order: true,
+          },
+        },
+      },
+    });
+
+    if (!event) {
+      res.status(404).json({ error: 'Evento no encontrado' });
+      return;
+    }
+
+    if (!event.has_assigned_seating) {
+      res.status(400).json({ error: 'Este evento no tiene selección de asientos' });
+      return;
+    }
+
+    // Build a map: venue_section_id -> ticket_type
+    const ttBySectionId = new Map<string, any>();
+    for (const tt of event.event_ticket_types) {
+      if (tt.venue_section_id) ttBySectionId.set(tt.venue_section_id, tt);
+    }
+
+    // Get all venue sections for this venue (that have a ticket type for this event)
+    const sectionIds = [...ttBySectionId.keys()];
+    const sections = await prisma.venue_sections.findMany({
+      where: { id: { in: sectionIds } },
+      include: {
+        seats: {
+          where: { is_active: true },
+          orderBy: [{ row_label: 'asc' }, { seat_number: 'asc' }],
+        },
+      },
+      orderBy: { section_name: 'asc' },
+    });
+
+    // Get all inventory records for this event in these sections
+    const seatIds = sections.flatMap(s => s.seats.map(seat => seat.id));
+    const inventory = await prisma.event_seat_inventory.findMany({
+      where: { event_id: eventId, seat_id: { in: seatIds } },
+      select: { id: true, seat_id: true, status: true },
+    });
+    const inventoryBySeatId = new Map(inventory.map(inv => [inv.seat_id, inv]));
+
+    const sectionsDto = sections.map(section => {
+      const tt = ttBySectionId.get(section.id);
+      return {
+        id: section.id,
+        name: section.section_name,
+        code: section.section_code,
+        hasNumberedSeats: section.has_numbered_seats,
+        capacity: section.capacity,
+        ticketTypeId: tt?.id ?? null,
+        price: tt ? Number(tt.price_amount) : 0,
+        serviceFee: tt ? Number(tt.service_fee_amount) : 0,
+        maxPerOrder: tt?.max_per_order ?? 6,
+        seats: section.seats.map(seat => {
+          const inv = inventoryBySeatId.get(seat.id);
+          return {
+            inventoryId: inv?.id ?? null,
+            seatId: seat.id,
+            label: seat.seat_label,
+            row: seat.row_label ?? '',
+            number: seat.seat_number ?? 0,
+            isAccessible: seat.is_accessible,
+            status: inv?.status ?? 'AVAILABLE',
+          };
+        }),
+      };
+    });
+
+    res.json({
+      venueType: event.venues.venue_type,
+      venueName: event.venues.name,
+      sections: sectionsDto,
+    });
+  } catch (error: any) {
+    console.error(error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // GET /api/events/:id/related - Related events (same category)
 app.get('/api/events/:id/related', async (req, res) => {
   try {
@@ -279,6 +382,42 @@ app.get('/api/events/:id/related', async (req, res) => {
     res.json(result);
   } catch (error: any) {
     console.error(error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/events/:id/occupied-seats — count of sold/active tickets per ticket_type
+app.get('/api/events/:id/occupied-seats', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const event = await prisma.events.findFirst({
+      where: { OR: [{ id }, { slug: id }] },
+      select: { id: true },
+    });
+    if (!event) { res.status(404).json({ error: 'Evento no encontrado' }); return; }
+
+    const ticketTypes = await prisma.event_ticket_types.findMany({
+      where: { event_id: event.id },
+      select: { id: true },
+    });
+
+    const occupancyMap: Record<string, number> = {};
+    await Promise.all(
+      ticketTypes.map(async (tt) => {
+        const count = await prisma.tickets.count({
+          where: {
+            status: { in: ['ACTIVE', 'USED'] },
+            order_item_id: { not: null },
+            order_items: { event_ticket_type_id: tt.id },
+          },
+        });
+        occupancyMap[tt.id] = count;
+      })
+    );
+
+    res.json(occupancyMap);
+  } catch (error: any) {
+    console.error('[SEATS] occupied-seats error:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -1082,6 +1221,7 @@ async function getOrCreateCart(userId: string) {
 function toCartItemDto(item: any) {
   const tt = item.event_ticket_types;
   const evt = tt?.events;
+  const base = evt ? toEventDto(evt) : undefined;
   return {
     id: item.id,
     quantity: item.quantity,
@@ -1092,7 +1232,8 @@ function toCartItemDto(item: any) {
       price: Number(tt.price_amount),
       serviceFee: Number(tt.service_fee_amount),
     } : undefined,
-    event: evt ? toEventDto(evt) : undefined,
+    // venue must be a string for Cart.tsx (toEventDto returns an object)
+    event: base ? { ...base, venue: evt.venues?.name ?? '' } : undefined,
   };
 }
 
@@ -1136,16 +1277,28 @@ app.post('/api/cart/items', authMiddleware, async (req, res) => {
     }
 
     const cart = await getOrCreateCart(userId);
-    const item = await prisma.cart_items.create({
-      data: {
-        cart_id: cart.id,
-        event_ticket_type_id: ticketTypeId,
-        quantity,
-        unit_price_amount: ticketType.price_amount,
-        service_fee_amount: ticketType.service_fee_amount,
-      },
-      include: cartItemIncludes,
+
+    // If same ticket type already in cart, increment quantity instead of failing
+    const existing = await prisma.cart_items.findFirst({
+      where: { cart_id: cart.id, event_ticket_type_id: ticketTypeId },
     });
+
+    const item = existing
+      ? await prisma.cart_items.update({
+          where: { id: existing.id },
+          data: { quantity: existing.quantity + quantity },
+          include: cartItemIncludes,
+        })
+      : await prisma.cart_items.create({
+          data: {
+            cart_id: cart.id,
+            event_ticket_type_id: ticketTypeId,
+            quantity,
+            unit_price_amount: ticketType.price_amount,
+            service_fee_amount: ticketType.service_fee_amount,
+          },
+          include: cartItemIncludes,
+        });
 
     res.json(toCartItemDto(item));
   } catch (error: any) {

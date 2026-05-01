@@ -296,7 +296,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
 
   const addToCart = useCallback(
     async (item: Omit<CartItem, "id">) => {
-      await apiFetch("/api/cart/items", {
+      const created = await apiFetch<{ id: string }>("/api/cart/items", {
         method: "POST",
         body: JSON.stringify({
           eventId: item.event.id,
@@ -305,8 +305,16 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
           seatIds: item.seats,
         }),
       });
-      const id = `tmp-${Date.now()}`;
-      setCart((prev) => [...prev, { ...item, id }]);
+      setCart((prev) => {
+        // If backend merged into existing item, replace it by ticket type
+        const existingIdx = prev.findIndex((c) => c.ticketType.id === item.ticketType.id && c.event.id === item.event.id);
+        if (existingIdx >= 0) {
+          const updated = [...prev];
+          updated[existingIdx] = { ...updated[existingIdx], id: created.id, quantity: updated[existingIdx].quantity + item.quantity };
+          return updated;
+        }
+        return [...prev, { ...item, id: created.id }];
+      });
     },
     [apiFetch]
   );
