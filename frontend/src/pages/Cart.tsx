@@ -4,6 +4,14 @@ import { Footer } from "@/components/layout/Footer";
 import { useAppContext } from "@/context/AppContext";
 import { Trash2, ShoppingCart, Minus, Plus } from "lucide-react";
 
+const getVenueName = (venue: unknown) => {
+  if (typeof venue === "string") return venue;
+  if (venue && typeof venue === "object" && "name" in venue) {
+    return String((venue as { name?: unknown }).name ?? "Venue por confirmar");
+  }
+  return "Venue por confirmar";
+};
+
 const Cart = () => {
   const { cart, removeFromCart, updateCartQuantity, clearCart } = useAppContext();
   const subtotal = cart.reduce((s, c) => s + c.ticketType.price * c.quantity, 0);
@@ -37,7 +45,7 @@ const Cart = () => {
                 <img src={item.event.image} alt={item.event.title} className="w-20 h-20 rounded-lg object-cover shrink-0" />
                 <div className="flex-1 min-w-0">
                   <p className="font-bold text-foreground text-sm truncate">{item.event.title}</p>
-                  <p className="text-xs text-muted-foreground">{item.event.date} {item.event.month} {item.event.year} · {item.event.venue}</p>
+                  <p className="text-xs text-muted-foreground">{item.event.date} {item.event.month} {item.event.year} · {getVenueName(item.event.venue)}</p>
                   <p className="text-xs text-primary font-bold mt-1">{item.ticketType.name}{item.seats?.length ? ` — ${item.seats.join(", ")}` : ""}</p>
                 </div>
                 <div className="flex flex-col items-end justify-between shrink-0">

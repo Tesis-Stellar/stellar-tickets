@@ -26,6 +26,7 @@ export interface PurchasedTicket {
   ticketRootId?: number;
   version?: number;
   ownerWallet?: string;
+  resalePrice?: number;
 }
 
 /* ── Sold ticket ── */
@@ -101,6 +102,23 @@ interface AppState {
 
 const AppContext = createContext<AppState | null>(null);
 
+const normalizeEventData = (event?: Partial<EventData>): EventData =>
+  ({
+    ...event,
+    image: (event as any)?.posterImage || (event as any)?.bannerImage || event?.image || "https://placehold.co/800x500?text=Evento",
+    bannerImage: (event as any)?.bannerImage || (event as any)?.posterImage || event?.bannerImage || "https://placehold.co/1200x400?text=Evento",
+  }) as EventData;
+
+class ApiRequestError extends Error {
+  status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = "ApiRequestError";
+    this.status = status;
+  }
+}
+
 export const useAppContext = () => {
   const ctx = useContext(AppContext);
   if (!ctx) throw new Error("useAppContext must be used within AppProvider");
@@ -128,8 +146,15 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       if (token) headers.set("Authorization", `Bearer ${token}`);
       const response = await fetch(`${API_BASE_URL}${path}`, { ...init, headers });
       if (!response.ok) {
-        const message = await response.text();
-        throw new Error(message || `Request failed: ${response.status}`);
+        const rawMessage = await response.text();
+        let message = rawMessage;
+        try {
+          const parsed = JSON.parse(rawMessage) as { error?: string; message?: string };
+          message = parsed.error ?? parsed.message ?? rawMessage;
+        } catch {
+          // Keep the plain response body when it is not JSON.
+        }
+        throw new ApiRequestError(response.status, message || `Request failed: ${response.status}`);
       }
       if (response.status === 204) return undefined as T;
       return response.json() as Promise<T>;
@@ -189,10 +214,10 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   }, [refreshUserData, token]);
 
   const mapTicketsResponse = useCallback(
-    (ticketsData: Array<{ id: string; purchasedAt?: string; quantity: number; seatIds?: string[]; ticketType?: { id: string; name: string; price: number; serviceFee: number }; event?: Partial<EventData>; isSecuredOnChain?: boolean; isForSale?: boolean; contractAddress?: string; ticketRootId?: number; version?: number; ownerWallet?: string }>): PurchasedTicket[] =>
+    (ticketsData: Array<{ id: string; purchasedAt?: string; quantity: number; seatIds?: string[]; ticketType?: { id: string; name: string; price: number; serviceFee: number }; event?: Partial<EventData>; isSecuredOnChain?: boolean; isForSale?: boolean; contractAddress?: string; ticketRootId?: number; version?: number; ownerWallet?: string; resalePrice?: number | null }>): PurchasedTicket[] =>
       ticketsData.map((ticket) => ({
         id: ticket.id,
-        event: { ...ticket.event, image: (ticket.event as any)?.posterImage || (ticket.event as any)?.bannerImage || ticket.event?.image || "", bannerImage: (ticket.event as any)?.bannerImage || (ticket.event as any)?.posterImage || ticket.event?.bannerImage || "" } as EventData,
+        event: normalizeEventData(ticket.event),
         ticketCode: (ticket as any)?.ticketCode,
         ticketType: {
           id: ticket.ticketType?.id ?? "unknown",
@@ -211,12 +236,13 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         ticketRootId: ticket.ticketRootId,
         version: ticket.version,
         ownerWallet: ticket.ownerWallet,
+        resalePrice: ticket.resalePrice ?? undefined,
       })),
     []
   );
 
   const refreshTickets = useCallback(async () => {
-    const ticketsData = await apiFetch<Array<{ id: string; purchasedAt?: string; quantity: number; seatIds?: string[]; ticketType?: { id: string; name: string; price: number; serviceFee: number }; event?: Partial<EventData>; isSecuredOnChain?: boolean; isForSale?: boolean; contractAddress?: string; ticketRootId?: number; version?: number; ownerWallet?: string }>>("/api/tickets");
+    const ticketsData = await apiFetch<Array<{ id: string; purchasedAt?: string; quantity: number; seatIds?: string[]; ticketType?: { id: string; name: string; price: number; serviceFee: number }; event?: Partial<EventData>; isSecuredOnChain?: boolean; isForSale?: boolean; contractAddress?: string; ticketRootId?: number; version?: number; ownerWallet?: string; resalePrice?: number | null }>>("/api/tickets");
     setPurchasedTickets(mapTicketsResponse(ticketsData));
   }, [apiFetch, mapTicketsResponse]);
 
@@ -224,7 +250,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     const data = await apiFetch<Array<{ id: string; soldAt: string; resalePrice: number; contractAddress?: string; ticketRootId?: number; version?: number; ticketType?: { id: string; name: string; price: number }; event?: Partial<EventData> }>>("/api/tickets/sold");
     setSoldTickets(data.map((t) => ({
       ...t,
-      event: t.event ? { ...t.event, image: (t.event as any)?.posterImage || (t.event as any)?.bannerImage || t.event?.image || "", bannerImage: (t.event as any)?.bannerImage || (t.event as any)?.posterImage || t.event?.bannerImage || "" } as EventData : undefined,
+      event: t.event ? normalizeEventData(t.event) : undefined,
     })));
   }, [apiFetch]);
 
@@ -237,14 +263,19 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       return;
     }
     void (async () => {
-      try {
-        const [cartData, ordersData, ticketsData, soldData] = await Promise.all([
-          apiFetch<Array<{ id: string; quantity: number; seatIds?: string[]; ticketType?: { id: string; name: string; price: number; serviceFee: number } }>>("/api/cart"),
-          apiFetch<Array<{ id: string; orderNumber?: string; createdAt: string; total: number; subtotal?: number; serviceFees?: number; status?: string }>>("/api/orders"),
-          apiFetch<Array<{ id: string; purchasedAt?: string; quantity: number; seatIds?: string[]; ticketType?: { id: string; name: string; price: number; serviceFee: number }; event?: Partial<EventData>; isSecuredOnChain?: boolean; isForSale?: boolean; contractAddress?: string; ticketRootId?: number; version?: number; ownerWallet?: string }>>("/api/tickets"),
-          apiFetch<Array<{ id: string; soldAt: string; resalePrice: number; contractAddress?: string; ticketRootId?: number; version?: number; ticketType?: { id: string; name: string; price: number }; event?: Partial<EventData> }>>("/api/tickets/sold"),
-        ]);
+      const load = async <T,>(label: string, request: () => Promise<T>): Promise<T | null> => {
+        try {
+          return await request();
+        } catch (error) {
+          console.error(`[APP] Error cargando ${label}:`, error);
+          return null;
+        }
+      };
 
+      const cartData = await load("carrito", () =>
+        apiFetch<Array<{ id: string; quantity: number; seatIds?: string[]; ticketType?: { id: string; name: string; price: number; serviceFee: number } }>>("/api/cart")
+      );
+      if (cartData) {
         setCart(
           cartData.map((item) => ({
             id: item.id,
@@ -258,10 +289,17 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
               available: 0,
               maxPerOrder: 10,
             },
-            event: (item as unknown as { event: EventData }).event,
+            event: normalizeEventData((item as unknown as { event?: Partial<EventData> }).event),
           }))
         );
+      } else {
+        setCart([]);
+      }
 
+      const ordersData = await load("órdenes", () =>
+        apiFetch<Array<{ id: string; orderNumber?: string; createdAt: string; total: number; subtotal?: number; serviceFees?: number; status?: string }>>("/api/orders")
+      );
+      if (ordersData) {
         setOrders(
           ordersData.map((order) => ({
             id: order.id,
@@ -278,17 +316,28 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
             status: order.status?.toLowerCase() === "pending" ? "pending" : "confirmed",
           }))
         );
+      } else {
+        setOrders([]);
+      }
 
+      const ticketsData = await load("tickets", () =>
+        apiFetch<Array<{ id: string; purchasedAt?: string; quantity: number; seatIds?: string[]; ticketType?: { id: string; name: string; price: number; serviceFee: number }; event?: Partial<EventData>; isSecuredOnChain?: boolean; isForSale?: boolean; contractAddress?: string; ticketRootId?: number; version?: number; ownerWallet?: string; resalePrice?: number | null }>>("/api/tickets")
+      );
+      if (ticketsData) {
         setPurchasedTickets(mapTicketsResponse(ticketsData));
+      } else {
+        setPurchasedTickets([]);
+      }
 
+      const soldData = await load("ventas", () =>
+        apiFetch<Array<{ id: string; soldAt: string; resalePrice: number; contractAddress?: string; ticketRootId?: number; version?: number; ticketType?: { id: string; name: string; price: number }; event?: Partial<EventData> }>>("/api/tickets/sold")
+      );
+      if (soldData) {
         setSoldTickets(soldData.map((t) => ({
           ...t,
-          event: t.event ? { ...t.event, image: (t.event as any)?.posterImage || (t.event as any)?.bannerImage || t.event?.image || "", bannerImage: (t.event as any)?.bannerImage || (t.event as any)?.posterImage || t.event?.bannerImage || "" } as EventData : undefined,
+          event: t.event ? normalizeEventData(t.event) : undefined,
         })));
-      } catch {
-        setCart([]);
-        setOrders([]);
-        setPurchasedTickets([]);
+      } else {
         setSoldTickets([]);
       }
     })();
@@ -531,12 +580,21 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     async (ticketId: string, priceXLM: number): Promise<{ success: boolean; txHash?: string; error?: string }> => {
       try {
         const priceStroops = Math.round(priceXLM * 10_000_000);
-        const result = await apiFetch<{ success: boolean; txHash: string }>("/api/transactions/list-ticket", {
+        const { xdr, networkPassphrase } = await apiFetch<{ xdr: string; networkPassphrase: string }>("/api/transactions/list-ticket", {
           method: "POST",
           body: JSON.stringify({ ticketId, price: priceStroops }),
         });
+        const { signTransaction } = await import("@stellar/freighter-api");
+        const signResult = await signTransaction(xdr, { networkPassphrase });
+        const signedXdr = typeof signResult === "string" ? signResult : (signResult as any)?.signedTxXdr ?? "";
+        if (!signedXdr) return { success: false, error: "Firma cancelada por el usuario" };
+
+        const result = await apiFetch<{ success: boolean; txHash: string }>("/api/transactions/submit", {
+          method: "POST",
+          body: JSON.stringify({ signedXdr }),
+        });
         setPurchasedTickets((prev) =>
-          prev.map((t) => (t.id === ticketId ? { ...t, isForSale: true } : t))
+          prev.map((t) => (t.id === ticketId ? { ...t, isForSale: true, resalePrice: priceStroops } : t))
         );
         return { success: true, txHash: result.txHash };
       } catch (error: any) {
@@ -549,12 +607,21 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   const cancelResaleListing = useCallback(
     async (ticketId: string): Promise<{ success: boolean; txHash?: string; error?: string }> => {
       try {
-        const result = await apiFetch<{ success: boolean; txHash: string }>("/api/transactions/cancel-listing", {
+        const { xdr, networkPassphrase } = await apiFetch<{ xdr: string; networkPassphrase: string }>("/api/transactions/cancel-listing", {
           method: "POST",
           body: JSON.stringify({ ticketId }),
         });
+        const { signTransaction } = await import("@stellar/freighter-api");
+        const signResult = await signTransaction(xdr, { networkPassphrase });
+        const signedXdr = typeof signResult === "string" ? signResult : (signResult as any)?.signedTxXdr ?? "";
+        if (!signedXdr) return { success: false, error: "Firma cancelada por el usuario" };
+
+        const result = await apiFetch<{ success: boolean; txHash: string }>("/api/transactions/submit", {
+          method: "POST",
+          body: JSON.stringify({ signedXdr }),
+        });
         setPurchasedTickets((prev) =>
-          prev.map((t) => (t.id === ticketId ? { ...t, isForSale: false } : t))
+          prev.map((t) => (t.id === ticketId ? { ...t, isForSale: false, resalePrice: undefined } : t))
         );
         return { success: true, txHash: result.txHash };
       } catch (error: any) {
