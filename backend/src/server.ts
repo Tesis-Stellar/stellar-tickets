@@ -597,7 +597,7 @@ app.post('/api/transactions/secure-ticket', authMiddleware, async (req, res) => 
       }
       console.error('[SOROBAN] Transaction FAILED. Status:', getResponse.status, '| Diagnostic:', diagnosticInfo);
       res.status(500).json({
-        error: 'Transacci\u00f3n blockchain fallida',
+        error: 'Transacción blockchain fallida',
         detail: getResponse.status,
         diagnostic: diagnosticInfo,
       });
