@@ -542,7 +542,7 @@ impl ContratoEvento {
         let organizador = Self::obtener_organizador(&entorno)?;
         organizador.require_auth();
 
-        Self::crear_boleto_con_propietario(&entorno, id_evento, organizador, precio)
+        Self::crear_boleto_con_propietario(&entorno, id_evento, organizador, precio, false)
     }
 
     /*
@@ -560,6 +560,7 @@ impl ContratoEvento {
         id_evento: u32,
         propietario: Address,
         precio: i128,
+        es_reventa: bool,
     ) -> Result<u32, ErrorContrato> {
         if precio <= 0 {
             return Err(ErrorContrato::PrecioInvalido);
@@ -568,7 +569,7 @@ impl ContratoEvento {
         let organizador = Self::obtener_organizador(&entorno)?;
         organizador.require_auth();
 
-        Self::crear_boleto_con_propietario(&entorno, id_evento, propietario, precio)
+        Self::crear_boleto_con_propietario(&entorno, id_evento, propietario, precio, es_reventa)
     }
 
     fn crear_boleto_con_propietario(
@@ -576,13 +577,12 @@ impl ContratoEvento {
         id_evento: u32,
         propietario: Address,
         precio: i128,
+        es_reventa: bool,
     ) -> Result<u32, ErrorContrato> {
         if precio <= 0 {
             return Err(ErrorContrato::PrecioInvalido);
         }
 
-        // El contador funciona como auto-incremento: cada boleto nuevo
-        // recibe el valor actual del contador como su ticket_root_id
         let mut contador_boletos: u32 = entorno
             .storage()
             .instance()
@@ -598,17 +598,15 @@ impl ContratoEvento {
             propietario: propietario.clone(),
             precio,
             en_venta: false,
-            es_reventa: false,
+            es_reventa,
             usado: false,
             invalidado: false,
         };
 
-        // Guardamos el boleto con clave (root_id, version)
         entorno
             .storage()
             .instance()
             .set(&ClaveDato::Boleto(ticket_root_id, version), &boleto);
-        // Registramos que la versión actual de este root_id es 0
         entorno
             .storage()
             .instance()
