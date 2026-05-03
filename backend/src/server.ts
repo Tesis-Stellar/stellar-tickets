@@ -565,29 +565,67 @@ app.post('/api/transactions/secure-ticket', authMiddleware, async (req, res) => 
     } while (getResponse.status === 'NOT_FOUND' && attempts < 30);
 
     if (getResponse.status !== 'SUCCESS') {
-      // stellar-sdk v14 returns resultMetaXdr already parsed as an xdr.TransactionMeta object
-      const resultMeta = (getResponse as any).resultMetaXdr ?? (getResponse as any).resultXdr;
+      const resultMeta = (getResponse as any).resultMetaXdr;
+      const resultXdrParsed = (getResponse as any).resultXdr;
+
+      // Dump base64 so we can inspect with stellar-xdr-json or laboratory if needed
+      let metaB64 = 'n/a', resB64 = 'n/a';
+      try { metaB64 = resultMeta?.toXDR?.('base64') ?? 'n/a'; } catch {}
+      try { resB64 = resultXdrParsed?.toXDR?.('base64') ?? 'n/a'; } catch {}
+
+      // Try extracting diagnostic events from any meta version
       let diagnosticSummary: string[] = [];
-      try {
-        const sorobanMeta = (resultMeta as any)?.v3?.()?.sorobanMeta?.()
-          ?? (resultMeta as any)?.v4?.()?.sorobanMeta?.();
-        const diagEvents: any[] = sorobanMeta?.diagnosticEvents?.() ?? [];
-        diagnosticSummary = diagEvents.map((e: any) => {
+      const tryExtractFromMeta = (meta: any) => {
+        const out: string[] = [];
+        const versions = ['v0', 'v1', 'v2', 'v3', 'v4'];
+        for (const v of versions) {
           try {
-            const topics = (e.event?.().body?.().v0?.().topics?.() ?? [])
-              .map((t: any) => { try { return scValToNative(t); } catch { return t?.toString(); } });
-            const data = e.event?.().body?.().v0?.().data?.();
-            const dataVal = data ? (() => { try { return scValToNative(data); } catch { return data?.toString(); } })() : undefined;
-            return JSON.stringify({ topics, data: dataVal });
-          } catch { return String(e); }
-        });
-      } catch { /* ignore decode errors */ }
+            const inner = meta?.[v]?.();
+            const sorobanMeta = inner?.sorobanMeta?.();
+            const diagEvents: any[] = sorobanMeta?.diagnosticEvents?.() ?? [];
+            const events: any[] = sorobanMeta?.events?.() ?? [];
+            const returnValue = sorobanMeta?.returnValue?.();
+            for (const e of diagEvents) {
+              try {
+                const inSuccess = e.inSuccessfulContractCall?.();
+                const evt = e.event?.();
+                const v0 = evt?.body?.()?.v0?.();
+                const topics = (v0?.topics?.() ?? []).map((t: any) => {
+                  try { return scValToNative(t); } catch { return t?.toString?.() ?? String(t); }
+                });
+                const data = v0?.data?.();
+                const dataVal = data ? (() => { try { return scValToNative(data); } catch { return String(data); } })() : null;
+                out.push(JSON.stringify({ inSuccess, topics, data: dataVal }));
+              } catch (err: any) {
+                out.push(`(parse-err: ${err?.message ?? err})`);
+              }
+            }
+            if (returnValue) {
+              try { out.push(`returnValue=${JSON.stringify(scValToNative(returnValue))}`); } catch {}
+            }
+            if (out.length > 0 || diagEvents.length > 0 || events.length > 0) {
+              return { out, version: v };
+            }
+          } catch { /* try next version */ }
+        }
+        return { out, version: null };
+      };
+
+      const { out, version } = tryExtractFromMeta(resultMeta);
+      diagnosticSummary = out;
+
       console.error('[SOROBAN] Transaction failed:', getResponse.status);
+      console.error('[SOROBAN] meta version detected:', version ?? '(none)');
+      console.error('[SOROBAN] meta object keys:', resultMeta ? Object.keys(resultMeta) : 'null');
+      console.error('[SOROBAN] meta XDR base64:', metaB64);
+      console.error('[SOROBAN] result XDR base64:', resB64);
       console.error('[SOROBAN] Diagnostic events:', diagnosticSummary.length ? diagnosticSummary : '(vacío)');
+
       res.status(500).json({
         error: 'Transacción blockchain fallida',
         detail: getResponse.status,
         diagnostics: diagnosticSummary,
+        metaXdr: metaB64,
       });
       return;
     }
