@@ -89,11 +89,15 @@ Si la indexación continua se ejecuta por separado en tu despliegue, debe apunta
 | `SOROBAN_RPC_URL`   | No         | RPC Soroban (por defecto testnet público). |
 | `ORGANIZER_SECRET`  | No**       | Secret key del organizador para operaciones que construyen/envían transacciones desde el backend. |
 | `ORGANIZER_PUBLIC`  | No         | Clave pública del organizador usada en rutas admin/contratos si no quieres el valor por defecto del código. |
+| `VERIFIER_SECRET`   | No***      | Secret key de la wallet verificador autorizada en contratos de evento para ejecutar redenciones on-chain. |
+| `VERIFIER_PUBLIC`   | No         | Clave pública del verificador usada como referencia operativa. |
 | `VERCEL`            | No         | En despliegues serverless la define el proveedor; si existe, `server.ts` no ejecuta el bloque de proceso largo (`listen` + `runIndexer()`). |
 
 \* En desarrollo local, si `JWT_SECRET` no está definido, el servidor permite un fallback inseguro y muestra un warning en consola. Ese fallback no debe usarse en entornos compartidos, demos públicas ni producción; con `NODE_ENV=production`, la aplicación falla al iniciar si falta `JWT_SECRET`.
 
 \*\* Sin `ORGANIZER_SECRET`, algunas rutas on-chain responderán con error de servicio no configurado.
+
+\*\*\* Si `VERIFIER_SECRET` no está definido, el backend usa `ORGANIZER_SECRET` como fallback para demo. Para un entorno production-like, usa una wallet separada y registrada con `agregar_verificador` en cada contrato.
 
 Copia `.env.example` a `.env` y ajusta valores; las claves de organizador suelen ser solo locales o secretos del proveedor, nunca en el repositorio.
 

@@ -53,6 +53,8 @@ const sorobanServer = new SorobanRpc.Server(SOROBAN_RPC_URL);
 // Organizer keypair for on-chain operations (from deploy)
 const ORGANIZER_SECRET = process.env.ORGANIZER_SECRET;
 const organizerKeypair = ORGANIZER_SECRET ? Keypair.fromSecret(ORGANIZER_SECRET) : null;
+const VERIFIER_SECRET = process.env.VERIFIER_SECRET;
+const verifierKeypair = VERIFIER_SECRET ? Keypair.fromSecret(VERIFIER_SECRET) : organizerKeypair;
 
 // Helper: build user DTO for frontend
 function toUserDto(user: { id: string; first_name: string; last_name: string; email: string; phone: string | null; document_type: string; document_number: string; wallet_address?: string | null; role?: string }) {
@@ -748,7 +750,7 @@ app.get('/api/admin/venues', authMiddleware, async (req, res) => {
   } catch (error: any) { res.status(500).json({ error: error.message }); }
 });
 
-// POST /api/admin/scan — Redeem a ticket
+// POST /api/admin/scan — Redeem a ticket on Soroban, then project the result to PostgreSQL
 app.post('/api/admin/scan', authMiddleware, async (req, res) => {
   try {
     const user = await prisma.users.findUnique({ where: { id: (req as any).userId } });
@@ -756,28 +758,87 @@ app.post('/api/admin/scan', authMiddleware, async (req, res) => {
 
     const { ticketId } = req.body;
     if (!ticketId) { res.status(400).json({ error: 'ticketId es requerido' }); return; }
+    if (!verifierKeypair) {
+      res.status(503).json({ error: 'Blockchain no configurada (falta VERIFIER_SECRET u ORGANIZER_SECRET)' });
+      return;
+    }
 
     // Check if the ticket exists
     const ticket = await prisma.tickets.findUnique({ where: { id: ticketId } });
-    
     if (!ticket) {
       res.status(404).json({ error: 'Boleto no encontrado en la base de datos' });
       return;
     }
 
-    if (ticket.status !== 'ACTIVE') {
-      res.status(400).json({ error: `Boleto inhabilitado: ${ticket.status}` });
+    if (!ticket.contract_address || ticket.ticket_root_id === null) {
+      res.status(409).json({ error: 'Boleto no asegurado en blockchain; no se puede redimir solo con PostgreSQL' });
       return;
     }
 
-    // In a real Web3 environment, if ticket.contract_address exists, we'd trigger a Soroban burn here via CLI
-    // For this simulation/hybrid speed, we update Postgres linearly to avoid gate delays.
+    console.log(`[SOROBAN] Redeeming ticket root_id=${ticket.ticket_root_id} with verifier=${verifierKeypair.publicKey().slice(0, 8)}...`);
+
+    const accountResponse = await sorobanServer.getAccount(verifierKeypair.publicKey());
+    const account = new Account(accountResponse.accountId(), accountResponse.sequenceNumber());
+
+    const tx = new TransactionBuilder(account, {
+      fee: '10000000',
+      networkPassphrase: NETWORK_PASSPHRASE,
+    })
+      .addOperation(Operation.invokeContractFunction({
+        contract: ticket.contract_address,
+        function: 'redimir_boleto',
+        args: [
+          nativeToScVal(ticket.ticket_root_id, { type: 'u32' }),
+          new Address(verifierKeypair.publicKey()).toScVal(),
+        ],
+      }))
+      .setTimeout(60)
+      .build();
+
+    const simResponse = await sorobanServer.simulateTransaction(tx);
+    if (SorobanRpc.Api.isSimulationError(simResponse)) {
+      const simError = (simResponse as any).error || 'desconocido';
+      console.error('[SOROBAN] Redeem simulation failed:', simError);
+      res.status(400).json({ error: 'Redención rechazada por Soroban: ' + simError });
+      return;
+    }
+
+    const assembled = SorobanRpc.assembleTransaction(tx, simResponse).build();
+    assembled.sign(verifierKeypair);
+
+    const sendResponse = await sorobanServer.sendTransaction(assembled);
+    if (sendResponse.status === 'ERROR') {
+      console.error('[SOROBAN] Redeem send failed:', sendResponse);
+      res.status(400).json({ error: 'La red rechazó la redención firmada' });
+      return;
+    }
+
+    let getResponse: SorobanRpc.Api.GetTransactionResponse;
+    let attempts = 0;
+    do {
+      await new Promise((r) => setTimeout(r, 2000));
+      getResponse = await sorobanServer.getTransaction(sendResponse.hash);
+      attempts++;
+    } while (getResponse.status === 'NOT_FOUND' && attempts < 30);
+
+    if (getResponse.status !== 'SUCCESS') {
+      res.status(400).json({ error: 'Redención blockchain fallida: ' + getResponse.status });
+      return;
+    }
+
+    // PostgreSQL is only the off-chain projection after Soroban confirms the critical state change.
     await prisma.tickets.update({
        where: { id: ticket.id },
-       data: { status: 'CANCELLED' } // 'CANCELLED' is the generic inactive state in Prisma schema for this thesis demo
+       data: { status: 'USED', used_at: new Date(), is_for_sale: false }
     });
 
-    res.json({ success: true, message: 'Boleto redimido exitosamente' });
+    res.json({
+      success: true,
+      message: 'Boleto redimido exitosamente en Soroban',
+      txHash: sendResponse.hash,
+      contractAddress: ticket.contract_address,
+      ticketRootId: ticket.ticket_root_id,
+    });
   } catch (error: any) {
     console.error('[SCAN] Error:', error);
     res.status(500).json({ error: error.message });

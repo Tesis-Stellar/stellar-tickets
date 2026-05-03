@@ -174,6 +174,31 @@ async function initializeEventContract(
   console.log(`  Initialized!`);
 }
 
+async function addVerifier(
+  organizerKeypair: Keypair,
+  contractAddress: string,
+  verifierPubKey: string,
+): Promise<void> {
+  console.log(`  Adding verifier ${verifierPubKey.slice(0, 8)}...`);
+  const account = await getAccount(organizerKeypair.publicKey());
+
+  const tx = new TransactionBuilder(account, {
+    fee: '10000000',
+    networkPassphrase: NETWORK_PASSPHRASE,
+  })
+    .addOperation(Operation.invokeContractFunction({
+      contract: contractAddress,
+      function: 'agregar_verificador',
+      args: [
+        new Address(verifierPubKey).toScVal(),
+      ],
+    }))
+    .setTimeout(60);
+
+  await submitTx(tx, organizerKeypair);
+  console.log(`  Verifier added!`);
+}
+
 async function main() {
   console.log('=== Soroban Contract Deployment to Testnet ===\n');
 
@@ -181,11 +206,13 @@ async function main() {
   const adminKeypair = Keypair.random();
   const platformKeypair = Keypair.random();
   const organizerKeypair = process.env.ORGANIZER_SECRET ? Keypair.fromSecret(process.env.ORGANIZER_SECRET) : Keypair.random();
+  const verifierKeypair = process.env.VERIFIER_SECRET ? Keypair.fromSecret(process.env.VERIFIER_SECRET) : organizerKeypair;
 
   console.log('Keypairs:');
   console.log(`  Admin:     ${adminKeypair.publicKey()}`);
   console.log(`  Platform:  ${platformKeypair.publicKey()}`);
   console.log(`  Organizer: ${organizerKeypair.publicKey()}`);
+  console.log(`  Verifier:  ${verifierKeypair.publicKey()}`);
 
   // Save keypairs to .env.deploy for reference
   const envDeploy = `# Generated ${new Date().toISOString()}
@@ -195,6 +222,8 @@ PLATFORM_PUBLIC=${platformKeypair.publicKey()}
 PLATFORM_SECRET=${platformKeypair.secret()}
 ORGANIZER_PUBLIC=${organizerKeypair.publicKey()}
 ORGANIZER_SECRET=${organizerKeypair.secret()}
+VERIFIER_PUBLIC=${verifierKeypair.publicKey()}
+VERIFIER_SECRET=${verifierKeypair.secret()}
 `;
   fs.writeFileSync(path.resolve(__dirname, '../.env.deploy'), envDeploy);
   console.log('\n  Keypairs saved to .env.deploy');
@@ -204,6 +233,7 @@ ORGANIZER_SECRET=${organizerKeypair.secret()}
   await fundAccount(adminKeypair.publicKey());
   await fundAccount(platformKeypair.publicKey());
   await fundAccount(organizerKeypair.publicKey());
+  await fundAccount(verifierKeypair.publicKey());
 
   // 3. Upload event_contract WASM
   const eventWasmPath = path.join(WASM_DIR, 'event_contract.optimized.wasm');
@@ -239,6 +269,7 @@ ORGANIZER_SECRET=${organizerKeypair.secret()}
         contractAddress,
         platformKeypair.publicKey(),
       );
+      await addVerifier(organizerKeypair, contractAddress, verifierKeypair.publicKey());
 
       // Update DB
       await prisma.events.update({
