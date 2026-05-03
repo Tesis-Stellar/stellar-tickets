@@ -13,6 +13,8 @@ import {
   Account,
   Address,
   nativeToScVal,
+  xdr,
+  scValToNative,
 } from '@stellar/stellar-sdk';
 import { rpc as SorobanRpc } from '@stellar/stellar-sdk';
 import { runIndexer } from './indexer';
@@ -536,6 +538,10 @@ app.post('/api/transactions/secure-ticket', authMiddleware, async (req, res) => 
       res.status(500).json({ error: 'Error en simulación blockchain' });
       return;
     }
+    // Warn if contract entries need restoration (TTL expired)
+    if ((simResponse as any).restorePreamble) {
+      console.warn('[SOROBAN] ⚠️ restorePreamble detected — contract entries may be archived. Submit a RestoreFootprintOp first.');
+    }
 
     // Assemble and sign with organizer key
     const assembled = SorobanRpc.assembleTransaction(tx, simResponse).build();
@@ -559,12 +565,29 @@ app.post('/api/transactions/secure-ticket', authMiddleware, async (req, res) => 
     } while (getResponse.status === 'NOT_FOUND' && attempts < 30);
 
     if (getResponse.status !== 'SUCCESS') {
-      const resultMeta = (getResponse as any).resultMetaXdr || (getResponse as any).resultXdr || 'no-xdr';
-      console.error('[SOROBAN] Transaction failed:', getResponse.status, 'resultXdr:', resultMeta);
-      res.status(500).json({ 
-        error: 'Transacción blockchain fallida', 
+      // stellar-sdk v14 returns resultMetaXdr already parsed as an xdr.TransactionMeta object
+      const resultMeta = (getResponse as any).resultMetaXdr ?? (getResponse as any).resultXdr;
+      let diagnosticSummary: string[] = [];
+      try {
+        const sorobanMeta = (resultMeta as any)?.v3?.()?.sorobanMeta?.()
+          ?? (resultMeta as any)?.v4?.()?.sorobanMeta?.();
+        const diagEvents: any[] = sorobanMeta?.diagnosticEvents?.() ?? [];
+        diagnosticSummary = diagEvents.map((e: any) => {
+          try {
+            const topics = (e.event?.().body?.().v0?.().topics?.() ?? [])
+              .map((t: any) => { try { return scValToNative(t); } catch { return t?.toString(); } });
+            const data = e.event?.().body?.().v0?.().data?.();
+            const dataVal = data ? (() => { try { return scValToNative(data); } catch { return data?.toString(); } })() : undefined;
+            return JSON.stringify({ topics, data: dataVal });
+          } catch { return String(e); }
+        });
+      } catch { /* ignore decode errors */ }
+      console.error('[SOROBAN] Transaction failed:', getResponse.status);
+      console.error('[SOROBAN] Diagnostic events:', diagnosticSummary.length ? diagnosticSummary : '(vacío)');
+      res.status(500).json({
+        error: 'Transacción blockchain fallida',
         detail: getResponse.status,
-        resultXdr: resultMeta,
+        diagnostics: diagnosticSummary,
       });
       return;
     }
