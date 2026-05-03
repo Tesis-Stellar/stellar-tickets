@@ -491,8 +491,18 @@ app.post('/api/transactions/secure-ticket', authMiddleware, async (req, res) => 
     const contractAddress = event.contract_address;
     const price = Number(ticketType?.price_amount || 0);
 
-    // Build and submit crear_boleto_para transaction so on-chain owner matches PostgreSQL owner_wallet
-    console.log(`[SOROBAN] Creating ticket on-chain for ${ownerUser.wallet_address.slice(0, 8)} on contract ${contractAddress.slice(0, 8)}...`);
+    // Build and submit crear_boleto_para transaction
+    // We use crear_boleto_para with es_reventa=true because the real primary
+    // sale already happened off-chain (PSE/credit card). On-chain, the ticket
+    // is minted directly to the buyer's wallet and marked as revendible so
+    // that any future secondary sale correctly distributes commissions.
+    const buyerWallet = ownerUser?.wallet_address;
+    if (!buyerWallet) {
+      res.status(400).json({ error: 'El usuario no tiene wallet vinculada. Vincula tu wallet primero.' });
+      return;
+    }
+
+    console.log(`[SOROBAN] Minting ticket on-chain for contract ${contractAddress.slice(0, 8)}... buyer=${buyerWallet.slice(0, 8)}...`);
 
     const accountResponse = await sorobanServer.getAccount(organizerKeypair.publicKey());
     const account = new Account(accountResponse.accountId(), accountResponse.sequenceNumber());
@@ -505,9 +515,10 @@ app.post('/api/transactions/secure-ticket', authMiddleware, async (req, res) => 
         contract: contractAddress,
         function: 'crear_boleto_para',
         args: [
-          nativeToScVal(1, { type: 'u32' }),              // id_evento (1 for all, each contract is per-event)
-          new Address(ownerUser.wallet_address).toScVal(), // propietario on-chain
-          nativeToScVal(price, { type: 'i128' }),          // precio
+          nativeToScVal(1, { type: 'u32' }),                      // id_evento
+          new Address(buyerWallet).toScVal(),                     // propietario = buyer
+          nativeToScVal(price, { type: 'i128' }),                 // precio
+          nativeToScVal(true, { type: 'bool' }),                  // es_reventa = true
         ],
       }))
       .setTimeout(60)
