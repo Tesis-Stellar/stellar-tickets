@@ -32,7 +32,11 @@ dotenv.config();
 
 const RPC_URL = process.env.SOROBAN_RPC_URL || 'https://soroban-testnet.stellar.org';
 const NETWORK_PASSPHRASE = Networks.TESTNET;
-const WASM_DIR = path.resolve(__dirname, '../../contracts/wasm');
+const WASM_CANDIDATES = [
+  path.resolve(__dirname, '../../contracts/target/wasm32-unknown-unknown/release/event_contract.optimized.wasm'),
+  path.resolve(__dirname, '../../contracts/target/wasm32v1-none/release/event_contract.wasm'),
+  path.resolve(__dirname, '../../contracts/target/wasm32v1-none/release/deps/event_contract.wasm'),
+];
 
 const server = new SorobanRpc.Server(RPC_URL);
 const prisma = new PrismaClient();
@@ -232,9 +236,9 @@ async function main() {
   await fundAccount(verifierKeypair.publicKey());
 
   // 3. Upload event_contract WASM
-  const eventWasmPath = path.join(WASM_DIR, 'event_contract.wasm');
-  if (!fs.existsSync(eventWasmPath)) {
-    throw new Error(`WASM not found: ${eventWasmPath}`);
+  const eventWasmPath = WASM_CANDIDATES.find((candidate) => fs.existsSync(candidate));
+  if (!eventWasmPath) {
+    throw new Error(`WASM not found. Build contracts first. Checked: ${WASM_CANDIDATES.join(', ')}`);
   }
   const wasmHash = await uploadWasm(adminKeypair, eventWasmPath);
 

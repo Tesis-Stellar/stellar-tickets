@@ -492,6 +492,10 @@ app.post('/api/transactions/secure-ticket', authMiddleware, async (req, res) => 
 
     const contractAddress = event.contract_address;
     const price = Number(ticketType?.price_amount || 0);
+    if (!Number.isFinite(price) || price <= 0) {
+      res.status(400).json({ error: 'El tipo de ticket no tiene un precio válido para registrar en blockchain' });
+      return;
+    }
 
     // Build and submit crear_boleto_para transaction so on-chain owner matches PostgreSQL owner_wallet
     console.log(`[SOROBAN] Creating ticket on-chain for ${ownerUser.wallet_address.slice(0, 8)} on contract ${contractAddress.slice(0, 8)}...`);
@@ -518,8 +522,9 @@ app.post('/api/transactions/secure-ticket', authMiddleware, async (req, res) => 
     // Simulate
     const simResponse = await sorobanServer.simulateTransaction(tx);
     if (SorobanRpc.Api.isSimulationError(simResponse)) {
-      console.error('[SOROBAN] Simulation failed:', (simResponse as any).error);
-      res.status(500).json({ error: 'Error en simulación blockchain' });
+      const simError = (simResponse as any).error || 'desconocido';
+      console.error('[SOROBAN] Secure ticket simulation failed:', simError);
+      res.status(400).json({ error: 'No fue posible asegurar el ticket en blockchain: ' + simError });
       return;
     }
 
@@ -545,8 +550,17 @@ app.post('/api/transactions/secure-ticket', authMiddleware, async (req, res) => 
     } while (getResponse.status === 'NOT_FOUND' && attempts < 30);
 
     if (getResponse.status !== 'SUCCESS') {
-      console.error('[SOROBAN] Transaction failed:', getResponse.status);
-      res.status(500).json({ error: 'Transacción blockchain fallida' });
+      const failureDetail = {
+        status: getResponse.status,
+        txHash: sendResponse.hash,
+        resultXdr: (getResponse as any).resultXdr,
+        resultMetaXdr: (getResponse as any).resultMetaXdr,
+      };
+      console.error('[SOROBAN] Secure ticket transaction failed:', failureDetail);
+      res.status(400).json({
+        error: `Transacción blockchain fallida: ${getResponse.status}`,
+        txHash: sendResponse.hash,
+      });
       return;
     }
 
