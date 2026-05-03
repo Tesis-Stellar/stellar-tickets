@@ -2,22 +2,18 @@ import { PrismaClient } from '@prisma/client';
 const p = new PrismaClient();
 
 async function main() {
-  const users = await p.users.findMany({
-    where: { role: { in: ['ADMIN', 'STAFF'] } },
+  const all = await p.users.findMany({
     select: { id: true, email: true, first_name: true, last_name: true, role: true, wallet_address: true }
   });
-  
-  if (users.length === 0) {
-    console.log('❌ No hay usuarios ADMIN ni STAFF en la BD de pruebas.');
-  } else {
-    console.log(`✅ Encontrados ${users.length} usuario(s):`);
-    console.log(JSON.stringify(users, null, 2));
-  }
+  const privileged = all.filter(u => ['ADMIN','STAFF'].includes(u.role));
 
-  // Also show total users
-  const total = await p.users.count();
-  console.log(`\nTotal usuarios en BD: ${total}`);
-  
+  if (privileged.length === 0) {
+    console.log('❌ No hay usuarios ADMIN ni STAFF.');
+  } else {
+    console.log(`✅ Encontrados ${privileged.length} usuario(s) privilegiados:`);
+    console.log(JSON.stringify(privileged, null, 2));
+  }
+  console.log(`\nTotal usuarios en BD: ${all.length}`);
   await p.$disconnect();
 }
 
