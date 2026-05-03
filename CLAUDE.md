@@ -2,6 +2,8 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+> ⚠️ **PATHS — read first.** El código activo vive en `D:\Tesis\Codigo\main_contract\backend` y `D:\Tesis\Codigo\main_contract\frontend`. **NO** trabajes en `D:\Tesis\backend\` ni `D:\Tesis\frontend\` — son copias viejas/stale; cualquier edición ahí no afecta al backend que corre en `localhost:3000` ni al Vite dev server.
+
 ## Repository Layout
 
 This workspace contains one monorepo plus thesis documentation:
@@ -437,8 +439,24 @@ docs/
   - **User cleanup script**: `backend/scripts/clean-users.ts` resets users for demo recording.
   - **Render deploy fixes**: `stellar-sdk` pinned to `14.4.1`, start command uses `tsx src/server.ts` instead of compiled JS, `tsconfig.json` has `incremental: false`.
 
+- **Phase 4.1 (seated events + wallet rotation + UX polish)** — Implemented 2026-05-02:
+  - **Seat-based purchase flow restored**: Tras refactor previo dejó de funcionar `GET /api/events/:id/seats` (400 "Este evento no tiene selección de asientos"). Solucionado convirtiendo todos los eventos a asignación de asientos con `backend/scripts/seed-seat-inventory.ts` (idempotente): crea 3 secciones por venue (VIP 2×10, Platea 3×12, General 4×14), seats numerados, `event_seat_inventory` con status `AVAILABLE`, ticket_types atados a sección con `inventory_quantity = null`. Sets `events.has_assigned_seating = true`.
+  - **Cart trigger fix**: El trigger `validate_cart_item_consistency` rechazaba inserts seat-based porque exigía `inventory_quantity NOT NULL` para cualquier `event_ticket_type_id`. Solucionado en `backend/scripts/fix-cart-trigger.ts` agregando guard `AND NEW.event_seat_inventory_id IS NULL` (solo valida quantity-based para flujo GA).
+  - **set_updated_at restoration**: La función `ticketing.set_updated_at` se sobreescribió accidentalmente con la lógica del cart trigger, causando `column "new" does not exist` en cualquier UPDATE. Restaurada con `backend/scripts/restore-set-updated-at.ts` a su lógica trivial (`NEW.updated_at = NOW()`).
+  - **Cart/order/ticket DTOs con seat-based fallback**: `cart_items`, `order_items` y `tickets` para flujo seat-based solo guardan `event_seat_inventory_id` (NO `event_ticket_type_id`) por el CHECK constraint `chk_cart_items_one_source` / `chk_order_items_one_source`. Endpoints `GET /api/cart`, `GET /api/tickets`, `POST /api/transactions/secure-ticket`, `GET /api/tickets/sold` ahora resuelven el `ticketType` y `event` vía `event_seat_inventory.event_ticket_types.events` cuando el join directo es null.
+  - **Wallet rotation**: Las wallets demo del proyecto se rotaron a un set con 12 palabras documentadas en `.env.deploy` (ADMIN, ORGANIZER, PLATFORM, BUYER1, BUYER2, VERIFIER). El compañero las creó con nombres claros para trazabilidad de la tesis.
+  - **Contract recompile + redeploy**: El WASM en `contracts/wasm/event_contract.wasm` era del 31-mar (pre commit 9361285 "ownership inconsistency fix") y NO contenía la función `crear_boleto_para` que llama el backend. Recompilado con `cargo build --release --target wasm32v1-none` (target Soroban-compatible; `wasm32-unknown-unknown` genera reference-types que Soroban rechaza). 12 contratos redesplegados en testnet con WASM nuevo + nuevas wallets organizer/admin.
+  - **Deploy script refactor** (`backend/scripts/deploy-contracts.ts`):
+    - Ya NO genera keypairs aleatorios; carga ADMIN/PLATFORM/ORGANIZER desde `.env.deploy`.
+    - Salt aleatorio por contrato (evita colisión `ExistingValue` al redesplegar con mismo admin).
+    - WASM_DIR apunta a `contracts/wasm/` (carpeta versionada) en vez del `target/release` local.
+    - Antes del deploy, limpia `contract_address = null` en todos los eventos PUBLISHED para forzar redeploy.
+  - **UI: precio de reventa en COP**: `TicketCard.tsx` reemplaza `prompt()` nativo con un `<Dialog>` shadcn/ui. Usuario ingresa precio en COP, ve preview en vivo del equivalente en XLM (usando `useXlmPrice`) y la cotización actual. Backend sigue recibiendo XLM/stroops; la conversión es solo UI. Mejora UX para usuarios no-cripto.
+  - **ConnectWallet persistente entre navegaciones**: Cada página renderiza su propio `<Header />`, lo que remontaba `ConnectWallet` y mostraba "Connect Wallet" durante ~300-500ms al navegar. Refactorizado para leer `walletAddress` directamente del `AppContext` (persistente) en lugar de estado local. Solo invoca a Freighter cuando NO hay address en el context. Resultado: la wallet se mantiene visible al cambiar de pantalla y al recargar (gracias a que `/api/users/me` devuelve `walletAddress`).
+  - **Critical path note**: El código activo vive en `D:\Tesis\Codigo\main_contract\backend|frontend`. NO trabajar en `D:\Tesis\backend\` ni `D:\Tesis\frontend\` — son copias stale. Warning añadido al top de este CLAUDE.md.
+
 ### Pending — NEXT SESSION START HERE
-- **Phase 5** — Thesis documentation: **updated DB diagram** (new `resale_price` column, STAFF role), updated architecture diagrams, Web2 problem mitigation analysis, test evidence screenshots, latency/cost metrics (Stroops)
+- **Phase 5** — Thesis documentation: **updated DB diagram** (new `resale_price` column, STAFF role, seat inventory tables), updated architecture diagrams, Web2 problem mitigation analysis, test evidence screenshots, latency/cost metrics (Stroops)
 
 ### Key architectural rules
 - Backend signs `crear_boleto`, `listar_boleto`, and `cancelar_venta` server-side with organizer key. For buyer-facing operations (`comprar_boleto`), backend builds unsigned XDR and frontend signs with **Freighter wallet**

@@ -10,7 +10,9 @@
     "postinstall": "prisma generate",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
-    "prisma:deploy": "prisma migrate deploy"
+    "prisma:deploy": "prisma migrate deploy",
+    "env:test": "bash scripts/switch-env.sh test",
+    "env:prod": "bash scripts/switch-env.sh prod"
   },
   "dependencies": {
     "@prisma/client": "^6.9.0",
