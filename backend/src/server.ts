@@ -447,6 +447,13 @@ app.post('/api/transactions/secure-ticket', authMiddleware, async (req, res) => 
             event_ticket_types: {
               include: { events: true },
             },
+            event_seat_inventory: {
+              include: {
+                event_ticket_types: {
+                  include: { events: true },
+                },
+              },
+            },
           },
         },
       },
@@ -474,14 +481,15 @@ app.post('/api/transactions/secure-ticket', authMiddleware, async (req, res) => 
       return;
     }
 
-    const event = ticket.order_items?.event_ticket_types?.events;
+    const ticketType = ticket.order_items?.event_ticket_types ?? ticket.order_items?.event_seat_inventory?.event_ticket_types;
+    const event = ticketType?.events;
     if (!event?.contract_address) {
       res.status(400).json({ error: 'Evento sin contrato desplegado' });
       return;
     }
 
     const contractAddress = event.contract_address;
-    const price = Number(ticket.order_items?.event_ticket_types?.price_amount || 0);
+    const price = Number(ticketType?.price_amount || 0);
 
     // Build and submit crear_boleto_para transaction so on-chain owner matches PostgreSQL owner_wallet
     console.log(`[SOROBAN] Creating ticket on-chain for ${ownerUser.wallet_address.slice(0, 8)} on contract ${contractAddress.slice(0, 8)}...`);
@@ -1147,7 +1155,7 @@ async function getOrCreateCart(userId: string) {
 
 // Helper: transform cart_items rows into the shape the frontend expects
 function toCartItemDto(item: any) {
-  const tt = item.event_ticket_types;
+  const tt = item.event_ticket_types ?? item.event_seat_inventory?.event_ticket_types;
   const evt = tt?.events;
   const base = evt ? toEventDto(evt) : undefined;
   const seat = item.event_seat_inventory?.seats;
@@ -1174,7 +1182,14 @@ const cartItemIncludes = {
     },
   },
   event_seat_inventory: {
-    include: { seats: true },
+    include: {
+      seats: true,
+      event_ticket_types: {
+        include: {
+          events: { include: eventIncludes },
+        },
+      },
+    },
   },
 };
 
@@ -1250,7 +1265,6 @@ app.post('/api/cart/items', authMiddleware, async (req, res) => {
           prisma.cart_items.create({
             data: {
               cart_id: cart.id,
-              event_ticket_type_id: ticketTypeId,
               event_seat_inventory_id: inv.id,
               quantity: 1,
               unit_price_amount: ticketType.price_amount,
@@ -1566,6 +1580,14 @@ app.get('/api/tickets', authMiddleware, async (req, res) => {
             event_ticket_types: {
               include: { events: { include: eventIncludes } },
             },
+            event_seat_inventory: {
+              include: {
+                seats: true,
+                event_ticket_types: {
+                  include: { events: { include: eventIncludes } },
+                },
+              },
+            },
           },
         },
       },
@@ -1573,7 +1595,7 @@ app.get('/api/tickets', authMiddleware, async (req, res) => {
     });
 
     res.json(tickets.map((t) => {
-      const tt = t.order_items?.event_ticket_types;
+      const tt = t.order_items?.event_ticket_types ?? t.order_items?.event_seat_inventory?.event_ticket_types;
       const evt = tt?.events;
       return {
         id: t.id,
@@ -1620,6 +1642,13 @@ app.get('/api/tickets/sold', authMiddleware, async (req, res) => {
             event_ticket_types: {
               include: { events: { include: eventIncludes } },
             },
+            event_seat_inventory: {
+              include: {
+                event_ticket_types: {
+                  include: { events: { include: eventIncludes } },
+                },
+              },
+            },
           },
         },
       },
@@ -1628,7 +1657,7 @@ app.get('/api/tickets/sold', authMiddleware, async (req, res) => {
 
     // For each sold ticket, find the buyer (next version of same ticket_root_id)
     const results = await Promise.all(tickets.map(async (t) => {
-      const tt = t.order_items?.event_ticket_types;
+      const tt = t.order_items?.event_ticket_types ?? t.order_items?.event_seat_inventory?.event_ticket_types;
       const evt = tt?.events;
 
       // The buyer is the owner of the next version
