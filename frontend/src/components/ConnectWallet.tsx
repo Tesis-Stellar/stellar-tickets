@@ -13,10 +13,10 @@ const isSafariBrowser = () =>
   /^((?!chrome|android|crios|fxios|edgios).)*safari/i.test(navigator.userAgent);
 
 export const ConnectWallet = () => {
-  const [address, setAddress] = useState<string | null>(null);
+  const { walletAddress, setWalletAddress, linkWallet, isLoggedIn, balanceVersion } = useAppContext();
+  const address = walletAddress;
   const [balance, setBalance] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-  const { setWalletAddress, linkWallet, isLoggedIn, balanceVersion } = useAppContext();
+  const [loading, setLoading] = useState(!walletAddress);
   const xlmCop = useXlmPrice();
 
   const fetchBalance = async (pk: string) => {
@@ -46,17 +46,20 @@ export const ConnectWallet = () => {
     }
   };
 
-  // Refresh balance when balanceVersion changes (after buy/list/cancel)
+  // Refresh balance when balanceVersion changes (after buy/list/cancel) or address loads
   useEffect(() => {
-    if (address && balanceVersion > 0) fetchBalance(address);
-  }, [balanceVersion]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (address) fetchBalance(address);
+  }, [balanceVersion, address]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Only auto-detect wallet when user is logged in
+  // Auto-detect Freighter only if logged in AND no address cached in context yet.
   useEffect(() => {
     if (!isLoggedIn) {
-      setAddress(null);
       setBalance(null);
       setWalletAddress(null);
+      setLoading(false);
+      return;
+    }
+    if (address) {
       setLoading(false);
       return;
     }
@@ -72,9 +75,7 @@ export const ConnectWallet = () => {
         if (pk) {
           const linked = await tryLinkWallet(pk);
           if (linked) {
-            setAddress(pk);
             setWalletAddress(pk);
-            fetchBalance(pk);
           }
         }
       } catch (error) {
@@ -84,7 +85,7 @@ export const ConnectWallet = () => {
       }
     };
     checkConnection();
-  }, [setWalletAddress, linkWallet, isLoggedIn]);
+  }, [setWalletAddress, linkWallet, isLoggedIn, address]);
 
   const connectWallet = async () => {
     if (!isLoggedIn) {
@@ -107,9 +108,7 @@ export const ConnectWallet = () => {
       if (pk) {
         const linked = await tryLinkWallet(pk);
         if (linked) {
-          setAddress(pk);
           setWalletAddress(pk);
-          fetchBalance(pk);
         }
       } else {
         alert("Freighter no devolvió una dirección. Desbloquea la extensión, permite el sitio y vuelve a intentar.");

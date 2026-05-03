@@ -2,53 +2,83 @@ import { useEffect, useState } from "react";
 import { useParams, useNavigate, useLocation } from "react-router-dom";
 import { Header } from "@/components/layout/Header";
 import { Footer } from "@/components/layout/Footer";
-import { getEventById, getEventTicketTypes, type EventData } from "@/data/events";
-import { SeatMap, type Seat } from "@/components/ui/SeatMap";
+import { SeatMap, type SectionConfig, type SelectedSeat, type VenueType } from "@/components/ui/SeatMap";
 import { useAppContext } from "@/context/AppContext";
-import { ChevronLeft, ShoppingCart } from "lucide-react";
+import { ChevronLeft, ShoppingCart, Loader2 } from "lucide-react";
+import { getEventBySlug, getEventById, type EventData } from "@/data/events";
+
+interface SeatsApiResponse {
+  venueType: VenueType;
+  venueName: string;
+  sections: Array<{
+    id: string;
+    name: string;
+    ticketTypeId: string | null;
+    price: number;
+    serviceFee: number;
+    maxPerOrder: number;
+    seats: Array<{
+      seatId: string;
+      label: string;
+      row: string;
+      number: number;
+      status: "AVAILABLE" | "HELD" | "SOLD" | "BLOCKED";
+    }>;
+  }>;
+}
 
 const SeatSelection = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const location = useLocation();
-  const { addToCart, isLoggedIn } = useAppContext();
+  const { addToCart, apiFetch, isLoggedIn } = useAppContext();
   const [event, setEvent] = useState<EventData | null>(null);
+  const [seatsResponse, setSeatsResponse] = useState<SeatsApiResponse | null>(null);
   const [loading, setLoading] = useState(true);
-  const [selectedSeats, setSelectedSeats] = useState<Seat[]>([]);
+  const [selectedSeats, setSelectedSeats] = useState<SelectedSeat[]>([]);
+  const [addingToCart, setAddingToCart] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!id) return;
     void (async () => {
       setLoading(true);
+      setError(null);
       try {
-        const eventById = await getEventById(id);
-        if (!eventById) {
-          setEvent(null);
-          return;
+        let ev: EventData | null = null;
+        try { ev = await getEventBySlug(id); } catch { /* fall through */ }
+        if (!ev) ev = await getEventById(id);
+        setEvent(ev);
+
+        if (ev) {
+          try {
+            const data = await apiFetch<SeatsApiResponse>(`/api/events/${ev.id}/seats`);
+            setSeatsResponse(data);
+          } catch (e: any) {
+            setError(e?.message || "No fue posible cargar los asientos");
+          }
         }
-        const ticketTypes = await getEventTicketTypes(eventById.id);
-        setEvent({ ...eventById, ticketTypes });
       } catch {
         setEvent(null);
       } finally {
         setLoading(false);
       }
     })();
-  }, [id]);
+  }, [id, apiFetch]);
 
-  if (loading) return <div className="min-h-screen bg-background flex flex-col"><Header /><div className="flex-1 flex items-center justify-center"><p className="text-foreground font-bold">Cargando evento...</p></div><Footer /></div>;
-  if (!event) return <div className="min-h-screen bg-background flex flex-col"><Header /><div className="flex-1 flex items-center justify-center"><p className="text-foreground font-bold">Evento no encontrado</p></div><Footer /></div>;
-
-  const toggleSeat = (seat: Seat) => {
-    setSelectedSeats((prev) =>
-      prev.some((s) => s.id === seat.id) ? prev.filter((s) => s.id !== seat.id) : prev.length < 10 ? [...prev, seat] : prev
-    );
+  const toggleSeat = (seat: SelectedSeat) => {
+    setSelectedSeats((prev) => {
+      const exists = prev.some((s) => s.id === seat.id);
+      if (exists) return prev.filter((s) => s.id !== seat.id);
+      if (prev.length >= 10) return prev;
+      return [...prev, seat];
+    });
   };
 
   const total = selectedSeats.reduce((s, seat) => s + seat.price + seat.serviceFee, 0);
 
   const handleAdd = async () => {
-    if (selectedSeats.length === 0) return;
+    if (selectedSeats.length === 0 || !event) return;
     if (!isLoggedIn) {
       navigate("/login", {
         state: {
@@ -58,48 +88,166 @@ const SeatSelection = () => {
       });
       return;
     }
-    const grouped = selectedSeats.reduce<Record<string, Seat[]>>((acc, s) => {
-      (acc[s.section] ??= []).push(s);
-      return acc;
-    }, {});
-    await Promise.all(Object.entries(grouped).map(async ([section, seats]) => {
-      const tt = event.ticketTypes.find((t) => t.name === section) ?? { id: section.toLowerCase(), name: section, price: seats[0].price, serviceFee: seats[0].serviceFee, available: 100, maxPerOrder: 10 };
-      await addToCart({ event, ticketType: tt, quantity: seats.length, seats: seats.map((s) => s.id) });
-    }));
-    navigate("/carrito");
+    setAddingToCart(true);
+    try {
+      const grouped = selectedSeats.reduce<Record<string, SelectedSeat[]>>((acc, s) => {
+        (acc[s.ticketTypeId] ??= []).push(s);
+        return acc;
+      }, {});
+
+      try {
+        for (const [, seats] of Object.entries(grouped)) {
+          const first = seats[0];
+          const tt = event.ticketTypes.find((t) => t.id === first.ticketTypeId) ?? {
+            id: first.ticketTypeId,
+            name: first.sectionName,
+            price: first.price,
+            serviceFee: first.serviceFee,
+            available: 100,
+            maxPerOrder: 10,
+          };
+          await addToCart({
+            event,
+            ticketType: tt,
+            quantity: seats.length,
+            seats: seats.map((s) => s.id),
+          });
+        }
+        navigate("/carrito");
+      } catch (e: any) {
+        // Seats may have been taken by another user between selection and add.
+        alert(e?.message ?? "No fue posible reservar los asientos. Recarga la página y vuelve a intentar.");
+        // Refresh seat availability
+        try {
+          const data = await apiFetch<SeatsApiResponse>(`/api/events/${event.id}/seats`);
+          setSeatsResponse(data);
+          setSelectedSeats([]);
+        } catch { /* ignore */ }
+      }
+    } finally {
+      setAddingToCart(false);
+    }
   };
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-background flex flex-col">
+        <Header />
+        <div className="flex-1 flex items-center justify-center gap-2 text-muted-foreground">
+          <Loader2 className="w-5 h-5 animate-spin" />
+          <span className="text-sm">Cargando evento...</span>
+        </div>
+        <Footer />
+      </div>
+    );
+  }
+
+  if (!event) {
+    return (
+      <div className="min-h-screen bg-background flex flex-col">
+        <Header />
+        <div className="flex-1 flex items-center justify-center">
+          <p className="text-foreground font-bold">Evento no encontrado</p>
+        </div>
+        <Footer />
+      </div>
+    );
+  }
+
+  const sections: SectionConfig[] = (seatsResponse?.sections ?? [])
+    .filter((s) => s.ticketTypeId !== null)
+    .map((s) => ({
+      id: s.id,
+      name: s.name,
+      ticketTypeId: s.ticketTypeId as string,
+      price: s.price,
+      serviceFee: s.serviceFee,
+      maxPerOrder: s.maxPerOrder,
+      seats: s.seats,
+    }));
+
+  const venueType: VenueType = seatsResponse?.venueType ?? (event.venueType as VenueType) ?? "ARENA";
+  const venueName = seatsResponse?.venueName ?? event.venue;
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
       <Header />
       <main className="flex-1 max-w-6xl mx-auto px-4 py-8 w-full">
-        <button onClick={() => navigate(-1)} className="flex items-center gap-1 text-sm text-primary font-bold mb-6 hover:underline"><ChevronLeft className="w-4 h-4" /> Volver</button>
-        <h1 className="text-2xl font-black text-foreground uppercase tracking-tight mb-2">{event.title}</h1>
-        <p className="text-sm text-muted-foreground mb-6">{event.date} {event.month} {event.year} · {event.venue}, {event.city}</p>
+        <button onClick={() => navigate(-1)} className="flex items-center gap-1 text-sm text-primary font-bold mb-6 hover:underline">
+          <ChevronLeft className="w-4 h-4" /> Volver
+        </button>
+
+        <h1 className="text-2xl font-black text-foreground uppercase tracking-tight mb-1">{event.title}</h1>
+        <p className="text-sm text-muted-foreground mb-8">
+          {event.date} {event.month} {event.year} · {event.venue}, {event.city}
+        </p>
+
         <div className="grid lg:grid-cols-3 gap-8">
           <div className="lg:col-span-2 bg-card rounded-xl border border-border p-6 overflow-x-auto">
-            <h2 className="font-black text-foreground uppercase tracking-tight mb-4">Selecciona tus Asientos</h2>
-            <SeatMap eventId={event.id} selectedSeats={selectedSeats} onToggleSeat={toggleSeat} />
+            <h2 className="font-black text-foreground uppercase tracking-tight mb-6">Selecciona tus Asientos</h2>
+            {error ? (
+              <p className="text-sm text-destructive py-8 text-center">{error}</p>
+            ) : (
+              <SeatMap
+                venueType={venueType}
+                venueName={venueName}
+                sections={sections}
+                selectedSeats={selectedSeats}
+                onToggleSeat={toggleSeat}
+                maxSeats={10}
+              />
+            )}
           </div>
+
           <div>
             <div className="sticky top-24 bg-card rounded-xl border border-border p-6 space-y-4">
               <h3 className="font-black text-foreground uppercase tracking-tight">Resumen</h3>
-              {selectedSeats.length > 0 ? (
+
+              {selectedSeats.length === 0 ? (
+                <div className="text-center py-6 space-y-2">
+                  <p className="text-sm text-muted-foreground">Selecciona una sección en el mapa y luego haz clic en los asientos.</p>
+                  <p className="text-xs text-muted-foreground">(Máx. 10 asientos)</p>
+                </div>
+              ) : (
                 <>
-                  <div className="space-y-2 max-h-48 overflow-y-auto">
+                  <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
                     {selectedSeats.map((s) => (
-                      <div key={s.id} className="flex justify-between text-sm">
-                        <span className="text-muted-foreground">{s.id}</span>
-                        <span className="font-bold text-foreground">${s.price.toLocaleString("es-CO")}</span>
+                      <div key={s.id} className="flex justify-between items-start text-sm gap-2">
+                        <div>
+                          <span className="font-bold text-foreground block leading-tight">{s.label}</span>
+                          <span className="text-[11px] text-muted-foreground">+${s.serviceFee.toLocaleString("es-CO")} serv.</span>
+                        </div>
+                        <span className="font-black text-foreground whitespace-nowrap">${s.price.toLocaleString("es-CO")}</span>
                       </div>
                     ))}
                   </div>
+
                   <hr className="border-border" />
-                  <div className="flex justify-between font-black text-foreground"><span>Total ({selectedSeats.length})</span><span>${total.toLocaleString("es-CO")}</span></div>
-                  <button onClick={handleAdd} className="w-full py-3 bg-accent hover:bg-accent/90 text-accent-foreground font-black rounded-lg flex items-center justify-center gap-2 transition-colors text-sm"><ShoppingCart className="w-4 h-4" /> Agregar al Carrito</button>
+
+                  <div className="space-y-1 text-sm">
+                    <div className="flex justify-between text-muted-foreground">
+                      <span>Subtotal ({selectedSeats.length})</span>
+                      <span>${selectedSeats.reduce((a, s) => a + s.price, 0).toLocaleString("es-CO")}</span>
+                    </div>
+                    <div className="flex justify-between text-muted-foreground">
+                      <span>Servicio</span>
+                      <span>${selectedSeats.reduce((a, s) => a + s.serviceFee, 0).toLocaleString("es-CO")}</span>
+                    </div>
+                    <div className="flex justify-between font-black text-foreground text-base pt-1">
+                      <span>Total</span>
+                      <span>${total.toLocaleString("es-CO")}</span>
+                    </div>
+                  </div>
+
+                  <button
+                    onClick={handleAdd}
+                    disabled={addingToCart}
+                    className="w-full py-3 bg-accent hover:bg-accent/90 disabled:opacity-60 text-accent-foreground font-black rounded-lg flex items-center justify-center gap-2 transition-colors text-sm"
+                  >
+                    {addingToCart ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShoppingCart className="w-4 h-4" />}
+                    {addingToCart ? "Agregando..." : "Agregar al Carrito"}
+                  </button>
                 </>
-              ) : (
-                <p className="text-sm text-muted-foreground text-center py-4">Selecciona asientos en el mapa<br/><span className="text-xs">(Máx. 10 asientos)</span></p>
               )}
             </div>
           </div>

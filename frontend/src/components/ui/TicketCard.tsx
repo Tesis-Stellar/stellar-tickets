@@ -2,16 +2,33 @@ import { QrCode, MapPin, Calendar, ShieldCheck, Lock, ExternalLink, Tag } from "
 import { QRCodeCanvas } from "qrcode.react";
 import type { PurchasedTicket } from "@/context/AppContext";
 import { useAppContext } from "@/context/AppContext";
+import { useXlmPrice, formatCOP } from "@/hooks/useXlmPrice";
 import { useState } from "react";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
 
 export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
   const { secureTicketOnChain, listTicketForSale, cancelResaleListing, walletAddress } = useAppContext();
+  const xlmCopPrice = useXlmPrice();
   const [isMinting, setIsMinting] = useState(false);
   const [isMinted, setIsMinted] = useState(ticket.isSecuredOnChain ?? false);
   const [isListing, setIsListing] = useState(false);
   const [isListed, setIsListed] = useState(ticket.isForSale ?? false);
   const [isCancelling, setIsCancelling] = useState(false);
   const [txHash, setTxHash] = useState<string | null>(null);
+  const [resaleDialogOpen, setResaleDialogOpen] = useState(false);
+  const [resalePriceInput, setResalePriceInput] = useState("");
+
+  const parsedPriceCOP = Number(resalePriceInput.replace(/[^\d]/g, ""));
+  const previewXLM = xlmCopPrice && parsedPriceCOP > 0 ? parsedPriceCOP / xlmCopPrice : 0;
 
   const claimTicket = async () => {
     if (!walletAddress) {
@@ -35,17 +52,26 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
     }
   };
 
-  const handleListForSale = async () => {
+  const openResaleDialog = () => {
     if (!walletAddress) {
       alert("Debes conectar tu wallet de Freighter antes de poner el boleto en reventa. Haz clic en \"Conectar Wallet\" en la parte superior de la página.");
       return;
     }
-    const priceStr = prompt("Ingresa el precio de reventa en XLM:");
-    if (!priceStr || isNaN(Number(priceStr)) || Number(priceStr) <= 0) return;
+    if (!xlmCopPrice) {
+      alert("No se pudo obtener la cotización XLM/COP. Intenta de nuevo en unos segundos.");
+      return;
+    }
+    setResalePriceInput("");
+    setResaleDialogOpen(true);
+  };
 
+  const confirmResaleListing = async () => {
+    if (!xlmCopPrice || parsedPriceCOP <= 0) return;
+    const priceXLM = parsedPriceCOP / xlmCopPrice;
+    setResaleDialogOpen(false);
     try {
       setIsListing(true);
-      const result = await listTicketForSale(ticket.id, Number(priceStr));
+      const result = await listTicketForSale(ticket.id, priceXLM);
       if (result.success) {
         setIsListed(true);
         setTxHash(result.txHash ?? txHash);
@@ -67,6 +93,7 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
       : null;
 
   return (
+  <>
   <div className="bg-card rounded-xl border border-border overflow-hidden flex flex-col sm:flex-row">
     <img
       src={ticket.event.image}
@@ -146,7 +173,7 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
             </div>
             {!isListed && (
               <button
-                onClick={handleListForSale}
+                onClick={openResaleDialog}
                 disabled={isListing}
                 className={`inline-flex items-center gap-1 px-3 py-1 text-xs font-black rounded-lg transition-colors shadow-md shadow-blue-900/20 w-fit ${isListing ? "bg-muted text-muted-foreground" : "bg-blue-600 hover:bg-blue-700 text-white"}`}
               >
@@ -179,5 +206,64 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
         <span className="text-[10px] text-muted-foreground font-bold mt-2 uppercase tracking-tight">{ticket.ticketCode?.slice(0, 10) || "QR-CODE"}</span>
       </div>
     </div>
+
+    <Dialog open={resaleDialogOpen} onOpenChange={setResaleDialogOpen}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Listar boleto en reventa</DialogTitle>
+          <DialogDescription>
+            Define el precio de reventa en pesos colombianos. Internamente se firma en XLM al precio actual del mercado.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-4 py-2">
+          <div className="space-y-2">
+            <label className="text-sm font-medium" htmlFor="resale-price-cop">
+              Precio en COP
+            </label>
+            <div className="relative">
+              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm">$</span>
+              <Input
+                id="resale-price-cop"
+                type="text"
+                inputMode="numeric"
+                placeholder="100000"
+                value={resalePriceInput}
+                onChange={(e) => setResalePriceInput(e.target.value)}
+                className="pl-7"
+                autoFocus
+              />
+            </div>
+          </div>
+
+          <div className="rounded-lg bg-muted/50 p-3 space-y-1 text-sm">
+            <div className="flex justify-between">
+              <span className="text-muted-foreground">Equivalente en XLM:</span>
+              <span className="font-mono font-semibold">
+                {previewXLM > 0 ? `${previewXLM.toFixed(4)} XLM` : "—"}
+              </span>
+            </div>
+            <div className="flex justify-between text-xs text-muted-foreground">
+              <span>Cotización actual:</span>
+              <span>{xlmCopPrice ? `1 XLM ≈ ${formatCOP(xlmCopPrice)}` : "—"}</span>
+            </div>
+          </div>
+        </div>
+
+        <DialogFooter className="gap-2 sm:gap-0">
+          <Button variant="outline" onClick={() => setResaleDialogOpen(false)}>
+            Cancelar
+          </Button>
+          <Button
+            onClick={confirmResaleListing}
+            disabled={parsedPriceCOP <= 0 || !xlmCopPrice}
+            className="bg-blue-600 hover:bg-blue-700 text-white"
+          >
+            Listar por {parsedPriceCOP > 0 ? formatCOP(parsedPriceCOP) : "—"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  </>
   );
 };

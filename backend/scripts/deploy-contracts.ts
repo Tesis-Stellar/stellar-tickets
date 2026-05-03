@@ -32,7 +32,11 @@ dotenv.config();
 
 const RPC_URL = process.env.SOROBAN_RPC_URL || 'https://soroban-testnet.stellar.org';
 const NETWORK_PASSPHRASE = Networks.TESTNET;
-const WASM_DIR = path.resolve(__dirname, '../../contracts/target/wasm32-unknown-unknown/release');
+const WASM_CANDIDATES = [
+  path.resolve(__dirname, '../../contracts/target/wasm32-unknown-unknown/release/event_contract.optimized.wasm'),
+  path.resolve(__dirname, '../../contracts/target/wasm32v1-none/release/event_contract.wasm'),
+  path.resolve(__dirname, '../../contracts/target/wasm32v1-none/release/deps/event_contract.wasm'),
+];
 
 const server = new SorobanRpc.Server(RPC_URL);
 const prisma = new PrismaClient();
@@ -202,33 +206,29 @@ async function addVerifier(
 async function main() {
   console.log('=== Soroban Contract Deployment to Testnet ===\n');
 
-  // 1. Load keys
-  const adminKeypair = Keypair.random();
-  const platformKeypair = Keypair.random();
-  const organizerKeypair = process.env.ORGANIZER_SECRET ? Keypair.fromSecret(process.env.ORGANIZER_SECRET) : Keypair.random();
-  const verifierKeypair = process.env.VERIFIER_SECRET ? Keypair.fromSecret(process.env.VERIFIER_SECRET) : organizerKeypair;
+  // 1. Load keys from .env.deploy (pre-configured wallets)
+  const envDeployPath = path.resolve(__dirname, '../.env.deploy');
+  const envDeployContent = fs.readFileSync(envDeployPath, 'utf-8');
+  const envDeployVars: Record<string, string> = {};
+  for (const line of envDeployContent.split('\n')) {
+    const match = line.match(/^([A-Z0-9_]+)=(.+)$/);
+    if (match) envDeployVars[match[1]] = match[2].trim();
+  }
 
-  console.log('Keypairs:');
+  const adminKeypair = Keypair.fromSecret(envDeployVars['ADMIN_SECRET']);
+  const platformKeypair = Keypair.fromSecret(envDeployVars['PLATFORM_SECRET']);
+  const organizerKeypair = Keypair.fromSecret(envDeployVars['ORGANIZER_SECRET']);
+  const verifierKeypair = envDeployVars['VERIFIER_SECRET']
+    ? Keypair.fromSecret(envDeployVars['VERIFIER_SECRET'])
+    : organizerKeypair;
+
+  console.log('Keypairs loaded from .env.deploy:');
   console.log(`  Admin:     ${adminKeypair.publicKey()}`);
   console.log(`  Platform:  ${platformKeypair.publicKey()}`);
   console.log(`  Organizer: ${organizerKeypair.publicKey()}`);
   console.log(`  Verifier:  ${verifierKeypair.publicKey()}`);
 
-  // Save keypairs to .env.deploy for reference
-  const envDeploy = `# Generated ${new Date().toISOString()}
-ADMIN_PUBLIC=${adminKeypair.publicKey()}
-ADMIN_SECRET=${adminKeypair.secret()}
-PLATFORM_PUBLIC=${platformKeypair.publicKey()}
-PLATFORM_SECRET=${platformKeypair.secret()}
-ORGANIZER_PUBLIC=${organizerKeypair.publicKey()}
-ORGANIZER_SECRET=${organizerKeypair.secret()}
-VERIFIER_PUBLIC=${verifierKeypair.publicKey()}
-VERIFIER_SECRET=${verifierKeypair.secret()}
-`;
-  fs.writeFileSync(path.resolve(__dirname, '../.env.deploy'), envDeploy);
-  console.log('\n  Keypairs saved to .env.deploy');
-
-  // 2. Fund accounts via Friendbot
+  // 2. Fund accounts via Friendbot (no-op if already funded)
   console.log('\nFunding accounts...');
   await fundAccount(adminKeypair.publicKey());
   await fundAccount(platformKeypair.publicKey());
@@ -236,15 +236,19 @@ VERIFIER_SECRET=${verifierKeypair.secret()}
   await fundAccount(verifierKeypair.publicKey());
 
   // 3. Upload event_contract WASM
-  const eventWasmPath = path.join(WASM_DIR, 'event_contract.optimized.wasm');
-  if (!fs.existsSync(eventWasmPath)) {
-    throw new Error(`WASM not found: ${eventWasmPath}`);
+  const eventWasmPath = WASM_CANDIDATES.find((candidate) => fs.existsSync(candidate));
+  if (!eventWasmPath) {
+    throw new Error(`WASM not found. Build contracts first. Checked: ${WASM_CANDIDATES.join(', ')}`);
   }
   const wasmHash = await uploadWasm(adminKeypair, eventWasmPath);
 
-  // 4. Get events from DB that need contracts
+  // 4. Clear existing contract addresses and redeploy all PUBLISHED events
+  await prisma.events.updateMany({
+    where: { status: 'PUBLISHED' },
+    data: { contract_address: null },
+  });
   const events = await prisma.events.findMany({
-    where: { status: 'PUBLISHED', contract_address: null },
+    where: { status: 'PUBLISHED' },
     orderBy: { created_at: 'asc' },
   });
 
@@ -255,9 +259,9 @@ VERIFIER_SECRET=${verifierKeypair.secret()}
     const event = events[i];
     console.log(`\n--- [${i + 1}/${events.length}] ${event.title} ---`);
 
-    // Use event index as salt (unique per deploy)
-    const salt = Buffer.alloc(32, 0);
-    salt.writeUInt32BE(i + 1, 28);
+    // Use random salt so re-deploys (with new WASM) don't collide with existing addresses
+    const salt = Buffer.alloc(32);
+    for (let b = 0; b < 32; b++) salt[b] = Math.floor(Math.random() * 256);
 
     try {
       const contractAddress = await deployContract(adminKeypair, wasmHash, salt);
