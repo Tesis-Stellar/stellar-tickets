@@ -489,7 +489,12 @@ app.post('/api/transactions/secure-ticket', authMiddleware, async (req, res) => 
     }
 
     const contractAddress = event.contract_address;
-    const price = Number(ticketType?.price_amount || 0);
+    // Use at least 1 stroop — price=0 is rejected by the contract (PrecioInvalido)
+    // The price stored in DB may use different units (cents, etc.) — here we just
+    // record the ticket's monetary value on-chain for commission math.
+    const rawPrice = Number(ticketType?.price_amount || 0);
+    const price = rawPrice > 0 ? rawPrice : 1_000_000; // fallback: 1 XLM in stroops
+    console.log(`[SOROBAN] Contract: ${contractAddress.slice(0,8)}, price=${price}`);
 
     // Build and submit crear_boleto_para transaction
     // We use crear_boleto_para with es_reventa=true because the real primary
@@ -554,8 +559,13 @@ app.post('/api/transactions/secure-ticket', authMiddleware, async (req, res) => 
     } while (getResponse.status === 'NOT_FOUND' && attempts < 30);
 
     if (getResponse.status !== 'SUCCESS') {
-      console.error('[SOROBAN] Transaction failed:', getResponse.status);
-      res.status(500).json({ error: 'Transacción blockchain fallida' });
+      const resultMeta = (getResponse as any).resultMetaXdr || (getResponse as any).resultXdr || 'no-xdr';
+      console.error('[SOROBAN] Transaction failed:', getResponse.status, 'resultXdr:', resultMeta);
+      res.status(500).json({ 
+        error: 'Transacción blockchain fallida', 
+        detail: getResponse.status,
+        resultXdr: resultMeta,
+      });
       return;
     }
 
