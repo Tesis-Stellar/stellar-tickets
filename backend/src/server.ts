@@ -537,8 +537,28 @@ app.post('/api/transactions/secure-ticket', authMiddleware, async (req, res) => 
       return;
     }
 
-    // Assemble and sign with organizer key
-    const assembled = SorobanRpc.assembleTransaction(tx, simResponse).build();
+    // Assemble transaction (adds soroban resource data + auth entries from simulation)
+    const assembledBuilder = SorobanRpc.assembleTransaction(tx, simResponse);
+    const assembled = assembledBuilder.build();
+
+    // Sign the auth entries explicitly (require_auth() on stored organizer address
+    // needs auth-entry signing, not just transaction envelope signing)
+    const ledgerSeq = (simResponse as any).latestLedger || 0;
+    for (const op of (assembled as any).operations ?? []) {
+      for (const authEntry of op.auth ?? []) {
+        try {
+          // Sign each auth entry that has ADDRESS credentials (not SOURCE_ACCOUNT)
+          if (authEntry.credentials?.()?.switch?.()?.value === 1) {
+            await SorobanRpc.authorizeEntry(authEntry, organizerKeypair, ledgerSeq + 100, NETWORK_PASSPHRASE);
+            console.log('[SOROBAN] Auth entry signed explicitly');
+          }
+        } catch (authErr) {
+          console.warn('[SOROBAN] Auth entry sign skipped:', authErr);
+        }
+      }
+    }
+
+    // Sign the transaction envelope
     assembled.sign(organizerKeypair);
 
     // Submit
@@ -559,12 +579,27 @@ app.post('/api/transactions/secure-ticket', authMiddleware, async (req, res) => 
     } while (getResponse.status === 'NOT_FOUND' && attempts < 30);
 
     if (getResponse.status !== 'SUCCESS') {
-      const resultMeta = (getResponse as any).resultMetaXdr || (getResponse as any).resultXdr || 'no-xdr';
-      console.error('[SOROBAN] Transaction failed:', getResponse.status, 'resultXdr:', resultMeta);
-      res.status(500).json({ 
-        error: 'Transacción blockchain fallida', 
+      // Decode diagnostic events for exact error
+      let diagnosticInfo = 'no-diagnostic';
+      try {
+        const meta = (getResponse as any).resultMetaXdr;
+        if (meta) {
+          const { xdr } = await import('@stellar/stellar-sdk');
+          const decoded = xdr.TransactionMeta.fromXDR(meta, 'base64');
+          const sorobanMeta = (decoded as any).v3?.()?.sorobanMeta?.();
+          const diagEvents = sorobanMeta?.diagnosticEvents?.() ?? [];
+          diagnosticInfo = JSON.stringify(diagEvents.map((e: any) => {
+            try { return e.event?.()?.body?.()?.v0?.()?.data?.()?.value?.(); } catch { return 'parse-err'; }
+          }));
+        }
+      } catch (decodeErr) {
+        diagnosticInfo = String(decodeErr);
+      }
+      console.error('[SOROBAN] Transaction FAILED. Status:', getResponse.status, '| Diagnostic:', diagnosticInfo);
+      res.status(500).json({
+        error: 'Transacci\u00f3n blockchain fallida',
         detail: getResponse.status,
-        resultXdr: resultMeta,
+        diagnostic: diagnosticInfo,
       });
       return;
     }
