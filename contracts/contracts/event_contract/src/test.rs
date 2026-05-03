@@ -186,14 +186,15 @@ fn test_create_ticket_success() {
     assert_eq!(boleto_2.id_evento, 1002);
 }
 
-// Crea un boleto asignado directamente a la wallet del comprador
-// Se espera que Soroban y la proyección off-chain puedan compartir el mismo owner
+// Crea un boleto asignado directamente a la wallet del comprador con es_reventa=true
+// Simula el flujo Web2.5: la venta primaria ocurrió off-chain (PSE/tarjeta),
+// por lo que on-chain el boleto nace ya marcado como revendible
 #[test]
 fn test_create_ticket_for_owner_success() {
     let (entorno, cliente, _admin, _organizador, _, _) = configurar_entorno();
     let comprador = Address::generate(&entorno);
 
-    let root_id = cliente.crear_boleto_para(&1001, &comprador, &1_000_000);
+    let root_id = cliente.crear_boleto_para(&1001, &comprador, &1_000_000, &true);
     assert_eq!(root_id, 0);
 
     let boleto = cliente.obtener_boleto(&root_id);
@@ -203,7 +204,7 @@ fn test_create_ticket_for_owner_success() {
     assert_eq!(boleto.precio, 1_000_000);
     assert_eq!(boleto.propietario, comprador);
     assert!(!boleto.en_venta);
-    assert!(!boleto.es_reventa);
+    assert!(boleto.es_reventa);  // true: venta primaria ya ocurrió off-chain
     assert!(!boleto.usado);
     assert!(!boleto.invalidado);
 }
