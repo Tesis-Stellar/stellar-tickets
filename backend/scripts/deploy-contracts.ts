@@ -32,7 +32,7 @@ dotenv.config();
 
 const RPC_URL = process.env.SOROBAN_RPC_URL || 'https://soroban-testnet.stellar.org';
 const NETWORK_PASSPHRASE = Networks.TESTNET;
-const WASM_DIR = path.resolve(__dirname, '../../contracts/target/wasm32-unknown-unknown/release');
+const WASM_DIR = path.resolve(__dirname, '../../contracts/wasm');
 
 const server = new SorobanRpc.Server(RPC_URL);
 const prisma = new PrismaClient();
@@ -177,44 +177,44 @@ async function initializeEventContract(
 async function main() {
   console.log('=== Soroban Contract Deployment to Testnet ===\n');
 
-  // 1. Load keys
-  const adminKeypair = Keypair.random();
-  const platformKeypair = Keypair.random();
-  const organizerKeypair = process.env.ORGANIZER_SECRET ? Keypair.fromSecret(process.env.ORGANIZER_SECRET) : Keypair.random();
+  // 1. Load keys from .env.deploy (pre-configured wallets)
+  const envDeployPath = path.resolve(__dirname, '../.env.deploy');
+  const envDeployContent = fs.readFileSync(envDeployPath, 'utf-8');
+  const envDeployVars: Record<string, string> = {};
+  for (const line of envDeployContent.split('\n')) {
+    const match = line.match(/^([A-Z0-9_]+)=(.+)$/);
+    if (match) envDeployVars[match[1]] = match[2].trim();
+  }
 
-  console.log('Keypairs:');
+  const adminKeypair = Keypair.fromSecret(envDeployVars['ADMIN_SECRET']);
+  const platformKeypair = Keypair.fromSecret(envDeployVars['PLATFORM_SECRET']);
+  const organizerKeypair = Keypair.fromSecret(envDeployVars['ORGANIZER_SECRET']);
+
+  console.log('Keypairs loaded from .env.deploy:');
   console.log(`  Admin:     ${adminKeypair.publicKey()}`);
   console.log(`  Platform:  ${platformKeypair.publicKey()}`);
   console.log(`  Organizer: ${organizerKeypair.publicKey()}`);
 
-  // Save keypairs to .env.deploy for reference
-  const envDeploy = `# Generated ${new Date().toISOString()}
-ADMIN_PUBLIC=${adminKeypair.publicKey()}
-ADMIN_SECRET=${adminKeypair.secret()}
-PLATFORM_PUBLIC=${platformKeypair.publicKey()}
-PLATFORM_SECRET=${platformKeypair.secret()}
-ORGANIZER_PUBLIC=${organizerKeypair.publicKey()}
-ORGANIZER_SECRET=${organizerKeypair.secret()}
-`;
-  fs.writeFileSync(path.resolve(__dirname, '../.env.deploy'), envDeploy);
-  console.log('\n  Keypairs saved to .env.deploy');
-
-  // 2. Fund accounts via Friendbot
+  // 2. Fund accounts via Friendbot (no-op if already funded)
   console.log('\nFunding accounts...');
   await fundAccount(adminKeypair.publicKey());
   await fundAccount(platformKeypair.publicKey());
   await fundAccount(organizerKeypair.publicKey());
 
   // 3. Upload event_contract WASM
-  const eventWasmPath = path.join(WASM_DIR, 'event_contract.optimized.wasm');
+  const eventWasmPath = path.join(WASM_DIR, 'event_contract.wasm');
   if (!fs.existsSync(eventWasmPath)) {
     throw new Error(`WASM not found: ${eventWasmPath}`);
   }
   const wasmHash = await uploadWasm(adminKeypair, eventWasmPath);
 
-  // 4. Get events from DB that need contracts
+  // 4. Clear existing contract addresses and redeploy all PUBLISHED events
+  await prisma.events.updateMany({
+    where: { status: 'PUBLISHED' },
+    data: { contract_address: null },
+  });
   const events = await prisma.events.findMany({
-    where: { status: 'PUBLISHED', contract_address: null },
+    where: { status: 'PUBLISHED' },
     orderBy: { created_at: 'asc' },
   });
 
@@ -225,9 +225,9 @@ ORGANIZER_SECRET=${organizerKeypair.secret()}
     const event = events[i];
     console.log(`\n--- [${i + 1}/${events.length}] ${event.title} ---`);
 
-    // Use event index as salt (unique per deploy)
-    const salt = Buffer.alloc(32, 0);
-    salt.writeUInt32BE(i + 1, 28);
+    // Use random salt so re-deploys (with new WASM) don't collide with existing addresses
+    const salt = Buffer.alloc(32);
+    for (let b = 0; b < 32; b++) salt[b] = Math.floor(Math.random() * 256);
 
     try {
       const contractAddress = await deployContract(adminKeypair, wasmHash, salt);

@@ -7,12 +7,16 @@ import { useXlmPrice, formatCOP } from "@/hooks/useXlmPrice";
 const freighterApi = () => import("@stellar/freighter-api");
 
 const HORIZON_URL = "https://horizon-testnet.stellar.org";
+const isFreighterInjected = () => typeof window !== "undefined" && Boolean((window as any).freighter);
+const isSafariBrowser = () =>
+  typeof navigator !== "undefined" &&
+  /^((?!chrome|android|crios|fxios|edgios).)*safari/i.test(navigator.userAgent);
 
 export const ConnectWallet = () => {
-  const [address, setAddress] = useState<string | null>(null);
+  const { walletAddress, setWalletAddress, linkWallet, isLoggedIn, balanceVersion } = useAppContext();
+  const address = walletAddress;
   const [balance, setBalance] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-  const { setWalletAddress, linkWallet, isLoggedIn, balanceVersion } = useAppContext();
+  const [loading, setLoading] = useState(!walletAddress);
   const xlmCop = useXlmPrice();
 
   const fetchBalance = async (pk: string) => {
@@ -42,26 +46,27 @@ export const ConnectWallet = () => {
     }
   };
 
-  // Refresh balance when balanceVersion changes (after buy/list/cancel)
+  // Refresh balance when balanceVersion changes (after buy/list/cancel) or address loads
   useEffect(() => {
-    if (address && balanceVersion > 0) fetchBalance(address);
-  }, [balanceVersion]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (address) fetchBalance(address);
+  }, [balanceVersion, address]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Only auto-detect wallet when user is logged in
+  // Auto-detect Freighter only if logged in AND no address cached in context yet.
   useEffect(() => {
     if (!isLoggedIn) {
-      setAddress(null);
       setBalance(null);
       setWalletAddress(null);
       setLoading(false);
       return;
     }
+    if (address) {
+      setLoading(false);
+      return;
+    }
     const checkConnection = async () => {
       try {
+        if (!isFreighterInjected()) return;
         const api = await freighterApi();
-        const connResult = await api.isConnected();
-        const conn = (connResult as any)?.isConnected ?? connResult;
-        if (!conn) return;
         const allowResult = await api.isAllowed();
         const allowed = (allowResult as any)?.isAllowed ?? allowResult;
         if (!allowed) return;
@@ -70,9 +75,7 @@ export const ConnectWallet = () => {
         if (pk) {
           const linked = await tryLinkWallet(pk);
           if (linked) {
-            setAddress(pk);
             setWalletAddress(pk);
-            fetchBalance(pk);
           }
         }
       } catch (error) {
@@ -82,7 +85,7 @@ export const ConnectWallet = () => {
       }
     };
     checkConnection();
-  }, [setWalletAddress, linkWallet, isLoggedIn]);
+  }, [setWalletAddress, linkWallet, isLoggedIn, address]);
 
   const connectWallet = async () => {
     if (!isLoggedIn) {
@@ -90,26 +93,29 @@ export const ConnectWallet = () => {
       return;
     }
     try {
-      const api = await freighterApi();
-      const connResult = await api.isConnected();
-      const conn = (connResult as any)?.isConnected ?? connResult;
-      if (!conn) {
-        alert("¡Por favor instala la extensión de Freighter en tu navegador!");
+      if (isSafariBrowser() && !isFreighterInjected()) {
+        alert("No detecté Freighter en Safari. Para esta demo usa Chrome o Brave con la extensión Freighter instalada y desbloqueada.");
         window.open("https://freighter.app", "_blank");
         return;
       }
+      const api = await freighterApi();
       const accessResult = await api.requestAccess();
+      if ((accessResult as any)?.error) {
+        alert((accessResult as any).error.message ?? "Freighter no permitió conectar la billetera.");
+        return;
+      }
       const pk = (accessResult as any)?.address ?? (typeof accessResult === "string" ? accessResult : "");
       if (pk) {
         const linked = await tryLinkWallet(pk);
         if (linked) {
-          setAddress(pk);
           setWalletAddress(pk);
-          fetchBalance(pk);
         }
+      } else {
+        alert("Freighter no devolvió una dirección. Desbloquea la extensión, permite el sitio y vuelve a intentar.");
       }
     } catch (error) {
       console.error("Error connecting wallet:", error);
+      alert("No fue posible conectar Freighter. Verifica que la extensión esté instalada, desbloqueada y con permisos para localhost; luego recarga la página.");
     }
   };
 
