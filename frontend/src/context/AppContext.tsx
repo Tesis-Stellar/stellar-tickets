@@ -719,7 +719,8 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       contractAddress: string,
       ticketRootId: number,
       buyerPublicKey: string,
-      assetCode?: string | null
+      assetCode?: string | null,
+      sellerWallet?: string | null
     ): Promise<{ success: boolean; txHash?: string; error?: string }> => {
       try {
         await ensureFreighterReady(buyerPublicKey);
@@ -772,7 +773,12 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
             try {
               await apiFetch("/api/transactions/transfer-collectible", {
                 method: "POST",
-                body: JSON.stringify({ contractAddress, ticketRootId }),
+                body: JSON.stringify({
+                  contractAddress,
+                  ticketRootId,
+                  buyerWallet: buyerPublicKey,
+                  sellerWallet: sellerWallet ?? undefined,
+                }),
               });
             } catch (e: any) {
               console.warn("[collectible] transfer failed:", e?.message);

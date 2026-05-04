@@ -116,6 +116,51 @@ function invalidateCache(prefix?: string) {
   for (const key of cache.keys()) { if (key.startsWith(prefix)) cache.delete(key); }
 }
 
+// ── Stellar TOML — wallets (Freighter, Lobstr, etc.) read this from the
+//    issuer's home_domain to display asset name + image. We list every minted
+//    collectible with the same generic ticket icon.
+const COLLECTIBLE_IMAGE_URL = process.env.COLLECTIBLE_IMAGE_URL ||
+  'https://cdn-icons-png.flaticon.com/512/1041/1041916.png';
+
+app.get('/.well-known/stellar.toml', async (_req, res) => {
+  try {
+    const issuer = organizerKeypair?.publicKey();
+    if (!issuer) {
+      res.status(503).type('text/plain').send('# Issuer not configured');
+      return;
+    }
+    const tickets = await prisma.tickets.findMany({
+      where: { asset_code: { not: null } },
+      select: { asset_code: true },
+      distinct: ['asset_code'],
+    });
+    const lines: string[] = [
+      'VERSION="1.0"',
+      `NETWORK_PASSPHRASE="${NETWORK_PASSPHRASE}"`,
+      '',
+      '[DOCUMENTATION]',
+      'ORG_NAME="Stellar Tickets"',
+      'ORG_DESCRIPTION="Plataforma Web2.5 de boletería con NFTs en Stellar (tesis)"',
+      '',
+    ];
+    for (const t of tickets) {
+      lines.push('[[CURRENCIES]]');
+      lines.push(`code="${t.asset_code}"`);
+      lines.push(`issuer="${issuer}"`);
+      lines.push('display_decimals=0');
+      lines.push('is_asset_anchored=false');
+      lines.push('name="Boleto Stellar Tickets"');
+      lines.push('desc="Coleccionable de boleto verificable en Stellar"');
+      lines.push(`image="${COLLECTIBLE_IMAGE_URL}"`);
+      lines.push('');
+    }
+    res.type('text/plain').send(lines.join('\n'));
+  } catch (err: any) {
+    console.error('[stellar.toml] error:', err?.message);
+    res.status(500).type('text/plain').send('# Error generating stellar.toml');
+  }
+});
+
 // Root: API only (SPA runs on Vite, typically http://localhost:8080)
 app.get('/', (_req, res) => {
   res.type('text').send(
@@ -1045,24 +1090,38 @@ app.post('/api/transactions/transfer-collectible', authMiddleware, async (req, r
     if (!organizerKeypair) {
       res.status(503).json({ error: 'Blockchain no configurada' }); return;
     }
-    const { contractAddress, ticketRootId } = req.body;
+    const { contractAddress, ticketRootId, sellerWallet, buyerWallet } = req.body;
     if (!contractAddress || ticketRootId === undefined) {
       res.status(400).json({ error: 'contractAddress y ticketRootId son requeridos' }); return;
     }
-    // Find the most recent ACTIVE ticket for this root (the new buyer's record)
-    const newTicket = await prisma.tickets.findFirst({
-      where: { contract_address: contractAddress, ticket_root_id: Number(ticketRootId), status: 'ACTIVE' },
+
+    // Resolve asset_code from any ticket of this root (it survives version bumps)
+    const ticketRecord = await prisma.tickets.findFirst({
+      where: { contract_address: contractAddress, ticket_root_id: Number(ticketRootId), asset_code: { not: null } },
       orderBy: { version: 'desc' },
+      select: { asset_code: true, owner_wallet: true, status: true },
     });
-    if (!newTicket?.asset_code || !newTicket.owner_wallet) {
-      res.status(400).json({ error: 'Ticket no listo para transferir coleccionable (faltan asset_code/owner_wallet)' });
+    if (!ticketRecord?.asset_code) {
+      res.status(400).json({ error: 'Ticket sin asset_code (no fue minteado)' });
       return;
     }
-    // Find the previous (CANCELLED) ticket to know who held the asset before
-    const oldTicket = await prisma.tickets.findFirst({
+
+    // Trust the wallets passed by the frontend (they come from live_ticket data,
+    // so they don't depend on the indexer having caught up yet). Fall back to
+    // DB lookup for backward compatibility.
+    const newTicket = {
+      asset_code: ticketRecord.asset_code,
+      owner_wallet: buyerWallet ?? ticketRecord.owner_wallet,
+    };
+    const oldTicket = sellerWallet ? { owner_wallet: sellerWallet } : await prisma.tickets.findFirst({
       where: { contract_address: contractAddress, ticket_root_id: Number(ticketRootId), status: 'CANCELLED' },
       orderBy: { version: 'desc' },
+      select: { owner_wallet: true },
     });
+    if (!newTicket.owner_wallet) {
+      res.status(400).json({ error: 'buyerWallet requerido o ticket sin owner_wallet' });
+      return;
+    }
 
     const asset = new Asset(newTicket.asset_code, organizerKeypair.publicKey());
     const issuerAccountResp = await horizonServer.loadAccount(organizerKeypair.publicKey());
