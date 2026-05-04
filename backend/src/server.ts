@@ -22,6 +22,7 @@ import { rpc as SorobanRpc } from '@stellar/stellar-sdk';
 import { runIndexer } from './indexer';
 import { exec } from 'child_process';
 import util from 'util';
+import QRCode from 'qrcode';
 
 const execPromise = util.promisify(exec);
 
@@ -116,11 +117,71 @@ function invalidateCache(prefix?: string) {
   for (const key of cache.keys()) { if (key.startsWith(prefix)) cache.delete(key); }
 }
 
-// ── Stellar TOML — wallets (Freighter, Lobstr, etc.) read this from the
-//    issuer's home_domain to display asset name + image. We list every minted
-//    collectible with the same generic ticket icon.
-const COLLECTIBLE_IMAGE_URL = process.env.COLLECTIBLE_IMAGE_URL ||
-  'https://cdn-icons-png.flaticon.com/512/1041/1041916.png';
+// ── Stellar TOML + QR collectible images ────────────────────────────────────
+//    Wallets (Freighter, Lobstr) fetch /.well-known/stellar.toml from the
+//    issuer's home_domain to render NFT metadata. Each ticket's `image` field
+//    points at /api/tickets/qr/<assetCode>.png so the collectible Freighter
+//    shows IS the QR a verifier scans at the door.
+//
+//    For Freighter to classify the asset as "Collectible" (not generic token):
+//      - supply = 1 (we mint exactly 1 unit per ticket)
+//      - is_asset_anchored = false
+//      - fixed_number = 1
+//      - image = stable URL returning a PNG
+const PUBLIC_BASE_URL =
+  process.env.PUBLIC_BASE_URL || 'https://stellar-ticket.vercel.app';
+
+// Memoize generated QR PNGs in-process. The QR payload is deterministic per
+// asset_code (contract_address + ticket_root_id are immutable across versions),
+// so a buffer cache hit costs ~0ms vs ~10ms regeneration.
+const qrCache = new Map<string, Buffer>();
+
+async function buildTicketQrPng(payload: object): Promise<Buffer> {
+  return QRCode.toBuffer(JSON.stringify(payload), {
+    errorCorrectionLevel: 'M',
+    type: 'png',
+    width: 512,
+    margin: 2,
+    color: { dark: '#000000', light: '#FFFFFF' },
+  });
+}
+
+// GET /api/tickets/qr/:assetCode.png — public PNG referenced by stellar.toml.
+// QR encodes { contractAddress, ticketRootId } so the door scanner can resolve
+// the live ticket version regardless of resale history.
+app.get('/api/tickets/qr/:assetCode.png', async (req, res) => {
+  try {
+    const assetCode = req.params.assetCode.replace(/\.png$/i, '');
+    if (!/^T[0-9A-F]{1,11}$/.test(assetCode)) {
+      res.status(400).type('text/plain').send('Invalid asset code');
+      return;
+    }
+
+    if (!qrCache.has(assetCode)) {
+      const ticket = await prisma.tickets.findFirst({
+        where: { asset_code: assetCode, contract_address: { not: null } },
+        select: { contract_address: true, ticket_root_id: true },
+      });
+      if (!ticket?.contract_address || ticket.ticket_root_id == null) {
+        res.status(404).type('text/plain').send('Ticket not found');
+        return;
+      }
+      const buf = await buildTicketQrPng({
+        contractAddress: ticket.contract_address,
+        ticketRootId: ticket.ticket_root_id,
+      });
+      qrCache.set(assetCode, buf);
+    }
+
+    const png = qrCache.get(assetCode)!;
+    res.setHeader('Cache-Control', 'public, max-age=86400, immutable');
+    res.setHeader('Content-Type', 'image/png');
+    res.send(png);
+  } catch (err: any) {
+    console.error('[qr] error:', err?.message);
+    res.status(500).type('text/plain').send('Error generating QR');
+  }
+});
 
 app.get('/.well-known/stellar.toml', async (_req, res) => {
   try {
@@ -129,31 +190,64 @@ app.get('/.well-known/stellar.toml', async (_req, res) => {
       res.status(503).type('text/plain').send('# Issuer not configured');
       return;
     }
+    // Pull tickets + map contract_address -> event so each collectible carries
+    // the event name. tickets has no direct relation to events; we join via the
+    // unique events.contract_address.
     const tickets = await prisma.tickets.findMany({
-      where: { asset_code: { not: null } },
-      select: { asset_code: true },
+      where: { asset_code: { not: null }, contract_address: { not: null } },
+      select: { asset_code: true, contract_address: true },
       distinct: ['asset_code'],
     });
+    const contractAddrs = Array.from(
+      new Set(tickets.map(t => t.contract_address!).filter(Boolean))
+    );
+    const events = contractAddrs.length
+      ? await prisma.events.findMany({
+          where: { contract_address: { in: contractAddrs } },
+          select: { contract_address: true, title: true, starts_at: true },
+        })
+      : [];
+    const eventByContract = new Map(
+      events.map(e => [e.contract_address!, { title: e.title, starts_at: e.starts_at }])
+    );
+
     const lines: string[] = [
-      'VERSION="1.0"',
+      'VERSION="2.0.0"',
       `NETWORK_PASSPHRASE="${NETWORK_PASSPHRASE}"`,
       '',
       '[DOCUMENTATION]',
       'ORG_NAME="Stellar Tickets"',
       'ORG_DESCRIPTION="Plataforma Web2.5 de boletería con NFTs en Stellar (tesis)"',
+      `ORG_URL="${PUBLIC_BASE_URL}"`,
+      '',
+      '[[PRINCIPALS]]',
+      'name="Stellar Tickets Issuer"',
+      `github="ElAreaAl2"`,
       '',
     ];
+
     for (const t of tickets) {
+      const ev = eventByContract.get(t.contract_address!);
+      const eventTitle = (ev?.title ?? 'Boleto').replace(/"/g, '\\"').slice(0, 60);
+      const startsAt = ev?.starts_at
+        ? new Date(ev.starts_at).toISOString().slice(0, 10)
+        : '';
+      const desc =
+        `Boleto NFT — ${eventTitle}${startsAt ? ` (${startsAt})` : ''}. ` +
+        `Escanea el QR en puerta para validar.`;
       lines.push('[[CURRENCIES]]');
       lines.push(`code="${t.asset_code}"`);
       lines.push(`issuer="${issuer}"`);
-      lines.push('display_decimals=0');
       lines.push('is_asset_anchored=false');
-      lines.push('name="Boleto Stellar Tickets"');
-      lines.push('desc="Coleccionable de boleto verificable en Stellar"');
-      lines.push(`image="${COLLECTIBLE_IMAGE_URL}"`);
+      lines.push('display_decimals=0');
+      lines.push('fixed_number=1');
+      lines.push('max_number=1');
+      lines.push(`name="${eventTitle}"`);
+      lines.push(`desc="${desc.replace(/"/g, '\\"')}"`);
+      lines.push(`image="${PUBLIC_BASE_URL}/api/tickets/qr/${t.asset_code}.png"`);
       lines.push('');
     }
+    res.setHeader('Cache-Control', 'public, max-age=60');
     res.type('text/plain').send(lines.join('\n'));
   } catch (err: any) {
     console.error('[stellar.toml] error:', err?.message);
@@ -1273,14 +1367,33 @@ app.post('/api/admin/scan', authMiddleware, async (req, res) => {
     const user = await prisma.users.findUnique({ where: { id: (req as any).userId } });
     if (!user || !['ADMIN', 'STAFF'].includes(user.role)) { res.status(403).json({ error: 'Acceso denegado' }); return; }
 
-    const { ticketId } = req.body;
-    if (!ticketId) { res.status(400).json({ error: 'ticketId es requerido' }); return; }
+    // Accept either:
+    //   { ticketId }                          ← legacy QR (DB UUID, version-bound)
+    //   { contractAddress, ticketRootId }     ← new QR baked into Freighter NFT
+    //                                            (stable across resale versions)
+    const { ticketId, contractAddress, ticketRootId } = req.body;
 
-    // Check if the ticket exists
-    const ticket = await prisma.tickets.findUnique({ where: { id: ticketId } });
-    
+    let ticket = null as Awaited<ReturnType<typeof prisma.tickets.findUnique>> | null;
+
+    if (ticketId) {
+      ticket = await prisma.tickets.findUnique({ where: { id: ticketId } });
+    } else if (contractAddress && ticketRootId != null) {
+      // Resolve the live (highest-version) ACTIVE ticket for this root.
+      ticket = await prisma.tickets.findFirst({
+        where: {
+          contract_address: String(contractAddress),
+          ticket_root_id: Number(ticketRootId),
+          status: 'ACTIVE',
+        },
+        orderBy: { version: 'desc' },
+      });
+    } else {
+      res.status(400).json({ error: 'Se requiere ticketId o (contractAddress + ticketRootId)' });
+      return;
+    }
+
     if (!ticket) {
-      res.status(404).json({ error: 'Boleto no encontrado en la base de datos' });
+      res.status(404).json({ error: 'Boleto no encontrado o ya redimido' });
       return;
     }
 

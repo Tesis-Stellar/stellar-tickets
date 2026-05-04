@@ -317,6 +317,18 @@ docs/
   - **UI: precio reventa COP**: `TicketCard.tsx` reemplaza `prompt()` con `<Dialog>` shadcn. User ingresa COP, preview XLM en vivo (`useXlmPrice`) + cotización. Backend sigue recibiendo XLM/stroops (conversión solo UI).
   - **ConnectWallet persistente**: cada page renderiza su `<Header />` → remount + "Connect Wallet" 300-500ms al navegar. Refactor: lee `walletAddress` desde AppContext (persistente). Solo invoca Freighter si no hay address. Wallet visible al navegar y al recargar (gracias a `/users/me` → `walletAddress`).
   - **Critical paths**: warning sobre `D:\Tesis\backend\` y `D:\Tesis\frontend\` stale añadido al top.
+- **Phase 4.4 (QR-as-Collectible en Freighter)** (2026-05-04):
+  - **Goal**: el coleccionable que aparece en Freighter del comprador **es** el QR que el personal escanea en puerta. Antes salía como token genérico; ahora Freighter lo clasifica como Collectible (NFT).
+  - **stellar.toml dinámico**: `GET /.well-known/stellar.toml` (servido desde Railway, expuesto vía Vercel rewrite a `https://stellar-ticket.vercel.app/.well-known/stellar.toml`). Incluye `[[CURRENCIES]]` por cada `asset_code` activo con `fixed_number=1`, `max_number=1`, `is_asset_anchored=false`, `name=<event title>`, `desc=<event + fecha>`, `image=<URL del QR PNG>`. Estos son los flags que Freighter usa para tratarlo como NFT.
+  - **`home_domain` setup**: script `setup-issuer-home-domain.ts` (`SET_OPTIONS homeDomain=stellar-ticket.vercel.app`, 25 chars — Stellar limita a 32). Sin esto Freighter no descubre el toml. ENV `ISSUER_HOME_DOMAIN`.
+  - **QR PNG endpoint**: `GET /api/tickets/qr/:assetCode.png` genera con `qrcode` npm (size=512, level=M). Codifica `{contractAddress, ticketRootId}` (estable a través de versiones de reventa). Cache en memoria `Map<assetCode, Buffer>` + `Cache-Control: public, max-age=86400, immutable`.
+  - **Scanner** acepta ambos payloads: nuevo `{contractAddress, ticketRootId}` (resuelve la versión vigente con `findFirst orderBy version desc, status=ACTIVE`) o legacy `{ticketId}`.
+  - **TicketCard QR** ahora usa el mismo payload `{contractAddress, ticketRootId}` cuando el ticket está asegurado, así el QR de la app == el QR de Freighter.
+  - **Vercel rewrites** (`frontend/vercel.json`): `/.well-known/stellar.toml` y `/api/tickets/qr/:asset` proxy a Railway (`stellar-tickets-production.up.railway.app` = 41 chars, no cabe en home_domain).
+  - **Bidireccionalidad**: el `asset_code` y por ende el QR persisten al revender. El indexer copia `order_item_id` y conserva `asset_code` (mismo coleccionable, distinto holder vía clawback+payment). El comprador anterior pierde la imagen en Freighter; el nuevo la gana.
+  - **Deps backend**: `qrcode`, `@types/qrcode`. ENV nueva: `PUBLIC_BASE_URL` (def `https://stellar-ticket.vercel.app`) — usada en `image=` del toml.
+  - **Pasos one-shot prod**: (1) deploy backend con `qrcode`, (2) `ISSUER_HOME_DOMAIN=stellar-ticket.vercel.app npx tsx scripts/setup-issuer-home-domain.ts`, (3) deploy frontend con nuevo `vercel.json`. Verificar: `curl https://stellar-ticket.vercel.app/.well-known/stellar.toml` y abrir `image=` URL en navegador.
+
 - **Phase 4.3 (Stellar Classic NFT collectible)** (2026-05-03):
   - **Goal**: cada boleto = coleccionable visible en Freighter del comprador, transferido en reventa P2P.
   - **DB**: `tickets.asset_code` (TEXT unique) — `add-asset-code-column.ts`. Formato `T` + 11 hex UUID upper (alphanum12 válido).

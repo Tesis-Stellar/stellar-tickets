@@ -192,18 +192,25 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
           </button>
         )}
       </div>
-      {/* Real QR */}
+      {/* Real QR — once secured on-chain, this matches the QR baked into the
+          Freighter Collectible (encodes contractAddress + ticketRootId). */}
       <div className="flex flex-col items-center justify-center sm:border-l sm:border-border sm:pl-4 min-w-[120px]">
         <div className="p-2 bg-white rounded-lg shadow-sm">
-          <QRCodeCanvas 
-             value={JSON.stringify({ ticketId: ticket.id, code: ticket.ticketCode || ticket.id })} 
-             size={80} 
-             level={"H"}
-             bgColor={"#ffffff"}
-             fgColor={"#000000"}
+          <QRCodeCanvas
+            value={JSON.stringify(
+              ticket.contractAddress && ticket.ticketRootId != null
+                ? { contractAddress: ticket.contractAddress, ticketRootId: ticket.ticketRootId }
+                : { ticketId: ticket.id, code: ticket.ticketCode || ticket.id }
+            )}
+            size={80}
+            level={"H"}
+            bgColor={"#ffffff"}
+            fgColor={"#000000"}
           />
         </div>
-        <span className="text-[10px] text-muted-foreground font-bold mt-2 uppercase tracking-tight">{ticket.ticketCode?.slice(0, 10) || "QR-CODE"}</span>
+        <span className="text-[10px] text-muted-foreground font-bold mt-2 uppercase tracking-tight">
+          {isMinted ? "EN TU WALLET" : ticket.ticketCode?.slice(0, 10) || "QR-CODE"}
+        </span>
       </div>
     </div>
 
