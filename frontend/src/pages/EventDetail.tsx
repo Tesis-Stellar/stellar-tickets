@@ -198,7 +198,7 @@ const EventDetail = () => {
                               const pk = walletAddress;
                               setBuyingId(lt.id);
                               await linkWallet(pk).catch(() => {});
-                              const buyResult = await buyResaleTicket(lt.contractAddress, lt.ticketRootId, pk, lt.assetCode);
+                              const buyResult = await buyResaleTicket(lt.contractAddress, lt.ticketRootId, pk, lt.assetCode, lt.sellerWallet);
                               if (buyResult.success) {
                                 alert("¡Compra exitosa! Tu boleto aparecerá en Mis Entradas en unos segundos.\nTx: " + buyResult.txHash?.slice(0, 12) + "...");
                                 setLiveTickets((prev) => prev.filter((t) => t.id !== lt.id));
