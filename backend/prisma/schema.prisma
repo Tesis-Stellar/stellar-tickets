@@ -156,6 +156,7 @@ model tickets {
   version       Int?
   is_for_sale   Boolean       @default(false)
   resale_price  BigInt?
+  asset_code    String?       @unique(map: "tickets_asset_code_key")
   qr_payload    String?
   status        ticket_status @default(ACTIVE)
   issued_at     DateTime      @default(now()) @db.Timestamptz(6)
