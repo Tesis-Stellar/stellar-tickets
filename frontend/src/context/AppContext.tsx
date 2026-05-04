@@ -569,6 +569,35 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     [apiFetch, normalizeUser, user]
   );
 
+  // Ensures Freighter is connected/authorized on this browser session and that
+  // the active account matches the wallet linked to the user. Throws a helpful
+  // error if the user denies, has a different account active, or has no extension.
+  const ensureFreighterReady = useCallback(async (expectedAddress?: string): Promise<string> => {
+    const api = await import("@stellar/freighter-api");
+    const connectedRes = await api.isConnected();
+    const connected = (connectedRes as any)?.isConnected ?? connectedRes;
+    if (!connected) {
+      throw new Error("Freighter no está disponible en este navegador. Instala la extensión y desbloquéala.");
+    }
+    const allowedRes = await api.isAllowed();
+    const allowed = (allowedRes as any)?.isAllowed ?? allowedRes;
+    if (!allowed) {
+      const accessRes = await api.requestAccess();
+      if ((accessRes as any)?.error) {
+        throw new Error("Freighter rechazó la conexión. Acepta el permiso para este sitio y vuelve a intentar.");
+      }
+    }
+    const addrRes = await api.getAddress();
+    const active = (addrRes as any)?.address ?? (typeof addrRes === "string" ? addrRes : "");
+    if (!active) {
+      throw new Error("Freighter no devolvió una dirección. Desbloquea la extensión e intenta de nuevo.");
+    }
+    if (expectedAddress && active !== expectedAddress) {
+      throw new Error(`La cuenta activa en Freighter (${active.slice(0, 8)}…) no coincide con la wallet vinculada a tu cuenta (${expectedAddress.slice(0, 8)}…). Cambia la cuenta activa en Freighter.`);
+    }
+    return active;
+  }, []);
+
   const secureTicketOnChain = useCallback(
     async (ticketId: string): Promise<{ success: boolean; txHash?: string; error?: string }> => {
       try {
@@ -596,6 +625,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   const listTicketForSale = useCallback(
     async (ticketId: string, priceXLM: number): Promise<{ success: boolean; txHash?: string; error?: string }> => {
       try {
+        await ensureFreighterReady(walletAddress ?? undefined);
         const priceStroops = Math.round(priceXLM * 10_000_000);
         const { xdr, networkPassphrase } = await apiFetch<{ xdr: string; networkPassphrase: string }>("/api/transactions/list-ticket", {
           method: "POST",
@@ -618,12 +648,13 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         return { success: false, error: error.message || "Error listando ticket" };
       }
     },
-    [apiFetch]
+    [apiFetch, ensureFreighterReady, walletAddress]
   );
 
   const cancelResaleListing = useCallback(
     async (ticketId: string): Promise<{ success: boolean; txHash?: string; error?: string }> => {
       try {
+        await ensureFreighterReady(walletAddress ?? undefined);
         const { xdr, networkPassphrase } = await apiFetch<{ xdr: string; networkPassphrase: string }>("/api/transactions/cancel-listing", {
           method: "POST",
           body: JSON.stringify({ ticketId }),
@@ -645,12 +676,13 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         return { success: false, error: error.message || "Error cancelando listado" };
       }
     },
-    [apiFetch]
+    [apiFetch, ensureFreighterReady, walletAddress]
   );
 
   const buyResaleTicket = useCallback(
     async (contractAddress: string, ticketRootId: number, buyerPublicKey: string): Promise<{ success: boolean; txHash?: string; error?: string }> => {
       try {
+        await ensureFreighterReady(buyerPublicKey);
         // 1. Get unsigned XDR from backend
         const { xdr, networkPassphrase } = await apiFetch<{ xdr: string; networkPassphrase: string }>("/api/transactions/build-buy-xdr", {
           method: "POST",
@@ -682,7 +714,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         return { success: false, error: error.message || "Error comprando ticket" };
       }
     },
-    [apiFetch, refreshTickets, refreshSoldTickets]
+    [apiFetch, refreshTickets, refreshSoldTickets, ensureFreighterReady]
   );
 
   const linkWallet = useCallback(
