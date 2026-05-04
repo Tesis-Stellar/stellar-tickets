@@ -91,7 +91,7 @@ interface AppState {
   secureTicketOnChain: (ticketId: string) => Promise<{ success: boolean; txHash?: string; error?: string }>;
   listTicketForSale: (ticketId: string, priceXLM: number) => Promise<{ success: boolean; txHash?: string; error?: string }>;
   cancelResaleListing: (ticketId: string) => Promise<{ success: boolean; txHash?: string; error?: string }>;
-  buyResaleTicket: (contractAddress: string, ticketRootId: number, buyerPublicKey: string) => Promise<{ success: boolean; txHash?: string; error?: string }>;
+  buyResaleTicket: (contractAddress: string, ticketRootId: number, buyerPublicKey: string, assetCode?: string | null) => Promise<{ success: boolean; txHash?: string; error?: string }>;
   linkWallet: (walletAddress: string) => Promise<void>;
   refreshTickets: () => Promise<void>;
   walletAddress: string | null;
@@ -601,11 +601,21 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   const secureTicketOnChain = useCallback(
     async (ticketId: string): Promise<{ success: boolean; txHash?: string; error?: string }> => {
       try {
-        const result = await apiFetch<{ success: boolean; txHash: string; contractAddress: string; ticketRootId: number }>("/api/transactions/secure-ticket", {
+        const result = await apiFetch<{
+          success: boolean;
+          txHash: string;
+          contractAddress: string;
+          ticketRootId: number;
+          assetCode: string;
+          assetIssuer: string;
+          trustXdr: string | null;
+          networkPassphrase: string;
+        }>("/api/transactions/secure-ticket", {
           method: "POST",
           body: JSON.stringify({ ticketId }),
         });
-        // Update local state to reflect on-chain status
+
+        // 1. Reflect Soroban registration in local state immediately
         setPurchasedTickets((prev) =>
           prev.map((t) =>
             t.id === ticketId
@@ -613,13 +623,38 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
               : t
           )
         );
+
+        // 2. Issue the classic collectible to the buyer's wallet (best effort)
+        if (result.trustXdr) {
+          try {
+            await ensureFreighterReady(walletAddress ?? undefined);
+            const { signTransaction } = await import("@stellar/freighter-api");
+            const signed = await signTransaction(result.trustXdr, { networkPassphrase: result.networkPassphrase });
+            const signedXdr = typeof signed === "string" ? signed : (signed as any)?.signedTxXdr ?? "";
+            if (signedXdr) {
+              await apiFetch("/api/transactions/submit-classic", {
+                method: "POST",
+                body: JSON.stringify({ signedXdr }),
+              });
+              await apiFetch("/api/transactions/mint-collectible", {
+                method: "POST",
+                body: JSON.stringify({ ticketId }),
+              });
+              setBalanceVersion((v) => v + 1);
+            }
+          } catch (collectibleErr: any) {
+            console.warn("[collectible] mint failed:", collectibleErr?.message);
+            // Non-fatal: ticket is still secured on-chain even if the asset mint fails
+          }
+        }
+
         return { success: true, txHash: result.txHash };
       } catch (error: any) {
         const msg = error.message || "Error asegurando ticket en blockchain";
         return { success: false, error: msg };
       }
     },
-    [apiFetch]
+    [apiFetch, ensureFreighterReady, walletAddress]
   );
 
   const listTicketForSale = useCallback(
@@ -680,33 +715,72 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   );
 
   const buyResaleTicket = useCallback(
-    async (contractAddress: string, ticketRootId: number, buyerPublicKey: string): Promise<{ success: boolean; txHash?: string; error?: string }> => {
+    async (
+      contractAddress: string,
+      ticketRootId: number,
+      buyerPublicKey: string,
+      assetCode?: string | null
+    ): Promise<{ success: boolean; txHash?: string; error?: string }> => {
       try {
         await ensureFreighterReady(buyerPublicKey);
-        // 1. Get unsigned XDR from backend
+        const { signTransaction } = await import("@stellar/freighter-api");
+
+        // 0. If the seller already issued a collectible for this ticket, the
+        //    buyer must opt in via CHANGE_TRUST before receiving it.
+        if (assetCode) {
+          try {
+            const { xdr: trustXdr, networkPassphrase: trustNet } = await apiFetch<{ xdr: string; networkPassphrase: string }>(
+              "/api/transactions/build-trust-xdr",
+              { method: "POST", body: JSON.stringify({ assetCode }) }
+            );
+            const signedTrust = await signTransaction(trustXdr, { networkPassphrase: trustNet });
+            const trustSignedXdr = typeof signedTrust === "string" ? signedTrust : (signedTrust as any)?.signedTxXdr ?? "";
+            if (trustSignedXdr) {
+              await apiFetch("/api/transactions/submit-classic", {
+                method: "POST",
+                body: JSON.stringify({ signedXdr: trustSignedXdr }),
+              });
+            }
+          } catch (trustErr: any) {
+            console.warn("[collectible] trust step failed:", trustErr?.message);
+            // Continue — the Soroban buy can still succeed without the collectible
+          }
+        }
+
+        // 1. Get unsigned XDR for comprar_boleto
         const { xdr, networkPassphrase } = await apiFetch<{ xdr: string; networkPassphrase: string }>("/api/transactions/build-buy-xdr", {
           method: "POST",
           body: JSON.stringify({ contractAddress, ticketRootId, buyerPublicKey }),
         });
 
-        // 2. Sign with Freighter
-        const { signTransaction } = await import("@stellar/freighter-api");
+        // 2. Sign + submit the Soroban buy
         const signResult = await signTransaction(xdr, { networkPassphrase });
         const signedXdr = typeof signResult === "string" ? signResult : (signResult as any)?.signedTxXdr ?? "";
         if (!signedXdr) return { success: false, error: "Firma cancelada por el usuario" };
 
-        // 3. Submit signed XDR
         const submitResult = await apiFetch<{ success: boolean; txHash: string }>("/api/transactions/submit", {
           method: "POST",
           body: JSON.stringify({ signedXdr }),
         });
 
-        // Refresh balance and schedule ticket list refresh (indexer needs ~5-7s)
+        // 3. Once the indexer has applied boleto_revendido (~7s), trigger the
+        //    asset transfer (clawback from seller + payment to buyer).
         setBalanceVersion((v) => v + 1);
         void (async () => {
           await new Promise((r) => setTimeout(r, 7000));
+          if (assetCode) {
+            try {
+              await apiFetch("/api/transactions/transfer-collectible", {
+                method: "POST",
+                body: JSON.stringify({ contractAddress, ticketRootId }),
+              });
+            } catch (e: any) {
+              console.warn("[collectible] transfer failed:", e?.message);
+            }
+          }
           await refreshTickets().catch(() => {});
           await refreshSoldTickets().catch(() => {});
+          setBalanceVersion((v) => v + 1);
         })();
 
         return { success: true, txHash: submitResult.txHash };

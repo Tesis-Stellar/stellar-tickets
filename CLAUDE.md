@@ -455,8 +455,22 @@ docs/
   - **ConnectWallet persistente entre navegaciones**: Cada página renderiza su propio `<Header />`, lo que remontaba `ConnectWallet` y mostraba "Connect Wallet" durante ~300-500ms al navegar. Refactorizado para leer `walletAddress` directamente del `AppContext` (persistente) en lugar de estado local. Solo invoca a Freighter cuando NO hay address en el context. Resultado: la wallet se mantiene visible al cambiar de pantalla y al recargar (gracias a que `/api/users/me` devuelve `walletAddress`).
   - **Critical path note**: El código activo vive en `D:\Tesis\Codigo\main_contract\backend|frontend`. NO trabajar en `D:\Tesis\backend\` ni `D:\Tesis\frontend\` — son copias stale. Warning añadido al top de este CLAUDE.md.
 
+- **Phase 4.3 (Stellar Classic NFT collectible)** — Implemented 2026-05-03:
+  - **Goal**: que cada boleto se vea como un coleccionable en Freighter del comprador, y que se transfiera al revenderlo P2P.
+  - **DB**: nueva columna `tickets.asset_code` (TEXT, unique) — script `backend/scripts/add-asset-code-column.ts`. Formato: `T` + 11 hex del UUID en uppercase (alphanum12 válido).
+  - **Issuer setup**: `backend/scripts/setup-issuer-flags.ts` activa `AUTH_REVOCABLE` + `AUTH_CLAWBACK_ENABLED` en la wallet del organizer. Necesario para clawback en reventa sin firma del vendedor.
+  - **Mint en `/secure-ticket`**: tras `crear_boleto_para`, backend genera asset_code, lo persiste y devuelve `trustXdr` (CHANGE_TRUST limit=1). Frontend pide a Freighter firmar el trust → submit a Horizon (`/api/transactions/submit-classic`) → llama `/api/transactions/mint-collectible` que firma server-side el PAYMENT 1 unidad (issuer = organizer). Idempotente: si la wallet ya tiene la unidad, devuelve `alreadyMinted: true`.
+  - **Transfer en reventa P2P**: `live_tickets` ahora incluye `assetCode`. `buyResaleTicket(contractAddress, ticketRootId, buyerPk, assetCode?)` orquesta: (1) trust del comprador vía `/build-trust-xdr` + Freighter + `submit-classic`, (2) firma + submit del Soroban `comprar_boleto`, (3) tras 7s espera de indexer, llama `/api/transactions/transfer-collectible` que hace clawback al vendedor + payment al comprador en una sola tx Horizon firmada por el organizer.
+  - **Endpoints nuevos**: `POST /mint-collectible`, `POST /transfer-collectible`, `POST /build-trust-xdr`, `POST /submit-classic`. Importante: `submit-classic` usa Horizon (no Soroban RPC) porque las ops clásicas no pasan por sorobanRpc.
+  - **Trade-offs documentados**:
+    - Cada coleccionable cuesta **0.5 XLM de reserva permanente** en la wallet del comprador (estándar trustline). Para 11 eventos/usuario eso son ~5.5 XLM bloqueados.
+    - El coleccionable **NO se quema al redimir** el boleto (en `boleto_redimido`). Se queda en la wallet como recuerdo. Si en el futuro se quiere quemar, agregar clawback en el indexer.
+    - El mint+trust requieren **2 firmas adicionales** del comprador (CHANGE_TRUST en mint y CHANGE_TRUST en cada compra de reventa). Es UX peor pero necesaria del modelo Stellar Classic.
+    - Si el mint del coleccionable falla, el ticket queda igualmente asegurado en Soroban (degradación graceful, no fatal).
+  - **Variables de entorno**: opcional `HORIZON_URL` (default `https://horizon-testnet.stellar.org`).
+
 ### Pending — NEXT SESSION START HERE
-- **Phase 5** — Thesis documentation: **updated DB diagram** (new `resale_price` column, STAFF role, seat inventory tables), updated architecture diagrams, Web2 problem mitigation analysis, test evidence screenshots, latency/cost metrics (Stroops)
+- **Phase 5** — Thesis documentation: **updated DB diagram** (new `resale_price` + `asset_code` columns, STAFF role, seat inventory tables), updated architecture diagrams, Web2 problem mitigation analysis, test evidence screenshots, latency/cost metrics (Stroops)
 
 ### Key architectural rules
 - Backend signs `crear_boleto`, `listar_boleto`, and `cancelar_venta` server-side with organizer key. For buyer-facing operations (`comprar_boleto`), backend builds unsigned XDR and frontend signs with **Freighter wallet**

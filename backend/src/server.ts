@@ -12,6 +12,8 @@ import {
   Operation,
   Account,
   Address,
+  Asset,
+  Horizon,
   nativeToScVal,
   xdr,
   scValToNative,
@@ -49,12 +51,24 @@ const JWT_EXPIRES_IN = '7d';
 
 // Soroban / Stellar config
 const SOROBAN_RPC_URL = process.env.SOROBAN_RPC_URL || 'https://soroban-testnet.stellar.org';
+const HORIZON_URL = process.env.HORIZON_URL || 'https://horizon-testnet.stellar.org';
 const NETWORK_PASSPHRASE = Networks.TESTNET;
 const sorobanServer = new SorobanRpc.Server(SOROBAN_RPC_URL);
+const horizonServer = new Horizon.Server(HORIZON_URL);
 
 // Organizer keypair for on-chain operations (from deploy)
 const ORGANIZER_SECRET = process.env.ORGANIZER_SECRET;
 const organizerKeypair = ORGANIZER_SECRET ? Keypair.fromSecret(ORGANIZER_SECRET) : null;
+
+/**
+ * Generates a deterministic Stellar classic asset code (alphanum12) from a
+ * ticket UUID. Format: 'T' + first 11 hex chars of UUID, uppercased.
+ * Example: 'e9e63590-589d-...' -> 'TE9E635905889'
+ */
+function ticketAssetCode(ticketId: string): string {
+  const hex = ticketId.replace(/-/g, '').slice(0, 11).toUpperCase();
+  return `T${hex}`;
+}
 
 // Helper: build user DTO for frontend
 function toUserDto(user: { id: string; first_name: string; last_name: string; email: string; phone: string | null; document_type: string; document_number: string; wallet_address?: string | null; role?: string }) {
@@ -226,7 +240,7 @@ app.get('/api/events/:slug', async (req, res) => {
        const rawTickets = await prisma.tickets.findMany({
          where: { contract_address: event.contract_address, is_for_sale: true, status: 'ACTIVE' },
          select: {
-           id: true, ticket_root_id: true, version: true, owner_wallet: true, contract_address: true, resale_price: true,
+           id: true, ticket_root_id: true, version: true, owner_wallet: true, contract_address: true, resale_price: true, asset_code: true,
          },
        });
        live_tickets = rawTickets.map(t => ({
@@ -236,6 +250,7 @@ app.get('/api/events/:slug', async (req, res) => {
          sellerWallet: t.owner_wallet,
          contractAddress: t.contract_address,
          resalePrice: t.resale_price ? Number(t.resale_price) : null,
+         assetCode: t.asset_code,
        }));
     }
 
@@ -643,7 +658,11 @@ app.post('/api/transactions/secure-ticket', authMiddleware, async (req, res) => 
       }
     }
 
-    // Update DB with on-chain data
+    // Generate the unique classic asset code for this ticket so it can be shown
+    // as a collectible in the buyer's Freighter wallet.
+    const assetCode = ticketAssetCode(ticketId);
+
+    // Update DB with on-chain data + asset code (idempotent)
     await prisma.tickets.update({
       where: { id: ticketId },
       data: {
@@ -651,21 +670,115 @@ app.post('/api/transactions/secure-ticket', authMiddleware, async (req, res) => 
         ticket_root_id: ticketRootId,
         version: 0,
         owner_wallet: ownerUser.wallet_address,
+        asset_code: assetCode,
       },
     });
 
-    console.log(`[SOROBAN] Ticket secured on-chain! root_id=${ticketRootId}, tx=${sendResponse.hash}`);
+    // Build the CHANGE_TRUST XDR the buyer must sign to opt into receiving the
+    // collectible. The actual mint (PAYMENT) happens in /mint-collectible after
+    // the buyer submits the trustline.
+    let trustXdr: string | null = null;
+    try {
+      const buyerAccountResp = await horizonServer.loadAccount(buyerWallet);
+      const buyerAccount = new Account(buyerAccountResp.accountId(), buyerAccountResp.sequenceNumber());
+      const trustTx = new TransactionBuilder(buyerAccount, {
+        fee: '1000',
+        networkPassphrase: NETWORK_PASSPHRASE,
+      })
+        .addOperation(Operation.changeTrust({
+          asset: new Asset(assetCode, organizerKeypair.publicKey()),
+          limit: '1',
+        }))
+        .setTimeout(180)
+        .build();
+      trustXdr = trustTx.toXDR();
+    } catch (trustErr: any) {
+      console.warn('[SOROBAN] Could not build trust XDR (buyer wallet may not exist on-chain yet):', trustErr?.message);
+    }
+
+    console.log(`[SOROBAN] Ticket secured on-chain! root_id=${ticketRootId}, asset=${assetCode}, tx=${sendResponse.hash}`);
 
     res.json({
       success: true,
       txHash: sendResponse.hash,
       contractAddress,
       ticketRootId,
+      assetCode,
+      assetIssuer: organizerKeypair.publicKey(),
+      trustXdr,
+      networkPassphrase: NETWORK_PASSPHRASE,
       network: 'TESTNET',
     });
   } catch (error: any) {
     console.error('[SOROBAN] secure-ticket error:', error);
     res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/transactions/mint-collectible — Sends 1 unit of the ticket's classic
+// asset from the organizer (issuer) to the linked buyer wallet. The buyer must
+// have already submitted the CHANGE_TRUST returned by /secure-ticket.
+app.post('/api/transactions/mint-collectible', authMiddleware, async (req, res) => {
+  try {
+    if (!organizerKeypair) {
+      res.status(503).json({ error: 'Blockchain no configurada (falta ORGANIZER_SECRET)' });
+      return;
+    }
+    const { ticketId } = req.body;
+    if (!ticketId) {
+      res.status(400).json({ error: 'ticketId es requerido' });
+      return;
+    }
+    const ticket = await prisma.tickets.findUnique({ where: { id: ticketId } });
+    if (!ticket) { res.status(404).json({ error: 'Ticket no encontrado' }); return; }
+    if (ticket.owner_user_id !== (req as any).userId) { res.status(403).json({ error: 'No autorizado' }); return; }
+    if (!ticket.asset_code || !ticket.owner_wallet) {
+      res.status(400).json({ error: 'Asegura el ticket primero (asset_code/owner_wallet faltantes)' });
+      return;
+    }
+
+    const asset = new Asset(ticket.asset_code, organizerKeypair.publicKey());
+
+    // Refuse to double-mint: if the wallet already holds 1+ unit, return success idempotently
+    try {
+      const acc = await horizonServer.loadAccount(ticket.owner_wallet);
+      const existing = acc.balances.find((b: any) =>
+        b.asset_type !== 'native' && b.asset_code === ticket.asset_code && b.asset_issuer === organizerKeypair.publicKey()
+      );
+      if (existing && parseFloat((existing as any).balance) > 0) {
+        res.json({ success: true, alreadyMinted: true });
+        return;
+      }
+      if (!existing) {
+        res.status(400).json({ error: 'El comprador aún no creó el trustline. Firma primero el CHANGE_TRUST.' });
+        return;
+      }
+    } catch (loadErr: any) {
+      res.status(400).json({ error: 'No se pudo cargar la cuenta del comprador en Horizon' });
+      return;
+    }
+
+    const issuerAccountResp = await horizonServer.loadAccount(organizerKeypair.publicKey());
+    const issuerAccount = new Account(issuerAccountResp.accountId(), issuerAccountResp.sequenceNumber());
+    const tx = new TransactionBuilder(issuerAccount, {
+      fee: '1000',
+      networkPassphrase: NETWORK_PASSPHRASE,
+    })
+      .addOperation(Operation.payment({
+        destination: ticket.owner_wallet,
+        asset,
+        amount: '1',
+      }))
+      .setTimeout(60)
+      .build();
+    tx.sign(organizerKeypair);
+    const result = await horizonServer.submitTransaction(tx);
+    console.log(`[COLLECTIBLE] Minted ${ticket.asset_code} to ${ticket.owner_wallet.slice(0, 8)}… tx=${(result as any).hash}`);
+    res.json({ success: true, txHash: (result as any).hash, assetCode: ticket.asset_code, assetIssuer: organizerKeypair.publicKey() });
+  } catch (error: any) {
+    const data = error?.response?.data;
+    console.error('[COLLECTIBLE] mint error:', data ?? error);
+    res.status(500).json({ error: error.message ?? 'Error emitiendo coleccionable', detail: data });
   }
 });
 
@@ -920,6 +1033,157 @@ app.post('/api/transactions/submit', authMiddleware, async (req, res) => {
   } catch (error: any) {
     console.error('[SOROBAN] submit error:', error);
     res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/transactions/transfer-collectible — After a successful P2P resale
+// Soroban buy, the asset must move from seller to buyer. Issuer clawbacks the
+// 1 unit from the seller and re-pays it to the buyer (no seller signature
+// needed thanks to AUTH_CLAWBACK_ENABLED on the issuer).
+app.post('/api/transactions/transfer-collectible', authMiddleware, async (req, res) => {
+  try {
+    if (!organizerKeypair) {
+      res.status(503).json({ error: 'Blockchain no configurada' }); return;
+    }
+    const { contractAddress, ticketRootId } = req.body;
+    if (!contractAddress || ticketRootId === undefined) {
+      res.status(400).json({ error: 'contractAddress y ticketRootId son requeridos' }); return;
+    }
+    // Find the most recent ACTIVE ticket for this root (the new buyer's record)
+    const newTicket = await prisma.tickets.findFirst({
+      where: { contract_address: contractAddress, ticket_root_id: Number(ticketRootId), status: 'ACTIVE' },
+      orderBy: { version: 'desc' },
+    });
+    if (!newTicket?.asset_code || !newTicket.owner_wallet) {
+      res.status(400).json({ error: 'Ticket no listo para transferir coleccionable (faltan asset_code/owner_wallet)' });
+      return;
+    }
+    // Find the previous (CANCELLED) ticket to know who held the asset before
+    const oldTicket = await prisma.tickets.findFirst({
+      where: { contract_address: contractAddress, ticket_root_id: Number(ticketRootId), status: 'CANCELLED' },
+      orderBy: { version: 'desc' },
+    });
+
+    const asset = new Asset(newTicket.asset_code, organizerKeypair.publicKey());
+    const issuerAccountResp = await horizonServer.loadAccount(organizerKeypair.publicKey());
+    const issuerAccount = new Account(issuerAccountResp.accountId(), issuerAccountResp.sequenceNumber());
+
+    const txBuilder = new TransactionBuilder(issuerAccount, {
+      fee: '1000',
+      networkPassphrase: NETWORK_PASSPHRASE,
+    });
+
+    // Clawback from old owner if they actually hold the asset
+    if (oldTicket?.owner_wallet && oldTicket.owner_wallet !== newTicket.owner_wallet) {
+      try {
+        const sellerAcc = await horizonServer.loadAccount(oldTicket.owner_wallet);
+        const sellerBal = sellerAcc.balances.find((b: any) =>
+          b.asset_type !== 'native' && b.asset_code === newTicket.asset_code && b.asset_issuer === organizerKeypair.publicKey()
+        );
+        if (sellerBal && parseFloat((sellerBal as any).balance) > 0) {
+          txBuilder.addOperation(Operation.clawback({
+            from: oldTicket.owner_wallet,
+            asset,
+            amount: (sellerBal as any).balance,
+          }));
+        }
+      } catch (e: any) {
+        console.warn('[COLLECTIBLE] could not load seller account for clawback:', e?.message);
+      }
+    }
+
+    // Verify buyer has trustline; if not, return informative error
+    let buyerHasTrust = false;
+    try {
+      const buyerAcc = await horizonServer.loadAccount(newTicket.owner_wallet);
+      const trust = buyerAcc.balances.find((b: any) =>
+        b.asset_type !== 'native' && b.asset_code === newTicket.asset_code && b.asset_issuer === organizerKeypair.publicKey()
+      );
+      buyerHasTrust = !!trust;
+      if (trust && parseFloat((trust as any).balance) > 0) {
+        // Already holds it (idempotent)
+        res.json({ success: true, alreadyTransferred: true });
+        return;
+      }
+    } catch {}
+    if (!buyerHasTrust) {
+      res.status(400).json({ error: 'El comprador no tiene trustline para el coleccionable. Firma primero el CHANGE_TRUST.' });
+      return;
+    }
+
+    txBuilder.addOperation(Operation.payment({
+      destination: newTicket.owner_wallet,
+      asset,
+      amount: '1',
+    }));
+
+    const tx = txBuilder.setTimeout(60).build();
+    tx.sign(organizerKeypair);
+    const result = await horizonServer.submitTransaction(tx);
+    console.log(`[COLLECTIBLE] Transferred ${newTicket.asset_code} root=${ticketRootId} to ${newTicket.owner_wallet.slice(0, 8)}…`);
+    res.json({ success: true, txHash: (result as any).hash });
+  } catch (error: any) {
+    const data = error?.response?.data;
+    console.error('[COLLECTIBLE] transfer error:', data ?? error?.message);
+    res.status(500).json({ error: error.message ?? 'Error transfiriendo coleccionable', detail: data });
+  }
+});
+
+// POST /api/transactions/build-trust-xdr — Builds a CHANGE_TRUST XDR for a
+// given asset_code so the user can opt into receiving a P2P-resold collectible.
+app.post('/api/transactions/build-trust-xdr', authMiddleware, async (req, res) => {
+  try {
+    if (!organizerKeypair) { res.status(503).json({ error: 'Blockchain no configurada' }); return; }
+    const { assetCode } = req.body;
+    if (!assetCode) { res.status(400).json({ error: 'assetCode requerido' }); return; }
+
+    const user = await prisma.users.findUnique({ where: { id: (req as any).userId }, select: { wallet_address: true } });
+    if (!user?.wallet_address) { res.status(400).json({ error: 'Vincula tu wallet primero' }); return; }
+
+    const acc = await horizonServer.loadAccount(user.wallet_address);
+    const account = new Account(acc.accountId(), acc.sequenceNumber());
+    const tx = new TransactionBuilder(account, { fee: '1000', networkPassphrase: NETWORK_PASSPHRASE })
+      .addOperation(Operation.changeTrust({
+        asset: new Asset(assetCode, organizerKeypair.publicKey()),
+        limit: '1',
+      }))
+      .setTimeout(180)
+      .build();
+    res.json({ xdr: tx.toXDR(), networkPassphrase: NETWORK_PASSPHRASE });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message ?? 'Error construyendo trust XDR' });
+  }
+});
+
+// POST /api/transactions/submit-classic — Submit a Freighter-signed CLASSIC tx
+// (e.g. CHANGE_TRUST for the collectible) to Horizon, not Soroban RPC.
+app.post('/api/transactions/submit-classic', authMiddleware, async (req, res) => {
+  try {
+    const userId = (req as any).userId;
+    const { signedXdr } = req.body;
+    if (!signedXdr) { res.status(400).json({ error: 'signedXdr es requerido' }); return; }
+
+    const user = await prisma.users.findUnique({ where: { id: userId }, select: { wallet_address: true } });
+    if (!user?.wallet_address) {
+      res.status(400).json({ error: 'Debes vincular una wallet antes de enviar una transacción' });
+      return;
+    }
+
+    const tx = TransactionBuilder.fromXDR(signedXdr, NETWORK_PASSPHRASE);
+    if (tx instanceof FeeBumpTransaction) {
+      res.status(400).json({ error: 'Fee-bump no soportado' }); return;
+    }
+    if (tx.source !== user.wallet_address) {
+      res.status(403).json({ error: 'La transacción no corresponde a tu wallet' });
+      return;
+    }
+
+    const result = await horizonServer.submitTransaction(tx);
+    res.json({ success: true, txHash: (result as any).hash });
+  } catch (error: any) {
+    const data = error?.response?.data;
+    console.error('[CLASSIC] submit error:', data ?? error?.message);
+    res.status(500).json({ error: error.message ?? 'Error enviando transacción clásica', detail: data });
   }
 });
 
