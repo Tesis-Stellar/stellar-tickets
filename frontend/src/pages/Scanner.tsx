@@ -27,18 +27,31 @@ export const ScannerPage = () => {
       setLoading(true);
       // Attempt to parse JSON
       const payload = JSON.parse(value);
-      if (!payload.ticketId) throw new Error("QR No Reconocido");
+
+      // New format (Freighter collectible QR): { contractAddress, ticketRootId }
+      // Legacy format (in-app QR): { ticketId, code? }
+      let body: Record<string, unknown>;
+      let label: string;
+      if (payload.contractAddress && payload.ticketRootId != null) {
+        body = { contractAddress: payload.contractAddress, ticketRootId: payload.ticketRootId };
+        label = `${payload.contractAddress.slice(0, 6)}…/#${payload.ticketRootId}`;
+      } else if (payload.ticketId) {
+        body = { ticketId: payload.ticketId };
+        label = payload.code || payload.ticketId.slice(0, 8);
+      } else {
+        throw new Error("QR No Reconocido");
+      }
 
       const res = await apiFetch<any>("/api/admin/scan", {
         method: "POST",
-        body: JSON.stringify({ ticketId: payload.ticketId })
+        body: JSON.stringify(body)
       });
 
       if (res.success) {
         setResult({
           type: "success",
           message: "Acceso Permitido",
-          submessage: `Entrada validada: ${payload.code || payload.ticketId.slice(0, 8)}`
+          submessage: `Entrada validada: ${label}`
         });
       }
     } catch (err: any) {

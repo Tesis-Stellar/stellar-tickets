@@ -1,8 +1,25 @@
 {
   "rewrites": [
     {
+      "source": "/.well-known/stellar.toml",
+      "destination": "https://stellar-tickets-production.up.railway.app/.well-known/stellar.toml"
+    },
+    {
+      "source": "/api/tickets/qr/:asset",
+      "destination": "https://stellar-tickets-production.up.railway.app/api/tickets/qr/:asset"
+    },
+    {
       "source": "/(.*)",
       "destination": "/index.html"
+    }
+  ],
+  "headers": [
+    {
+      "source": "/.well-known/stellar.toml",
+      "headers": [
+        { "key": "Access-Control-Allow-Origin", "value": "*" },
+        { "key": "Content-Type", "value": "text/plain; charset=utf-8" }
+      ]
     }
   ]
 }
