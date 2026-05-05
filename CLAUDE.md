@@ -343,8 +343,42 @@ docs/
     - Si mint falla, ticket sigue asegurado en Soroban (degradación graceful).
   - **Env**: opcional `HORIZON_URL` (def `https://horizon-testnet.stellar.org`).
 
+- **Phase 4.5 (Soroban NFT contract — true Collectibles en Freighter)** (2026-05-04):
+  - **Goal**: el boleto aparece bajo la pestaña **Collectibles** de Freighter, no Tokens. Freighter solo cataloga como Collectible los NFTs implementados como contratos Soroban (SEP-41-style); los Classic assets siempre van a Tokens sin importar la metadata SEP-39 del toml. Phase 4.4 hizo Classic-with-image (visible solo en Tokens) — esta fase migra a NFT real.
+  - **Contrato nuevo `ticket_nft_contract`** (`contracts/contracts/ticket_nft_contract/`):
+    - SEP-41-style en español: `inicializar(admin, name, symbol)`, `mint(to, token_id, token_uri)` (admin-only), `transfer(from, to, token_id)` (owner auth), `admin_transfer(token_id, to)` (admin-only, para reventa sin firma vendedor), `burn(invocador, token_id)` (owner o admin), `owner_of`, `token_uri`, `balance_of`, `name`, `symbol`, `total_supply`, `admin`. 6 errores tipados, 3 eventos (`TokenMinteado`/`TokenTransferido`/`TokenQuemado`), 10 tests pasando, WASM 12KB.
+    - Storage: `Owner(u32)`, `TokenUri(u32)` (persistent), `Balance(Address)` (persistent), `Admin`/`Nombre`/`Simbolo`/`TotalSupply` (instance).
+  - **DB** (`add-nft-columns.ts`):
+    - `events.nft_contract_address TEXT UNIQUE` (1 contrato NFT por evento, paralelo a `contract_address` del event_contract).
+    - `tickets.nft_token_id INTEGER` (= `ticket_root_id` del event_contract; mantengo `asset_code` como dato histórico de Phase 4.3/4.4).
+  - **Deploy** (`deploy-nft-contracts.ts`):
+    - Para cada evento PUBLISHED con event_contract: deploya un ticket_nft_contract (admin = ADMIN_SECRET, mismo deployer del event_contract), inicializa con `(organizer, "Boletos {title}"[60], slug-alphanum-upper[12])`. Salt aleatorio para evitar `ExistingValue`.
+    - 12/12 NFTs desplegados en testnet (2026-05-04). WASM hash `04bcf7f1b16b0caed1d005ac345349db30c81d493ebc8e5217ea7ade3eaf8a70`.
+  - **Backend `server.ts`**:
+    - Nuevo helper `invokeSoroban(signer, contract, fn, args)` (simulate + assemble + sign + poll).
+    - `/secure-ticket`: tras `crear_boleto_para`, llama `mint(buyerWallet, ticketRootId, metadataUrl)` en el ticket_nft_contract del evento, guarda `nft_token_id`, devuelve `{nftContractAddress, nftTokenId, nftMintTxHash}`. Quita el flujo `trustXdr`. Mint NFT falla → degrada gracefully (ticket sigue asegurado en Soroban).
+    - `/transfer-nft` (reemplaza `/transfer-collectible`): organizer llama `admin_transfer(token_id, buyerWallet)`. Una sola firma server-side, sin clawback Classic. Idempotente (`TransferenciaInvalida` si from==to → `alreadyTransferred:true`).
+    - `/mint-collectible`, `/build-trust-xdr`: deprecated (no-op idempotente o eliminado).
+    - `GET /api/nft/metadata/:nftContractAddress/:tokenId` → JSON SEP-39 estilo `{name, description, image, attributes[]}`. Wallets compatibles lo descargan vía `token_uri`.
+    - `GET /api/nft/qr/:nftContractAddress/:tokenId.png` → PNG con QR codificando `{contractAddress (event_contract), ticketRootId}` (mismo payload que escanea el scanner). Cache `Map<key, Buffer>` 24h.
+    - `GET /api/events/:slug` ahora devuelve `nftContractAddress` y `live_tickets[].nftTokenId`.
+    - `GET /api/tickets` devuelve `nftContractAddress` (del evento) y `nftTokenId` (del ticket).
+  - **Frontend**:
+    - `AppContext.secureTicketOnChain` simplificado: una sola firma (la de `crear_boleto`); el mint NFT es server-side. Devuelve `nftContractAddress` para mostrar el modal.
+    - `AppContext.buyResaleTicket` simplificado: quita CHANGE_TRUST + clawback. Solo Soroban `comprar_boleto` + `/transfer-nft` con 7s delay (espera al indexer).
+    - `PurchasedTicket` añade `nftContractAddress`, `nftTokenId`.
+    - `TicketCard`: tras "Asegurar" exitoso muestra **modal "Tu boleto ahora es un NFT"** con la dirección del contrato NFT, instrucciones para "Add Collectible" en Freighter, y el `tokenId`. También botón sutil "Ver NFT en Freighter" cuando `ticket.nftContractAddress` existe.
+    - `EventDetail` quita `assetCode` y `sellerWallet` del call a `buyResaleTicket`.
+  - **Trade-offs**:
+    - Freighter Collectibles **requiere "Add Collectible" manual** la primera vez por contrato — no hay auto-discovery vía toml para Soroban NFTs aún. Por eso modal con instrucciones + copy-paste. UX trade-off documentado.
+    - Reservas Stellar reducidas: ya no hay trustline Classic por boleto (~0.5 XLM). El NFT vive en storage del contrato Soroban, no en wallet del usuario.
+    - 1 firma menos por compra (no más CHANGE_TRUST). 1 firma menos por reventa (sin trustline + sin clawback Classic).
+    - Phase 4.3/4.4 Classic assets ya emitidos siguen en wallets de users — no se migran (documentado, complejidad innecesaria para tesis).
+    - QR del scanner se mantiene `{contractAddress, ticketRootId}` — no cambia el flow de validación en puerta.
+  - **Pasos one-shot prod**: (1) `ENV_FILE=.env.prod npx tsx scripts/add-nft-columns.ts`, (2) deploy backend con código nuevo + `ENV_FILE=.env.prod npx tsx scripts/deploy-nft-contracts.ts`, (3) deploy frontend.
+
 ### Pending — NEXT SESSION START HERE
-- **Phase 5** — Tesis: **diagrama DB actualizado** (nuevas columnas `resale_price` + `asset_code`, rol STAFF, tablas seat inventory), diagramas arquitectura, análisis mitigación problemas Web2, screenshots evidencia, métricas latencia/costo (Stroops).
+- **Phase 5** — Tesis: **diagrama DB actualizado** (nuevas columnas `resale_price` + `asset_code` + `nft_token_id` + `events.nft_contract_address`, rol STAFF, tablas seat inventory), diagramas arquitectura (incluir `ticket_nft_contract` paralelo a `event_contract`), análisis mitigación problemas Web2, screenshots evidencia (boleto en Collectibles tab de Freighter), métricas latencia/costo (Stroops).
 
 ### Key architectural rules
 

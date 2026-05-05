@@ -43,6 +43,7 @@ export interface LiveTicket {
   contractAddress: string;
   resalePrice?: number | null;
   assetCode?: string | null;
+  nftTokenId?: number | null;
 }
 
 interface EventListItemDto {
