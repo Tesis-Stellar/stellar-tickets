@@ -26,8 +26,6 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
   const [txHash, setTxHash] = useState<string | null>(null);
   const [resaleDialogOpen, setResaleDialogOpen] = useState(false);
   const [resalePriceInput, setResalePriceInput] = useState("");
-  const [nftDialogOpen, setNftDialogOpen] = useState(false);
-  const [justMintedNftAddress, setJustMintedNftAddress] = useState<string | null>(null);
 
   const parsedPriceCOP = Number(resalePriceInput.replace(/[^\d]/g, ""));
   const previewXLM = xlmCopPrice && parsedPriceCOP > 0 ? parsedPriceCOP / xlmCopPrice : 0;
@@ -43,11 +41,6 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
       if (result.success) {
         setIsMinted(true);
         setTxHash(result.txHash ?? null);
-        const nftAddr = result.nftContractAddress ?? null;
-        if (nftAddr) {
-          setJustMintedNftAddress(nftAddr);
-          setNftDialogOpen(true);
-        }
       } else {
         alert(`Error: ${result.error}`);
       }
@@ -177,17 +170,6 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
                   <ExternalLink className="w-3 h-3" /> Ver en Stellar Explorer
                 </a>
               )}
-              {ticket.nftContractAddress && (
-                <button
-                  onClick={() => {
-                    setJustMintedNftAddress(ticket.nftContractAddress ?? null);
-                    setNftDialogOpen(true);
-                  }}
-                  className="inline-flex items-center gap-1 px-2 py-1 text-[10px] text-purple-400 hover:text-purple-300 transition-colors"
-                >
-                  Ver NFT en Freighter
-                </button>
-              )}
             </div>
             {!isListed && (
               <button
@@ -231,41 +213,6 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
         </span>
       </div>
     </div>
-
-    <Dialog open={nftDialogOpen} onOpenChange={setNftDialogOpen}>
-      <DialogContent className="sm:max-w-md">
-        <DialogHeader>
-          <DialogTitle>Tu boleto ahora es un NFT</DialogTitle>
-          <DialogDescription>
-            Para verlo bajo "Collectibles" en Freighter, agrega esta colección manualmente:
-          </DialogDescription>
-        </DialogHeader>
-        <div className="space-y-3 py-2">
-          <div className="rounded-lg bg-muted/50 p-3 space-y-2 text-sm">
-            <div className="text-xs text-muted-foreground">NFT Contract Address</div>
-            <div className="font-mono text-xs break-all">{justMintedNftAddress}</div>
-          </div>
-          <ol className="text-xs text-muted-foreground list-decimal pl-4 space-y-1">
-            <li>Abre Freighter → pestaña <b>Collectibles</b></li>
-            <li>"Add Collectible" → pega la dirección de arriba</li>
-            <li>Token ID: <span className="font-mono">{ticket.ticketRootId ?? "—"}</span></li>
-          </ol>
-        </div>
-        <DialogFooter className="gap-2 sm:gap-0">
-          <Button
-            variant="outline"
-            onClick={() => {
-              if (justMintedNftAddress) navigator.clipboard?.writeText(justMintedNftAddress);
-            }}
-          >
-            Copiar dirección
-          </Button>
-          <Button onClick={() => setNftDialogOpen(false)} className="bg-purple-600 hover:bg-purple-700 text-white">
-            Listo
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
 
     <Dialog open={resaleDialogOpen} onOpenChange={setResaleDialogOpen}>
       <DialogContent className="sm:max-w-md">
