@@ -9,6 +9,14 @@
       "destination": "https://stellar-tickets-production.up.railway.app/api/tickets/qr/:asset"
     },
     {
+      "source": "/api/nft/qr/:contract/:tokenId",
+      "destination": "https://stellar-tickets-production.up.railway.app/api/nft/qr/:contract/:tokenId"
+    },
+    {
+      "source": "/api/nft/metadata/:contract/:tokenId",
+      "destination": "https://stellar-tickets-production.up.railway.app/api/nft/metadata/:contract/:tokenId"
+    },
+    {
       "source": "/(.*)",
       "destination": "/index.html"
     }
