@@ -61,41 +61,6 @@ const horizonServer = new Horizon.Server(HORIZON_URL);
 const ORGANIZER_SECRET = process.env.ORGANIZER_SECRET;
 const organizerKeypair = ORGANIZER_SECRET ? Keypair.fromSecret(ORGANIZER_SECRET) : null;
 
-// ── Soroban helpers for ticket_nft_contract (Phase 4.5) ─────────────────────
-async function invokeSoroban(
-  signer: Keypair,
-  contract: string,
-  fnName: string,
-  args: xdr.ScVal[],
-): Promise<SorobanRpc.Api.GetTransactionResponse> {
-  const accResp = await sorobanServer.getAccount(signer.publicKey());
-  const account = new Account(accResp.accountId(), accResp.sequenceNumber());
-  const tx = new TransactionBuilder(account, {
-    fee: '10000000',
-    networkPassphrase: NETWORK_PASSPHRASE,
-  })
-    .addOperation(Operation.invokeContractFunction({ contract, function: fnName, args }))
-    .setTimeout(60)
-    .build();
-  const sim = await sorobanServer.simulateTransaction(tx);
-  if (SorobanRpc.Api.isSimulationError(sim)) {
-    throw new Error(`Soroban sim failed: ${(sim as any).error}`);
-  }
-  const assembled = SorobanRpc.assembleTransaction(tx, sim).build();
-  assembled.sign(signer);
-  const send = await sorobanServer.sendTransaction(assembled);
-  if (send.status === 'ERROR') throw new Error(`Soroban send failed: ${JSON.stringify(send)}`);
-  let res: SorobanRpc.Api.GetTransactionResponse;
-  let attempts = 0;
-  do {
-    await new Promise((r) => setTimeout(r, 2000));
-    res = await sorobanServer.getTransaction(send.hash);
-    attempts++;
-  } while (res.status === 'NOT_FOUND' && attempts < 30);
-  if (res.status !== 'SUCCESS') throw new Error(`Soroban tx failed: ${res.status}`);
-  return res;
-}
-
 /**
  * Generates a deterministic Stellar classic asset code (alphanum12) from a
  * ticket UUID. Format: 'T' + first 11 hex chars of UUID, uppercased.
@@ -415,9 +380,8 @@ app.get('/api/events/:slug', async (req, res) => {
          where: { contract_address: event.contract_address, is_for_sale: true, status: 'ACTIVE' },
          select: {
            id: true, ticket_root_id: true, version: true, owner_wallet: true, contract_address: true, resale_price: true, asset_code: true,
-           nft_token_id: true,
-         } as any,
-       }) as any[];
+         },
+       });
        live_tickets = rawTickets.map(t => ({
          id: t.id,
          ticketRootId: t.ticket_root_id,
@@ -426,7 +390,6 @@ app.get('/api/events/:slug', async (req, res) => {
          contractAddress: t.contract_address,
          resalePrice: t.resale_price ? Number(t.resale_price) : null,
          assetCode: t.asset_code,
-         nftTokenId: t.nft_token_id ?? null,
        }));
     }
 
@@ -440,13 +403,7 @@ app.get('/api/events/:slug', async (req, res) => {
       maxPerOrder: t.max_per_order ?? 10,
     }));
 
-    res.json({
-      ...toEventDto(event),
-      live_tickets,
-      contractAddress: event.contract_address,
-      nftContractAddress: (event as any).nft_contract_address ?? null,
-      ticketTypes,
-    });
+    res.json({ ...toEventDto(event), live_tickets, contractAddress: event.contract_address, ticketTypes });
   } catch (error: any) {
     console.error(error);
     res.status(500).json({ error: error.message });
@@ -840,36 +797,11 @@ app.post('/api/transactions/secure-ticket', authMiddleware, async (req, res) => 
       }
     }
 
-    // Mint el NFT en el ticket_nft_contract del evento (Phase 4.5).
-    // El organizer es admin del NFT contract, así que firma el mint server-side.
-    // token_id = ticket_root_id (1 NFT por raíz; sobrevive a reventas).
-    const nftContractAddress = (event as any).nft_contract_address as string | null;
-    let nftMintTxHash: string | null = null;
-    let nftTokenId: number | null = null;
-    if (nftContractAddress) {
-      try {
-        const tokenUri = `${PUBLIC_BASE_URL}/api/nft/metadata/${nftContractAddress}/${ticketRootId}`;
-        const mintRes = await invokeSoroban(
-          organizerKeypair,
-          nftContractAddress,
-          'mint',
-          [
-            new Address(buyerWallet).toScVal(),
-            nativeToScVal(ticketRootId, { type: 'u32' }),
-            nativeToScVal(tokenUri, { type: 'string' }),
-          ],
-        );
-        nftMintTxHash = (mintRes as any).txHash ?? null;
-        nftTokenId = ticketRootId;
-        console.log(`[NFT] Minted token_id=${ticketRootId} on ${nftContractAddress.slice(0,8)}… to ${buyerWallet.slice(0,8)}…`);
-      } catch (mintErr: any) {
-        console.warn('[NFT] mint failed (graceful degradation, ticket still secured):', mintErr?.message);
-      }
-    } else {
-      console.warn(`[NFT] event ${event.id} has no nft_contract_address — skipping NFT mint`);
-    }
+    // Generate the unique classic asset code for this ticket so it can be shown
+    // as a collectible in the buyer's Freighter wallet.
+    const assetCode = ticketAssetCode(ticketId);
 
-    // Update DB with on-chain data (idempotent)
+    // Update DB with on-chain data + asset code (idempotent)
     await prisma.tickets.update({
       where: { id: ticketId },
       data: {
@@ -877,20 +809,42 @@ app.post('/api/transactions/secure-ticket', authMiddleware, async (req, res) => 
         ticket_root_id: ticketRootId,
         version: 0,
         owner_wallet: ownerUser.wallet_address,
-        ...(nftTokenId != null ? ({ nft_token_id: nftTokenId } as any) : {}),
+        asset_code: assetCode,
       },
     });
 
-    console.log(`[SOROBAN] Ticket secured on-chain! root_id=${ticketRootId}, tx=${sendResponse.hash}`);
+    // Build the CHANGE_TRUST XDR the buyer must sign to opt into receiving the
+    // collectible. The actual mint (PAYMENT) happens in /mint-collectible after
+    // the buyer submits the trustline.
+    let trustXdr: string | null = null;
+    try {
+      const buyerAccountResp = await horizonServer.loadAccount(buyerWallet);
+      const buyerAccount = new Account(buyerAccountResp.accountId(), buyerAccountResp.sequenceNumber());
+      const trustTx = new TransactionBuilder(buyerAccount, {
+        fee: '1000',
+        networkPassphrase: NETWORK_PASSPHRASE,
+      })
+        .addOperation(Operation.changeTrust({
+          asset: new Asset(assetCode, organizerKeypair.publicKey()),
+          limit: '1',
+        }))
+        .setTimeout(180)
+        .build();
+      trustXdr = trustTx.toXDR();
+    } catch (trustErr: any) {
+      console.warn('[SOROBAN] Could not build trust XDR (buyer wallet may not exist on-chain yet):', trustErr?.message);
+    }
+
+    console.log(`[SOROBAN] Ticket secured on-chain! root_id=${ticketRootId}, asset=${assetCode}, tx=${sendResponse.hash}`);
 
     res.json({
       success: true,
       txHash: sendResponse.hash,
       contractAddress,
       ticketRootId,
-      nftContractAddress,
-      nftTokenId,
-      nftMintTxHash,
+      assetCode,
+      assetIssuer: organizerKeypair.publicKey(),
+      trustXdr,
       networkPassphrase: NETWORK_PASSPHRASE,
       network: 'TESTNET',
     });
@@ -900,12 +854,71 @@ app.post('/api/transactions/secure-ticket', authMiddleware, async (req, res) => 
   }
 });
 
-// POST /api/transactions/mint-collectible — DEPRECATED (Phase 4.5)
-// El mint del NFT ahora ocurre dentro de /secure-ticket via el contrato Soroban
-// ticket_nft_contract. Endpoint conservado como no-op idempotente para clientes
-// antiguos.
-app.post('/api/transactions/mint-collectible', authMiddleware, async (_req, res) => {
-  res.json({ success: true, deprecated: true, message: 'Mint NFT ahora se hace en /secure-ticket' });
+// POST /api/transactions/mint-collectible — Sends 1 unit of the ticket's classic
+// asset from the organizer (issuer) to the linked buyer wallet. The buyer must
+// have already submitted the CHANGE_TRUST returned by /secure-ticket.
+app.post('/api/transactions/mint-collectible', authMiddleware, async (req, res) => {
+  try {
+    if (!organizerKeypair) {
+      res.status(503).json({ error: 'Blockchain no configurada (falta ORGANIZER_SECRET)' });
+      return;
+    }
+    const { ticketId } = req.body;
+    if (!ticketId) {
+      res.status(400).json({ error: 'ticketId es requerido' });
+      return;
+    }
+    const ticket = await prisma.tickets.findUnique({ where: { id: ticketId } });
+    if (!ticket) { res.status(404).json({ error: 'Ticket no encontrado' }); return; }
+    if (ticket.owner_user_id !== (req as any).userId) { res.status(403).json({ error: 'No autorizado' }); return; }
+    if (!ticket.asset_code || !ticket.owner_wallet) {
+      res.status(400).json({ error: 'Asegura el ticket primero (asset_code/owner_wallet faltantes)' });
+      return;
+    }
+
+    const asset = new Asset(ticket.asset_code, organizerKeypair.publicKey());
+
+    // Refuse to double-mint: if the wallet already holds 1+ unit, return success idempotently
+    try {
+      const acc = await horizonServer.loadAccount(ticket.owner_wallet);
+      const existing = acc.balances.find((b: any) =>
+        b.asset_type !== 'native' && b.asset_code === ticket.asset_code && b.asset_issuer === organizerKeypair.publicKey()
+      );
+      if (existing && parseFloat((existing as any).balance) > 0) {
+        res.json({ success: true, alreadyMinted: true });
+        return;
+      }
+      if (!existing) {
+        res.status(400).json({ error: 'El comprador aún no creó el trustline. Firma primero el CHANGE_TRUST.' });
+        return;
+      }
+    } catch (loadErr: any) {
+      res.status(400).json({ error: 'No se pudo cargar la cuenta del comprador en Horizon' });
+      return;
+    }
+
+    const issuerAccountResp = await horizonServer.loadAccount(organizerKeypair.publicKey());
+    const issuerAccount = new Account(issuerAccountResp.accountId(), issuerAccountResp.sequenceNumber());
+    const tx = new TransactionBuilder(issuerAccount, {
+      fee: '1000',
+      networkPassphrase: NETWORK_PASSPHRASE,
+    })
+      .addOperation(Operation.payment({
+        destination: ticket.owner_wallet,
+        asset,
+        amount: '1',
+      }))
+      .setTimeout(60)
+      .build();
+    tx.sign(organizerKeypair);
+    const result = await horizonServer.submitTransaction(tx);
+    console.log(`[COLLECTIBLE] Minted ${ticket.asset_code} to ${ticket.owner_wallet.slice(0, 8)}… tx=${(result as any).hash}`);
+    res.json({ success: true, txHash: (result as any).hash, assetCode: ticket.asset_code, assetIssuer: organizerKeypair.publicKey() });
+  } catch (error: any) {
+    const data = error?.response?.data;
+    console.error('[COLLECTIBLE] mint error:', data ?? error);
+    res.status(500).json({ error: error.message ?? 'Error emitiendo coleccionable', detail: data });
+  }
 });
 
 // POST /api/transactions/list-ticket — Build owner-signed XDR to list a ticket for resale on Soroban
@@ -1162,127 +1175,136 @@ app.post('/api/transactions/submit', authMiddleware, async (req, res) => {
   }
 });
 
-// POST /api/transactions/transfer-nft — Tras una reventa P2P (comprar_boleto OK),
-// el organizer (admin del NFT contract) llama admin_transfer(token_id, buyer)
-// para mover el NFT del vendedor al comprador. Sin firma del vendedor.
-app.post('/api/transactions/transfer-nft', authMiddleware, async (req, res) => {
+// POST /api/transactions/transfer-collectible — After a successful P2P resale
+// Soroban buy, the asset must move from seller to buyer. Issuer clawbacks the
+// 1 unit from the seller and re-pays it to the buyer (no seller signature
+// needed thanks to AUTH_CLAWBACK_ENABLED on the issuer).
+app.post('/api/transactions/transfer-collectible', authMiddleware, async (req, res) => {
   try {
     if (!organizerKeypair) {
       res.status(503).json({ error: 'Blockchain no configurada' }); return;
     }
-    const { contractAddress, ticketRootId, buyerWallet } = req.body;
-    if (!contractAddress || ticketRootId === undefined || !buyerWallet) {
-      res.status(400).json({ error: 'contractAddress, ticketRootId, buyerWallet son requeridos' }); return;
+    const { contractAddress, ticketRootId, sellerWallet, buyerWallet } = req.body;
+    if (!contractAddress || ticketRootId === undefined) {
+      res.status(400).json({ error: 'contractAddress y ticketRootId son requeridos' }); return;
     }
 
-    const event = await prisma.events.findFirst({
-      where: { contract_address: String(contractAddress) },
-      select: { nft_contract_address: true } as any,
+    // Resolve asset_code from any ticket of this root (it survives version bumps)
+    const ticketRecord = await prisma.tickets.findFirst({
+      where: { contract_address: contractAddress, ticket_root_id: Number(ticketRootId), asset_code: { not: null } },
+      orderBy: { version: 'desc' },
+      select: { asset_code: true, owner_wallet: true, status: true },
     });
-    const nftContractAddress = (event as any)?.nft_contract_address as string | null | undefined;
-    if (!nftContractAddress) {
-      res.status(400).json({ error: 'Evento sin nft_contract_address (NFT no desplegado)' });
+    if (!ticketRecord?.asset_code) {
+      res.status(400).json({ error: 'Ticket sin asset_code (no fue minteado)' });
       return;
     }
 
+    // Trust the wallets passed by the frontend (they come from live_ticket data,
+    // so they don't depend on the indexer having caught up yet). Fall back to
+    // DB lookup for backward compatibility.
+    const newTicket = {
+      asset_code: ticketRecord.asset_code,
+      owner_wallet: buyerWallet ?? ticketRecord.owner_wallet,
+    };
+    const oldTicket = sellerWallet ? { owner_wallet: sellerWallet } : await prisma.tickets.findFirst({
+      where: { contract_address: contractAddress, ticket_root_id: Number(ticketRootId), status: 'CANCELLED' },
+      orderBy: { version: 'desc' },
+      select: { owner_wallet: true },
+    });
+    if (!newTicket.owner_wallet) {
+      res.status(400).json({ error: 'buyerWallet requerido o ticket sin owner_wallet' });
+      return;
+    }
+
+    const asset = new Asset(newTicket.asset_code, organizerKeypair.publicKey());
+    const issuerAccountResp = await horizonServer.loadAccount(organizerKeypair.publicKey());
+    const issuerAccount = new Account(issuerAccountResp.accountId(), issuerAccountResp.sequenceNumber());
+
+    const txBuilder = new TransactionBuilder(issuerAccount, {
+      fee: '1000',
+      networkPassphrase: NETWORK_PASSPHRASE,
+    });
+
+    // Clawback from old owner if they actually hold the asset
+    if (oldTicket?.owner_wallet && oldTicket.owner_wallet !== newTicket.owner_wallet) {
+      try {
+        const sellerAcc = await horizonServer.loadAccount(oldTicket.owner_wallet);
+        const sellerBal = sellerAcc.balances.find((b: any) =>
+          b.asset_type !== 'native' && b.asset_code === newTicket.asset_code && b.asset_issuer === organizerKeypair.publicKey()
+        );
+        if (sellerBal && parseFloat((sellerBal as any).balance) > 0) {
+          txBuilder.addOperation(Operation.clawback({
+            from: oldTicket.owner_wallet,
+            asset,
+            amount: (sellerBal as any).balance,
+          }));
+        }
+      } catch (e: any) {
+        console.warn('[COLLECTIBLE] could not load seller account for clawback:', e?.message);
+      }
+    }
+
+    // Verify buyer has trustline; if not, return informative error
+    let buyerHasTrust = false;
     try {
-      const result = await invokeSoroban(
-        organizerKeypair,
-        nftContractAddress,
-        'admin_transfer',
-        [
-          nativeToScVal(Number(ticketRootId), { type: 'u32' }),
-          new Address(String(buyerWallet)).toScVal(),
-        ],
+      const buyerAcc = await horizonServer.loadAccount(newTicket.owner_wallet);
+      const trust = buyerAcc.balances.find((b: any) =>
+        b.asset_type !== 'native' && b.asset_code === newTicket.asset_code && b.asset_issuer === organizerKeypair.publicKey()
       );
-      console.log(`[NFT] admin_transfer token=${ticketRootId} → ${String(buyerWallet).slice(0,8)}…`);
-      res.json({ success: true, txHash: (result as any).txHash ?? null });
-    } catch (e: any) {
-      // Mensaje TransferenciaInvalida (=6) cuando from==to → idempotente
-      const msg = String(e?.message ?? '');
-      if (msg.includes('TransferenciaInvalida') || msg.includes('#6')) {
+      buyerHasTrust = !!trust;
+      if (trust && parseFloat((trust as any).balance) > 0) {
+        // Already holds it (idempotent)
         res.json({ success: true, alreadyTransferred: true });
         return;
       }
-      throw e;
+    } catch {}
+    if (!buyerHasTrust) {
+      res.status(400).json({ error: 'El comprador no tiene trustline para el coleccionable. Firma primero el CHANGE_TRUST.' });
+      return;
     }
+
+    txBuilder.addOperation(Operation.payment({
+      destination: newTicket.owner_wallet,
+      asset,
+      amount: '1',
+    }));
+
+    const tx = txBuilder.setTimeout(60).build();
+    tx.sign(organizerKeypair);
+    const result = await horizonServer.submitTransaction(tx);
+    console.log(`[COLLECTIBLE] Transferred ${newTicket.asset_code} root=${ticketRootId} to ${newTicket.owner_wallet.slice(0, 8)}…`);
+    res.json({ success: true, txHash: (result as any).hash });
   } catch (error: any) {
-    console.error('[NFT] transfer error:', error?.message ?? error);
-    res.status(500).json({ error: error.message ?? 'Error transfiriendo NFT' });
+    const data = error?.response?.data;
+    console.error('[COLLECTIBLE] transfer error:', data ?? error?.message);
+    res.status(500).json({ error: error.message ?? 'Error transfiriendo coleccionable', detail: data });
   }
 });
 
-// GET /api/nft/metadata/:nftContractAddress/:tokenId — JSON SEP-39 metadata
-// que el contrato NFT referencia vía token_uri. Wallets compatibles
-// (Lobstr, futuras versiones de Freighter) lo descargan para mostrar nombre,
-// descripción e imagen (el QR del boleto).
-app.get('/api/nft/metadata/:nftContractAddress/:tokenId', async (req, res) => {
+// POST /api/transactions/build-trust-xdr — Builds a CHANGE_TRUST XDR for a
+// given asset_code so the user can opt into receiving a P2P-resold collectible.
+app.post('/api/transactions/build-trust-xdr', authMiddleware, async (req, res) => {
   try {
-    const { nftContractAddress, tokenId } = req.params;
-    const event = await prisma.events.findFirst({
-      where: { nft_contract_address: nftContractAddress } as any,
-      select: { title: true, starts_at: true, contract_address: true, slug: true } as any,
-    });
-    if (!event) {
-      res.status(404).json({ error: 'NFT contract no encontrado' });
-      return;
-    }
-    const evAny = event as any;
-    const startsAt = evAny.starts_at ? new Date(evAny.starts_at).toISOString().slice(0, 10) : '';
-    res.setHeader('Cache-Control', 'public, max-age=3600');
-    res.json({
-      name: `Boleto — ${evAny.title}`,
-      description:
-        `Boleto NFT del evento "${evAny.title}"${startsAt ? ` (${startsAt})` : ''}. ` +
-        `Escanea el QR del coleccionable en puerta para validar tu acceso.`,
-      image: `${PUBLIC_BASE_URL}/api/nft/qr/${nftContractAddress}/${tokenId}.png`,
-      attributes: [
-        { trait_type: 'Evento', value: evAny.title },
-        ...(startsAt ? [{ trait_type: 'Fecha', value: startsAt }] : []),
-        { trait_type: 'Contrato Evento', value: evAny.contract_address ?? '' },
-        { trait_type: 'Token ID', value: Number(tokenId) },
-      ],
-    });
-  } catch (error: any) {
-    console.error('[NFT metadata] error:', error?.message);
-    res.status(500).json({ error: 'Error generando metadata' });
-  }
-});
+    if (!organizerKeypair) { res.status(503).json({ error: 'Blockchain no configurada' }); return; }
+    const { assetCode } = req.body;
+    if (!assetCode) { res.status(400).json({ error: 'assetCode requerido' }); return; }
 
-// GET /api/nft/qr/:contractAddress/:tokenId.png — PNG con el QR codificando
-// {contractAddress (event_contract), ticketRootId} para validación en puerta.
-// Es la imagen que el JSON de metadata referencia.
-app.get('/api/nft/qr/:nftContractAddress/:tokenIdRaw', async (req, res) => {
-  try {
-    const { nftContractAddress, tokenIdRaw } = req.params;
-    const tokenId = Number(tokenIdRaw.replace(/\.png$/i, ''));
-    if (!Number.isFinite(tokenId) || tokenId < 0) {
-      res.status(400).type('text/plain').send('Invalid tokenId');
-      return;
-    }
-    const event = await prisma.events.findFirst({
-      where: { nft_contract_address: nftContractAddress } as any,
-      select: { contract_address: true } as any,
-    });
-    const eventContract = (event as any)?.contract_address as string | null | undefined;
-    if (!eventContract) {
-      res.status(404).type('text/plain').send('Not found');
-      return;
-    }
-    const cacheKey = `nft:${nftContractAddress}:${tokenId}`;
-    if (!qrCache.has(cacheKey)) {
-      const buf = await buildTicketQrPng({
-        contractAddress: eventContract,
-        ticketRootId: tokenId,
-      });
-      qrCache.set(cacheKey, buf);
-    }
-    res.setHeader('Cache-Control', 'public, max-age=86400, immutable');
-    res.setHeader('Content-Type', 'image/png');
-    res.send(qrCache.get(cacheKey)!);
-  } catch (err: any) {
-    console.error('[NFT qr] error:', err?.message);
-    res.status(500).type('text/plain').send('Error generating QR');
+    const user = await prisma.users.findUnique({ where: { id: (req as any).userId }, select: { wallet_address: true } });
+    if (!user?.wallet_address) { res.status(400).json({ error: 'Vincula tu wallet primero' }); return; }
+
+    const acc = await horizonServer.loadAccount(user.wallet_address);
+    const account = new Account(acc.accountId(), acc.sequenceNumber());
+    const tx = new TransactionBuilder(account, { fee: '1000', networkPassphrase: NETWORK_PASSPHRASE })
+      .addOperation(Operation.changeTrust({
+        asset: new Asset(assetCode, organizerKeypair.publicKey()),
+        limit: '1',
+      }))
+      .setTimeout(180)
+      .build();
+    res.json({ xdr: tx.toXDR(), networkPassphrase: NETWORK_PASSPHRASE });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message ?? 'Error construyendo trust XDR' });
   }
 });
 
@@ -2113,8 +2135,6 @@ app.get('/api/tickets', authMiddleware, async (req, res) => {
         version: t.version,
         ownerWallet: t.owner_wallet,
         resalePrice: t.resale_price ? Number(t.resale_price) : null,
-        nftContractAddress: (evt as any)?.nft_contract_address ?? null,
-        nftTokenId: (t as any).nft_token_id ?? null,
       };
     }));
   } catch (error: any) {
