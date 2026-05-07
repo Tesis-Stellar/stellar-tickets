@@ -192,24 +192,37 @@ app.get('/api/tickets/qr/:assetCode.png', async (req, res) => {
       return;
     }
 
-    if (!qrCache.has(assetCode)) {
-      const ticket = await prisma.tickets.findFirst({
-        where: { asset_code: assetCode, contract_address: { not: null } },
-        select: { contract_address: true, ticket_root_id: true },
-      });
-      if (!ticket?.contract_address || ticket.ticket_root_id == null) {
-        res.status(404).type('text/plain').send('Ticket not found');
-        return;
-      }
+    const ticket = await prisma.tickets.findFirst({
+      where: { asset_code: assetCode, contract_address: { not: null } },
+      select: { contract_address: true, ticket_root_id: true } as any,
+    });
+    if (!ticket?.contract_address || (ticket as any).ticket_root_id == null) {
+      res.status(404).type('text/plain').send('Ticket not found');
+      return;
+    }
+    const live = await prisma.tickets.findFirst({
+      where: {
+        contract_address: ticket.contract_address,
+        ticket_root_id: (ticket as any).ticket_root_id,
+        status: 'ACTIVE',
+      },
+      orderBy: { version: 'desc' },
+      select: { version: true } as any,
+    });
+    const version = (live as any)?.version ?? 1;
+    const cacheKey = `${assetCode}:v${version}`;
+
+    if (!qrCache.has(cacheKey)) {
       const buf = await buildTicketQrPng({
         contractAddress: ticket.contract_address,
-        ticketRootId: ticket.ticket_root_id,
+        ticketRootId: (ticket as any).ticket_root_id,
+        version,
       });
-      qrCache.set(assetCode, buf);
+      qrCache.set(cacheKey, buf);
     }
 
-    const png = qrCache.get(assetCode)!;
-    res.setHeader('Cache-Control', 'public, max-age=86400, immutable');
+    const png = qrCache.get(cacheKey)!;
+    res.setHeader('Cache-Control', 'public, max-age=60, must-revalidate');
     res.setHeader('Content-Type', 'image/png');
     res.send(png);
   } catch (err: any) {
@@ -1269,15 +1282,26 @@ app.get('/api/nft/qr/:nftContractAddress/:tokenIdRaw', async (req, res) => {
       res.status(404).type('text/plain').send('Not found');
       return;
     }
-    const cacheKey = `nft:${nftContractAddress}:${tokenId}`;
+    const live = await prisma.tickets.findFirst({
+      where: {
+        contract_address: eventContract,
+        ticket_root_id: tokenId,
+        status: 'ACTIVE',
+      },
+      orderBy: { version: 'desc' },
+      select: { version: true } as any,
+    });
+    const version = (live as any)?.version ?? 1;
+    const cacheKey = `nft:${nftContractAddress}:${tokenId}:v${version}`;
     if (!qrCache.has(cacheKey)) {
       const buf = await buildTicketQrPng({
         contractAddress: eventContract,
         ticketRootId: tokenId,
+        version,
       });
       qrCache.set(cacheKey, buf);
     }
-    res.setHeader('Cache-Control', 'public, max-age=86400, immutable');
+    res.setHeader('Cache-Control', 'public, max-age=60, must-revalidate');
     res.setHeader('Content-Type', 'image/png');
     res.send(qrCache.get(cacheKey)!);
   } catch (err: any) {
@@ -1349,7 +1373,7 @@ app.post('/api/admin/scan', authMiddleware, async (req, res) => {
     //   { ticketId }                          ← legacy QR (DB UUID, version-bound)
     //   { contractAddress, ticketRootId }     ← new QR baked into Freighter NFT
     //                                            (stable across resale versions)
-    const { ticketId, contractAddress, ticketRootId } = req.body;
+    const { ticketId, contractAddress, ticketRootId, version } = req.body;
 
     let ticket = null as Awaited<ReturnType<typeof prisma.tickets.findUnique>> | null;
 
@@ -1365,6 +1389,15 @@ app.post('/api/admin/scan', authMiddleware, async (req, res) => {
         },
         orderBy: { version: 'desc' },
       });
+      // If the QR carries a version, it MUST match the live one.
+      // This prevents a previous holder (post-resale) from redeeming a stale
+      // QR they cached/screenshotted before transferring the NFT.
+      if (ticket && version != null && Number(version) !== (ticket as any).version) {
+        res.status(409).json({
+          error: 'QR vencido: este boleto fue revendido. El nuevo dueño tiene el QR válido.',
+        });
+        return;
+      }
     } else {
       res.status(400).json({ error: 'Se requiere ticketId o (contractAddress + ticketRootId)' });
       return;
