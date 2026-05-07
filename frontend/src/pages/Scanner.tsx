@@ -33,8 +33,12 @@ export const ScannerPage = () => {
       let body: Record<string, unknown>;
       let label: string;
       if (payload.contractAddress && payload.ticketRootId != null) {
-        body = { contractAddress: payload.contractAddress, ticketRootId: payload.ticketRootId };
-        label = `${payload.contractAddress.slice(0, 6)}…/#${payload.ticketRootId}`;
+        body = {
+          contractAddress: payload.contractAddress,
+          ticketRootId: payload.ticketRootId,
+          ...(payload.version != null ? { version: payload.version } : {}),
+        };
+        label = `${payload.contractAddress.slice(0, 6)}…/#${payload.ticketRootId}${payload.version != null ? `v${payload.version}` : ''}`;
       } else if (payload.ticketId) {
         body = { ticketId: payload.ticketId };
         label = payload.code || payload.ticketId.slice(0, 8);

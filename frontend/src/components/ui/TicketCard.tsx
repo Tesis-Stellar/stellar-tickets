@@ -217,7 +217,11 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
           <QRCodeCanvas
             value={JSON.stringify(
               ticket.contractAddress && ticket.ticketRootId != null
-                ? { contractAddress: ticket.contractAddress, ticketRootId: ticket.ticketRootId }
+                ? {
+                    contractAddress: ticket.contractAddress,
+                    ticketRootId: ticket.ticketRootId,
+                    version: ticket.version ?? 1,
+                  }
                 : { ticketId: ticket.id, code: ticket.ticketCode || ticket.id }
             )}
             size={80}
