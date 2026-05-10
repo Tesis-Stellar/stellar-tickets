@@ -23,6 +23,7 @@ import { runIndexer } from './indexer';
 import { authorizeVerifiedNftTransfer } from './nftTransferPolicy';
 import { authorizeScannerRole, evaluateScanTicket, parseScanRequest } from './scannerPolicy';
 import { buildSimulatedOrderNumber, normalizeIdempotencyKey } from './checkoutPolicy';
+import { deriveChainEventId } from './secureTicketPolicy';
 import { exec } from 'child_process';
 import util from 'util';
 import QRCode from 'qrcode';
@@ -704,12 +705,13 @@ app.post('/api/transactions/secure-ticket', authMiddleware, async (req, res) => 
     }
 
     const contractAddress = event.contract_address;
+    const chainEventId = deriveChainEventId(event.id);
     // Use at least 1 stroop — price=0 is rejected by the contract (PrecioInvalido)
     // The price stored in DB may use different units (cents, etc.) — here we just
     // record the ticket's monetary value on-chain for commission math.
     const rawPrice = Number(ticketType?.price_amount || 0);
     const price = rawPrice > 0 ? rawPrice : 1_000_000; // fallback: 1 XLM in stroops
-    console.log(`[SOROBAN] Contract: ${contractAddress.slice(0,8)}, price=${price}`);
+    console.log(`[SOROBAN] Contract: ${contractAddress.slice(0,8)}, chain_event_id=${chainEventId}, price=${price}`);
 
     // Build and submit crear_boleto_para transaction
     // We use crear_boleto_para with es_reventa=true because the real primary
@@ -735,7 +737,7 @@ app.post('/api/transactions/secure-ticket', authMiddleware, async (req, res) => 
         contract: contractAddress,
         function: 'crear_boleto_para',
         args: [
-          nativeToScVal(1, { type: 'u32' }),                      // id_evento
+          nativeToScVal(chainEventId, { type: 'u32' }),           // id_evento derivado del evento DB
           new Address(buyerWallet).toScVal(),                     // propietario = buyer
           nativeToScVal(price, { type: 'i128' }),                 // precio
           nativeToScVal(true, { type: 'bool' }),                  // es_reventa = true
@@ -904,6 +906,7 @@ app.post('/api/transactions/secure-ticket', authMiddleware, async (req, res) => 
       txHash: sendResponse.hash,
       contractAddress,
       ticketRootId,
+      chainEventId,
       nftContractAddress,
       nftTokenId,
       nftMintTxHash,
