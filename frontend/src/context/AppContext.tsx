@@ -93,7 +93,7 @@ interface AppState {
   secureTicketOnChain: (ticketId: string) => Promise<{ success: boolean; txHash?: string; nftContractAddress?: string | null; error?: string }>;
   listTicketForSale: (ticketId: string, priceXLM: number) => Promise<{ success: boolean; txHash?: string; error?: string }>;
   cancelResaleListing: (ticketId: string) => Promise<{ success: boolean; txHash?: string; error?: string }>;
-  buyResaleTicket: (contractAddress: string, ticketRootId: number, buyerPublicKey: string) => Promise<{ success: boolean; txHash?: string; error?: string }>;
+  buyResaleTicket: (contractAddress: string, ticketRootId: number, buyerPublicKey: string, currentVersion: number) => Promise<{ success: boolean; txHash?: string; error?: string }>;
   linkWallet: (walletAddress: string) => Promise<void>;
   refreshTickets: () => Promise<void>;
   walletAddress: string | null;
@@ -708,7 +708,8 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     async (
       contractAddress: string,
       ticketRootId: number,
-      buyerPublicKey: string
+      buyerPublicKey: string,
+      currentVersion: number
     ): Promise<{ success: boolean; txHash?: string; error?: string }> => {
       try {
         await ensureFreighterReady(buyerPublicKey);
@@ -730,8 +731,8 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
           body: JSON.stringify({ signedXdr }),
         });
 
-        // 3. Tras ~7s (indexer aplica boleto_revendido), transferir el NFT
-        //    (admin_transfer en el ticket_nft_contract; sin firma del vendedor).
+        // 3. Tras ~7s (indexer aplica boleto_revendido), pedir la transferencia
+        //    del collectible NFT solo si el backend puede verificar txHash/comprador/version.
         setBalanceVersion((v) => v + 1);
         void (async () => {
           await new Promise((r) => setTimeout(r, 7000));
@@ -742,10 +743,12 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
                 contractAddress,
                 ticketRootId,
                 buyerWallet: buyerPublicKey,
+                txHash: submitResult.txHash,
+                expectedVersion: currentVersion + 1,
               }),
             });
           } catch (e: any) {
-            console.warn("[nft] transfer failed:", e?.message);
+            console.warn("[nft] verified transfer skipped:", e?.message);
           }
           await refreshTickets().catch(() => {});
           await refreshSoldTickets().catch(() => {});

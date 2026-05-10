@@ -462,3 +462,22 @@ model indexer_state {
   
   @@schema("ticketing")
 }
+
+model onchain_events {
+  id               String   @id(map: "pk_onchain_events") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tx_hash          String
+  ledger           Int
+  contract_address String
+  event_name       String
+  ticket_root_id   Int
+  version          Int
+  payload          Json
+  processed_at     DateTime @default(now()) @db.Timestamptz(6)
+  status           String   @default("PROCESSING")
+  created_at       DateTime @default(now()) @db.Timestamptz(6)
+
+  @@unique([tx_hash, ledger, contract_address, event_name, ticket_root_id, version], map: "uq_onchain_events_idempotency")
+  @@index([contract_address, event_name, ticket_root_id, version], map: "idx_onchain_events_ticket")
+  @@index([tx_hash], map: "idx_onchain_events_tx_hash")
+  @@schema("ticketing")
+}

@@ -20,6 +20,7 @@ import {
 } from '@stellar/stellar-sdk';
 import { rpc as SorobanRpc } from '@stellar/stellar-sdk';
 import { runIndexer } from './indexer';
+import { authorizeVerifiedNftTransfer } from './nftTransferPolicy';
 import { exec } from 'child_process';
 import util from 'util';
 import QRCode from 'qrcode';
@@ -1175,40 +1176,86 @@ app.post('/api/transactions/submit', authMiddleware, async (req, res) => {
   }
 });
 
-// POST /api/transactions/transfer-nft — Tras una reventa P2P (comprar_boleto OK),
-// el organizer (admin del NFT contract) llama admin_transfer(token_id, buyer)
-// para mover el NFT del vendedor al comprador. Sin firma del vendedor.
+// POST /api/transactions/transfer-nft — transferencia del collectible NFT
+// solo despues de una reventa confirmada por el indexer/onchain_events.
 app.post('/api/transactions/transfer-nft', authMiddleware, async (req, res) => {
   try {
     if (!organizerKeypair) {
       res.status(503).json({ error: 'Blockchain no configurada' }); return;
     }
-    const { contractAddress, ticketRootId, buyerWallet } = req.body;
-    if (!contractAddress || ticketRootId === undefined || !buyerWallet) {
-      res.status(400).json({ error: 'contractAddress, ticketRootId, buyerWallet son requeridos' }); return;
+    const userId = (req as any).userId;
+    const { contractAddress, ticketRootId, buyerWallet, txHash, expectedVersion } = req.body;
+    if (!contractAddress || ticketRootId === undefined || !buyerWallet || !txHash || expectedVersion === undefined) {
+      res.status(400).json({ error: 'contractAddress, ticketRootId, buyerWallet, txHash y expectedVersion son requeridos' }); return;
     }
 
-    const event = await prisma.events.findFirst({
-      where: { contract_address: String(contractAddress) },
-      select: { nft_contract_address: true } as any,
-    });
-    const nftContractAddress = (event as any)?.nft_contract_address as string | null | undefined;
-    if (!nftContractAddress) {
-      res.status(400).json({ error: 'Evento sin nft_contract_address (NFT no desplegado)' });
+    const authorization = await authorizeVerifiedNftTransfer(
+      {
+        userId,
+        contractAddress: String(contractAddress),
+        ticketRootId: Number(ticketRootId),
+        buyerWallet: String(buyerWallet),
+        txHash: String(txHash),
+        expectedVersion: Number(expectedVersion),
+      },
+      {
+        getUserWallet: async (id) => {
+          const user = await prisma.users.findUnique({ where: { id }, select: { wallet_address: true } });
+          return user?.wallet_address ?? null;
+        },
+        getNftContractAddress: async (address) => {
+          const event = await prisma.events.findFirst({
+            where: { contract_address: address },
+            select: { nft_contract_address: true } as any,
+          });
+          return ((event as any)?.nft_contract_address as string | null | undefined) ?? null;
+        },
+        getActiveTicketVersion: async (input) => {
+          const ticket = await prisma.tickets.findFirst({
+            where: {
+              contract_address: input.contractAddress,
+              ticket_root_id: input.ticketRootId,
+              owner_wallet: input.ownerWallet,
+              status: 'ACTIVE',
+              version: input.version,
+            },
+            select: { version: true },
+          });
+          return ticket?.version ?? null;
+        },
+        getProcessedResaleEvent: async (input) => {
+          const resaleEvent = await prisma.onchain_events.findFirst({
+            where: {
+              tx_hash: input.txHash,
+              contract_address: input.contractAddress,
+              event_name: 'boleto_revendido',
+              ticket_root_id: input.ticketRootId,
+              version: input.version,
+              status: 'PROCESSED',
+            },
+            orderBy: { processed_at: 'desc' },
+            select: { payload: true },
+          });
+          return resaleEvent ? { payload: resaleEvent.payload as any } : null;
+        },
+      },
+    );
+    if (!authorization.ok) {
+      res.status(authorization.status).json({ error: authorization.error });
       return;
     }
 
     try {
       const result = await invokeSoroban(
         organizerKeypair,
-        nftContractAddress,
+        authorization.nftContractAddress,
         'admin_transfer',
         [
           nativeToScVal(Number(ticketRootId), { type: 'u32' }),
           new Address(String(buyerWallet)).toScVal(),
         ],
       );
-      console.log(`[NFT] admin_transfer token=${ticketRootId} → ${String(buyerWallet).slice(0,8)}…`);
+      console.log(`[NFT] verified admin_transfer token=${ticketRootId} v${authorization.version} -> ${String(buyerWallet).slice(0,8)}...`);
       res.json({ success: true, txHash: (result as any).txHash ?? null });
     } catch (e: any) {
       // Mensaje TransferenciaInvalida (=6) cuando from==to → idempotente
