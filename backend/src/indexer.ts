@@ -1,6 +1,7 @@
 import { rpc, scValToNative, xdr } from '@stellar/stellar-sdk';
 import { PrismaClient } from '@prisma/client';
 import dotenv from 'dotenv';
+import { assertActivePreviousVersion, buildTicketVersionIdentity, resolveResaleVersions } from './indexerResalePolicy';
 
 dotenv.config();
 
@@ -245,36 +246,33 @@ export async function runIndexer() {
             // Value: { vendedor, comprador, precio, version_anterior, version_nueva }
             const rootId = Number(topics[1]);
             const newOwnerWallet = data.comprador?.toString() ?? 'unknown';
-            const newVersion = Number(data.version_nueva ?? onchainEvent.version);
-            const previousVersion = Number(data.version_anterior ?? newVersion - 1);
+            const { previousVersion, newVersion } = resolveResaleVersions(data, onchainEvent.version);
+            const previousIdentity = buildTicketVersionIdentity(contractId, rootId, previousVersion);
+            const newIdentity = buildTicketVersionIdentity(contractId, rootId, newVersion);
             const user = newOwnerWallet !== 'unknown'
               ? await prisma.users.findUnique({ where: { wallet_address: newOwnerWallet } })
               : null;
 
             const alreadyCreated = await prisma.tickets.findFirst({
-              where: { contract_address: contractId, ticket_root_id: rootId, version: newVersion },
+              where: newIdentity,
               select: { id: true },
             });
 
             if (!alreadyCreated) {
               const oldTicket = await prisma.tickets.findFirst({
-                where: { contract_address: contractId, ticket_root_id: rootId, version: previousVersion },
+                where: previousIdentity,
                 select: { order_item_id: true, status: true },
               });
-              if (!oldTicket || oldTicket.status !== 'ACTIVE') {
-                throw new Error(`No se encontro version anterior ACTIVE para reventa root_id=${rootId} v${previousVersion}`);
-              }
+              assertActivePreviousVersion(oldTicket, rootId, previousVersion);
 
               await prisma.$transaction([
                 prisma.tickets.updateMany({
-                  where: { contract_address: contractId, ticket_root_id: rootId, version: previousVersion, status: 'ACTIVE' },
+                  where: { ...previousIdentity, status: 'ACTIVE' },
                   data: { status: 'CANCELLED', is_for_sale: false }
                 }),
                 prisma.tickets.create({
                   data: {
-                    contract_address: contractId,
-                    ticket_root_id: rootId,
-                    version: newVersion,
+                    ...newIdentity,
                     owner_wallet: newOwnerWallet,
                     owner_user_id: user?.id ?? null,
                     order_item_id: oldTicket.order_item_id ?? null,
