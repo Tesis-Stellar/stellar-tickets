@@ -21,6 +21,7 @@ import {
 import { rpc as SorobanRpc } from '@stellar/stellar-sdk';
 import { runIndexer } from './indexer';
 import { authorizeVerifiedNftTransfer } from './nftTransferPolicy';
+import { authorizeScannerRole, evaluateScanTicket, parseScanRequest } from './scannerPolicy';
 import { exec } from 'child_process';
 import util from 'util';
 import QRCode from 'qrcode';
@@ -1414,60 +1415,56 @@ app.get('/api/admin/venues', authMiddleware, async (req, res) => {
 app.post('/api/admin/scan', authMiddleware, async (req, res) => {
   try {
     const user = await prisma.users.findUnique({ where: { id: (req as any).userId } });
-    if (!user || !['ADMIN', 'STAFF'].includes(user.role)) { res.status(403).json({ error: 'Acceso denegado' }); return; }
+    const roleDecision = authorizeScannerRole(user?.role);
+    if (roleDecision) {
+      res.status(roleDecision.status).json({ error: roleDecision.error });
+      return;
+    }
 
     // Accept either:
-    //   { ticketId }                          ← legacy QR (DB UUID, version-bound)
-    //   { contractAddress, ticketRootId }     ← new QR baked into Freighter NFT
-    //                                            (stable across resale versions)
-    const { ticketId, contractAddress, ticketRootId, version } = req.body;
+    //   { ticketId }                          <- legacy QR (DB UUID, version-bound)
+    //   { contractAddress, ticketRootId }     <- NFT QR, resolved to the latest ticket version.
+    const scanRequest = parseScanRequest(req.body);
+    if ('ok' in scanRequest) {
+      res.status(scanRequest.status).json({ error: scanRequest.error });
+      return;
+    }
 
     let ticket = null as Awaited<ReturnType<typeof prisma.tickets.findUnique>> | null;
+    let requestedVersion: number | undefined;
 
-    if (ticketId) {
-      ticket = await prisma.tickets.findUnique({ where: { id: ticketId } });
-    } else if (contractAddress && ticketRootId != null) {
-      // Resolve the live (highest-version) ACTIVE ticket for this root.
+    if (scanRequest.kind === 'ticketId') {
+      ticket = await prisma.tickets.findUnique({ where: { id: scanRequest.ticketId } });
+    } else {
+      requestedVersion = scanRequest.version;
+      // Resolve the latest version for this root. Status is checked below so
+      // duplicate scans return 409 instead of looking like a missing ticket.
       ticket = await prisma.tickets.findFirst({
         where: {
-          contract_address: String(contractAddress),
-          ticket_root_id: Number(ticketRootId),
-          status: 'ACTIVE',
+          contract_address: scanRequest.contractAddress,
+          ticket_root_id: scanRequest.ticketRootId,
         },
         orderBy: { version: 'desc' },
       });
-      // If the QR carries a version, it MUST match the live one.
-      // This prevents a previous holder (post-resale) from redeeming a stale
-      // QR they cached/screenshotted before transferring the NFT.
-      if (ticket && version != null && Number(version) !== (ticket as any).version) {
-        res.status(409).json({
-          error: 'QR vencido: este boleto fue revendido. El nuevo dueño tiene el QR válido.',
-        });
-        return;
-      }
-    } else {
-      res.status(400).json({ error: 'Se requiere ticketId o (contractAddress + ticketRootId)' });
+    }
+
+    const scanDecision = evaluateScanTicket(
+      ticket ? { id: ticket.id, status: ticket.status, version: (ticket as any).version ?? null } : null,
+      requestedVersion,
+    );
+    if (!scanDecision.ok) {
+      res.status(scanDecision.status).json({ error: scanDecision.error });
       return;
     }
 
-    if (!ticket) {
-      res.status(404).json({ error: 'Boleto no encontrado o ya redimido' });
-      return;
-    }
-
-    if (ticket.status !== 'ACTIVE') {
-      res.status(400).json({ error: `Boleto inhabilitado: ${ticket.status}` });
-      return;
-    }
-
-    // In a real Web3 environment, if ticket.contract_address exists, we'd trigger a Soroban burn here via CLI
-    // For this simulation/hybrid speed, we update Postgres linearly to avoid gate delays.
+    // Gate scan is DB-only for thesis demo speed. Soroban redemption is handled
+    // only when the indexer receives a boleto_redimido event from an on-chain flow.
     await prisma.tickets.update({
-       where: { id: ticket.id },
-       data: { status: 'CANCELLED' } // 'CANCELLED' is the generic inactive state in Prisma schema for this thesis demo
+       where: { id: scanDecision.ticketId },
+       data: { status: 'USED', used_at: new Date(), is_for_sale: false }
     });
 
-    res.json({ success: true, message: 'Boleto redimido exitosamente' });
+    res.json({ success: true, message: 'Boleto validado y marcado como usado' });
   } catch (error: any) {
     console.error('[SCAN] Error:', error);
     res.status(500).json({ error: error.message });

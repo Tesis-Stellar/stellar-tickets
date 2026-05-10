@@ -122,7 +122,7 @@ export const ScannerPage = () => {
         <div className="mt-8 bg-accent/10 p-4 rounded-xl flex items-start gap-3 w-full border border-accent/20">
           <ShieldCheck className="w-5 h-5 text-accent shrink-0 mt-0.5" />
           <p className="text-xs text-muted-foreground">
-            Los escaneos verifican la base de datos híbrida de Stellar Tickets de forma instantánea. Las validaciones asíncronas en cadena (Soroban) se ejecutarán en segundo plano.
+            Los escaneos validan la proyección operativa en PostgreSQL y marcan el boleto como usado. La redención Soroban se muestra solo cuando existe un evento on-chain indexado.
           </p>
         </div>
       </main>

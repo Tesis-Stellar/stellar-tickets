@@ -106,7 +106,7 @@ Todas las rutas REST bajo prefijo `/api` salvo `/` y `/health`.
 - **Transacciones**: compra, listado, cancelación, XDR para firma en cliente, submit, etc.
 - **Carrito y checkout**: carrito autenticado, preview y confirmación.
 - **Pedidos y boletos**: órdenes, boletos del usuario, vendidos.
-- **Admin** (JWT + rol): venues, eventos, despliegue de contratos, escaneo, etc.
+- **Admin** (JWT + rol): venues, eventos, despliegue de contratos, escaneo, etc. El escaneo de puerta (`POST /api/admin/scan`) es DB-only en esta version: marca el boleto como `USED` con `used_at`; no llama `redimir_boleto` en Soroban.
 
 Para detalles de rutas, payloads y modelos, consulta la implementación actual del backend (`src/server.ts`) y la documentación técnica del monorepo.
 
