@@ -22,6 +22,7 @@ import { rpc as SorobanRpc } from '@stellar/stellar-sdk';
 import { runIndexer } from './indexer';
 import { authorizeVerifiedNftTransfer } from './nftTransferPolicy';
 import { authorizeScannerRole, evaluateScanTicket, parseScanRequest } from './scannerPolicy';
+import { buildSimulatedOrderNumber, normalizeIdempotencyKey } from './checkoutPolicy';
 import { exec } from 'child_process';
 import util from 'util';
 import QRCode from 'qrcode';
@@ -2004,7 +2005,14 @@ app.post('/api/checkout/preview', authMiddleware, async (req, res) => {
       serviceFees += Number(item.service_fee_amount) * item.quantity;
     }
 
-    res.json({ subtotal, serviceFees, total: subtotal + serviceFees, itemCount: cart.cart_items.length });
+    res.json({
+      subtotal,
+      serviceFees,
+      total: subtotal + serviceFees,
+      itemCount: cart.cart_items.length,
+      paymentMode: 'SIMULATED',
+      message: 'Pago simulado para demo academica; no se procesa una pasarela fiat real.',
+    });
   } catch (error: any) {
     console.error('[CHECKOUT] Preview error:', error);
     res.status(500).json({ error: error.message });
@@ -2016,9 +2024,21 @@ app.post('/api/checkout/confirm', authMiddleware, async (req, res) => {
   try {
     const userId = (req as any).userId;
     const { buyerEmail, buyerPhone, paymentMethod } = req.body;
+    const requestedIdempotencyKey = normalizeIdempotencyKey(req.body?.idempotencyKey ?? req.headers['idempotency-key']);
 
     const user = await prisma.users.findUnique({ where: { id: userId } });
     if (!user) { res.status(404).json({ error: 'Usuario no encontrado' }); return; }
+
+    if (requestedIdempotencyKey) {
+      const orderNumber = buildSimulatedOrderNumber(requestedIdempotencyKey);
+      const existingOrder = await prisma.orders.findFirst({
+        where: { user_id: userId, order_number: orderNumber },
+      });
+      if (existingOrder) {
+        res.json(formatCheckoutOrderResponse(existingOrder, true));
+        return;
+      }
+    }
 
     const cart = await prisma.carts.findFirst({
       where: { user_id: userId, status: 'ACTIVE' },
@@ -2038,11 +2058,10 @@ app.post('/api/checkout/confirm', authMiddleware, async (req, res) => {
     }
     const total = subtotal + serviceFees;
 
-    // Generate order number: TT-YYYYMMDD-XXXXX
     const now = new Date();
-    const datePart = now.toISOString().slice(0, 10).replace(/-/g, '');
-    const randPart = Math.random().toString(36).slice(2, 7).toUpperCase();
-    const orderNumber = `TT-${datePart}-${randPart}`;
+    const effectiveIdempotencyKey = requestedIdempotencyKey ?? `checkout:${userId}:${cart.id}`;
+    const orderNumber = buildSimulatedOrderNumber(effectiveIdempotencyKey);
+    const ticketCodePart = orderNumber.slice(-5);
 
     const orderItemCreates = cart.cart_items.map((cartItem) => ({
       event_ticket_type_id: cartItem.event_ticket_type_id,
@@ -2053,7 +2072,7 @@ app.post('/api/checkout/confirm', authMiddleware, async (req, res) => {
       tickets: {
         create: Array.from({ length: cartItem.quantity }, (_, i) => ({
           owner_user_id: userId,
-          ticket_code: `TK-${randPart}-${cartItem.id.slice(-4).toUpperCase()}-${i + 1}`,
+          ticket_code: `TK-${ticketCodePart}-${cartItem.id.slice(-4).toUpperCase()}-${i + 1}`,
           status: 'ACTIVE' as const,
         })),
       },
@@ -2084,6 +2103,7 @@ app.post('/api/checkout/confirm', authMiddleware, async (req, res) => {
               payment_method: paymentMethod || 'CARD',
               status: 'PAID',
               amount: total,
+              provider_reference: `SIMULATED:${effectiveIdempotencyKey}`,
               processed_at: now,
             },
           },
@@ -2103,18 +2123,46 @@ app.post('/api/checkout/confirm', authMiddleware, async (req, res) => {
 
     const [order] = await prisma.$transaction(ops);
 
-    res.json({
-      id: order.id,
-      orderNumber: order.order_number,
-      subtotal: Number(order.subtotal_amount),
-      serviceFees: Number(order.service_fee_amount),
-      total: Number(order.total_amount),
-    });
+    res.json(formatCheckoutOrderResponse(order, false));
   } catch (error: any) {
+    if (error?.code === 'P2002') {
+      const userId = (req as any).userId;
+      const requestedIdempotencyKey = normalizeIdempotencyKey(req.body?.idempotencyKey ?? req.headers['idempotency-key']);
+      if (requestedIdempotencyKey) {
+        const existingOrder = await prisma.orders.findFirst({
+          where: { user_id: userId, order_number: buildSimulatedOrderNumber(requestedIdempotencyKey) },
+        });
+        if (existingOrder) {
+          res.json(formatCheckoutOrderResponse(existingOrder, true));
+          return;
+        }
+      }
+    }
     console.error('[CHECKOUT] Confirm error:', error);
     res.status(500).json({ error: error.message });
   }
 });
+
+function formatCheckoutOrderResponse(order: {
+  id: string;
+  order_number: string;
+  subtotal_amount: unknown;
+  service_fee_amount: unknown;
+  total_amount: unknown;
+}, idempotentReplay: boolean) {
+  return {
+    id: order.id,
+    orderNumber: order.order_number,
+    subtotal: Number(order.subtotal_amount),
+    serviceFees: Number(order.service_fee_amount),
+    total: Number(order.total_amount),
+    status: 'confirmed',
+    paymentMode: 'SIMULATED',
+    paymentStatus: 'SIMULATED_PAID',
+    idempotentReplay,
+    message: 'Pago simulado para demo academica; no se proceso una pasarela fiat real.',
+  };
+}
 
 // --- ORDERS & TICKETS ENDPOINTS (real) ---
 

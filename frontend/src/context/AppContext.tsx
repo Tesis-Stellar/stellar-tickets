@@ -429,16 +429,22 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
 
   const checkout = useCallback(
     async (buyerInfo: { name: string; email: string; phone: string; document: string; paymentMethod: "CARD" | "PSE" | "CASHPOINT" }): Promise<OrderData | null> => {
+      const idempotencyKey = `checkout:${cart
+        .map((item) => `${item.id}:${item.quantity}`)
+        .sort()
+        .join("|")}`;
       await apiFetch("/api/checkout/preview", {
         method: "POST",
         body: JSON.stringify({ buyerEmail: buyerInfo.email, buyerPhone: buyerInfo.phone }),
       });
-      const orderResponse = await apiFetch<{ id?: string; orderNumber?: string; total?: number; subtotal?: number; serviceFees?: number }>("/api/checkout/confirm", {
+      const orderResponse = await apiFetch<{ id?: string; orderNumber?: string; total?: number; subtotal?: number; serviceFees?: number; paymentMode?: "SIMULATED"; idempotentReplay?: boolean }>("/api/checkout/confirm", {
         method: "POST",
+        headers: { "Idempotency-Key": idempotencyKey },
         body: JSON.stringify({
           buyerEmail: buyerInfo.email,
           buyerPhone: buyerInfo.phone,
           paymentMethod: buyerInfo.paymentMethod,
+          idempotencyKey,
         }),
       });
       const subtotal = cart.reduce((s, c) => s + c.ticketType.price * c.quantity, 0);
@@ -483,7 +489,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
 
       return order;
     },
-    [apiFetch, cart]
+    [apiFetch, cart, refreshTickets, user?.document, user?.email, user?.name, user?.phone]
   );
 
   const login = useCallback(

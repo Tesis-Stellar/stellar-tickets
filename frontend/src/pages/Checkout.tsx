@@ -91,8 +91,8 @@ const Checkout = () => {
         {step === 3 ? (
           <div className="max-w-md mx-auto bg-card rounded-2xl border border-border p-10 text-center space-y-5">
             <div className="w-16 h-16 bg-success/10 rounded-full flex items-center justify-center mx-auto"><ShieldCheck className="w-8 h-8 text-success" /></div>
-            <h1 className="text-2xl font-black text-foreground">¡Compra Exitosa!</h1>
-            <p className="text-sm text-muted-foreground">Tus boletos han sido confirmados.</p>
+            <h1 className="text-2xl font-black text-foreground">Compra Simulada Exitosa</h1>
+            <p className="text-sm text-muted-foreground">Tus boletos fueron emitidos en el entorno de demo. No se realizó ningún cargo real.</p>
             <div className="flex flex-col sm:flex-row gap-3">
               <Link to="/confirmacion" className="flex-1 py-3 bg-primary text-primary-foreground font-bold rounded-lg text-center text-sm hover:bg-primary/90 transition-colors">Ver Confirmación</Link>
               <Link to="/" className="flex-1 py-3 bg-secondary text-secondary-foreground font-bold rounded-lg text-center text-sm hover:bg-secondary/80 transition-colors">Seguir Comprando</Link>
@@ -124,9 +124,9 @@ const Checkout = () => {
               )}
               {step === 2 && (
                 <>
-                  <h2 className="font-black text-foreground uppercase tracking-tight">Método de Pago</h2>
+                  <h2 className="font-black text-foreground uppercase tracking-tight">Pago Simulado</h2>
                   <div className="space-y-3">
-                    {[{ id: "card", label: "Tarjeta de Crédito/Débito" }, { id: "pse", label: "PSE - Débito bancario" }, { id: "nequi", label: "Nequi" }].map((m) => (
+                    {[{ id: "card", label: "Tarjeta demo" }, { id: "pse", label: "PSE demo" }, { id: "nequi", label: "Nequi demo" }].map((m) => (
                       <label key={m.id} className={`flex items-center gap-3 p-4 rounded-lg border cursor-pointer transition-colors ${form.payMethod === m.id ? "border-primary bg-primary/5" : "border-border"}`}>
                         <input type="radio" name="pay" value={m.id} checked={form.payMethod === m.id} onChange={() => setForm((p) => ({ ...p, payMethod: m.id }))} className="accent-primary" />
                         <span className="text-sm font-medium text-foreground">{m.label}</span>
@@ -136,7 +136,7 @@ const Checkout = () => {
                   {form.payMethod === "card" && (
                     <div className="bg-secondary/50 rounded-lg p-4 space-y-3">
                       <div className="flex items-center gap-2 bg-card rounded-lg border border-border px-3 py-2.5"><CreditCard className="w-4 h-4 text-primary" /><span className="text-sm text-foreground font-medium">•••• •••• •••• 4242</span></div>
-                      <p className="text-xs text-muted-foreground">Pago simulado — no se realizará ningún cargo real.</p>
+                      <p className="text-xs text-muted-foreground">Pago simulado. No se contacta una pasarela fiat ni se realiza ningún cargo real.</p>
                     </div>
                   )}
                   <label className={`flex items-start gap-2 mt-4 ${errors.terms ? "text-destructive" : ""}`}>
@@ -149,7 +149,7 @@ const Checkout = () => {
               <div className="flex gap-3 pt-4">
                 {step > 1 && <button onClick={() => setStep(step - 1)} className="px-6 py-3 bg-secondary text-secondary-foreground font-bold rounded-lg text-sm hover:bg-secondary/80 transition-colors">Anterior</button>}
                 <button onClick={handleNext} className="flex-1 py-3 bg-accent hover:bg-accent/90 text-accent-foreground font-black rounded-lg text-sm transition-colors">
-                  {step === 2 ? `Confirmar Compra — $${total.toLocaleString("es-CO")}` : "Continuar"}
+                  {step === 2 ? `Confirmar compra simulada — $${total.toLocaleString("es-CO")}` : "Continuar"}
                 </button>
               </div>
             </div>

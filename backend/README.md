@@ -104,7 +104,7 @@ Todas las rutas REST bajo prefijo `/api` salvo `/` y `/health`.
 - **Catálogo**: `GET /api/events`, `GET /api/events/:slug`, tipos de boleto, relacionados, etc.
 - **Auth**: `POST /api/auth/login`, `POST /api/auth/register`, `GET/PATCH /api/users/me`, wallet del usuario.
 - **Transacciones**: compra, listado, cancelación, XDR para firma en cliente, submit, etc.
-- **Carrito y checkout**: carrito autenticado, preview y confirmación.
+- **Carrito y checkout**: carrito autenticado, preview y confirmación. El checkout usa pago simulado para demo academica (`paymentMode: SIMULATED`) y llaves de idempotencia para no duplicar ordenes/tickets en doble confirmacion.
 - **Pedidos y boletos**: órdenes, boletos del usuario, vendidos.
 - **Admin** (JWT + rol): venues, eventos, despliegue de contratos, escaneo, etc. El escaneo de puerta (`POST /api/admin/scan`) es DB-only en esta version: marca el boleto como `USED` con `used_at`; no llama `redimir_boleto` en Soroban.
 

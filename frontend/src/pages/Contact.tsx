@@ -4,10 +4,10 @@ import { Footer } from "@/components/layout/Footer";
 import { Phone, Mail, MapPin, ChevronDown } from "lucide-react";
 
 const faqs = [
-  { q: "¿Cómo compro boletos?", a: "Busca tu evento, selecciona los boletos deseados, agrégalos al carrito y completa el proceso de pago." },
+  { q: "¿Cómo compro boletos?", a: "Busca tu evento, selecciona los boletos deseados, agrégalos al carrito y completa el pago simulado de la demo." },
   { q: "¿Puedo cancelar mi compra?", a: "Las compras son definitivas. Consulta la política del evento específico para excepciones." },
   { q: "¿Cómo recibo mis boletos?", a: "Recibirás tus boletos digitales por correo electrónico y podrás verlos en tu cuenta." },
-  { q: "¿Qué métodos de pago aceptan?", a: "Aceptamos tarjetas de crédito/débito, PSE y Nequi." },
+  { q: "¿Qué métodos de pago aceptan?", a: "En esta demo se muestran tarjeta, PSE y Nequi como métodos simulados; no se procesa una pasarela fiat real." },
   { q: "¿Qué hago si no recibí mi boleto?", a: "Revisa tu carpeta de spam. Si no lo encuentras, contáctanos y te lo reenviaremos." },
 ];
 
