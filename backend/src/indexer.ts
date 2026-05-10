@@ -2,6 +2,15 @@ import { rpc, scValToNative, xdr } from '@stellar/stellar-sdk';
 import { PrismaClient } from '@prisma/client';
 import dotenv from 'dotenv';
 import { assertActivePreviousVersion, buildTicketVersionIdentity, resolveResaleVersions } from './indexerResalePolicy';
+import {
+  buildCreatedTicketProjection,
+  buildCursorUpdate,
+  buildListingProjection,
+  buildOnchainEventIdentity,
+  buildRedemptionProjection,
+  shouldSkipProcessedEvent,
+  toJsonSafe,
+} from './indexerEventPolicy';
 
 dotenv.config();
 
@@ -138,15 +147,12 @@ export async function runIndexer() {
             if (!existing) {
               // Only create if not already tracked (e.g. from secure-ticket endpoint)
               await prisma.tickets.create({
-                data: {
-                  contract_address: contractId,
-                  ticket_root_id: rootId,
-                  version: 0,
-                  owner_wallet: ownerWallet,
-                  owner_user_id: user?.id ?? null,
-                  is_for_sale: false,
-                  status: 'ACTIVE',
-                }
+                data: buildCreatedTicketProjection({
+                  contractId,
+                  rootId,
+                  ownerWallet,
+                  ownerUserId: user?.id ?? null,
+                })
               });
               console.log(`[INDEXER] Created ticket root_id=${rootId}`);
             }
@@ -158,15 +164,12 @@ export async function runIndexer() {
             const rootId = Number(topics[1]);
             const resalePrice = data.precio != null ? BigInt(data.precio) : undefined;
             const listedVersion = data.version != null ? Number(data.version) : undefined;
-            await prisma.tickets.updateMany({
-              where: {
-                contract_address: contractId,
-                ticket_root_id: rootId,
-                status: 'ACTIVE',
-                ...(listedVersion !== undefined ? { version: listedVersion } : {}),
-              },
-              data: { is_for_sale: true, ...(resalePrice !== undefined ? { resale_price: resalePrice } : {}) }
-            });
+            await prisma.tickets.updateMany(buildListingProjection({
+              contractId,
+              rootId,
+              version: listedVersion,
+              resalePrice,
+            }));
             console.log(`[INDEXER] Listed ticket root_id=${rootId}`);
           }
 
@@ -288,10 +291,11 @@ export async function runIndexer() {
           else if (eventName === 'boleto_redimido') {
             // Topics: [boleto_redimido, ticket_root_id, id_evento]
             const rootId = Number(topics[1]);
-            await prisma.tickets.updateMany({
-              where: { contract_address: contractId, ticket_root_id: rootId, status: 'ACTIVE' },
-              data: { status: 'USED', used_at: new Date(), is_for_sale: false }
-            });
+            await prisma.tickets.updateMany(buildRedemptionProjection({
+              contractId,
+              rootId,
+              usedAt: new Date(),
+            }));
             console.log(`[INDEXER] Redeemed root_id=${rootId}`);
           }
 
@@ -312,9 +316,10 @@ export async function runIndexer() {
       }
 
       // 5. Update cursor
+      const cursorUpdate = buildCursorUpdate(endLedger);
       await prisma.indexer_state.update({
-        where: { id: 1 },
-        data: { last_ledger: endLedger + 1, updated_at: new Date() }
+        ...cursorUpdate,
+        data: { ...cursorUpdate.data, updated_at: new Date() }
       });
 
     } catch (error) {
@@ -342,27 +347,19 @@ async function beginOnchainEvent(
   data: any,
   fallbackLedger: number,
 ): Promise<OnchainEventRecord | null> {
-  const rootId = normalizeTopicNumber(topics[1]);
-  if (rootId === null) return null;
-
-  const ledger = normalizeEventLedger(evt, fallbackLedger);
-  const version = resolveEventVersion(eventName, data);
-  const txHash = normalizeEventTxHash(evt, ledger, contractId, eventName, topics);
-  const identity = {
-    tx_hash: txHash,
-    ledger,
-    contract_address: contractId,
-    event_name: eventName,
-    ticket_root_id: rootId,
-    version,
-  };
+  const identity = buildOnchainEventIdentity({ evt, eventName, contractId, topics, data, fallbackLedger });
+  if (!identity) return null;
+  const txHash = identity.tx_hash;
+  const ledger = identity.ledger;
+  const rootId = identity.ticket_root_id;
+  const version = identity.version;
 
   const existing = await prisma.onchain_events.findFirst({
     where: identity,
     select: { id: true, status: true },
   });
 
-  if (existing?.status === 'PROCESSED') {
+  if (shouldSkipProcessedEvent(existing?.status)) {
     console.log(`[INDEXER] Skipping already processed ${eventName} tx=${txHash.slice(0, 12)} root=${rootId} v=${version}`);
     return null;
   }
@@ -391,7 +388,7 @@ async function beginOnchainEvent(
         where: identity,
         select: { id: true, status: true },
       });
-      if (duplicate?.status === 'PROCESSED') return null;
+      if (shouldSkipProcessedEvent(duplicate?.status)) return null;
       if (duplicate) {
         await prisma.onchain_events.update({
           where: { id: duplicate.id },
@@ -409,49 +406,6 @@ async function markOnchainEvent(id: string, status: 'PROCESSED' | 'FAILED') {
     where: { id },
     data: { status, processed_at: new Date() },
   });
-}
-
-function normalizeTopicNumber(value: unknown): number | null {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
-function resolveEventVersion(eventName: string, data: any): number {
-  if (eventName === 'boleto_creado') return 0;
-  if (eventName === 'boleto_revendido') return Number(data.version_nueva ?? -1);
-  if (data.version != null) return Number(data.version);
-  if (data.version_actual != null) return Number(data.version_actual);
-  return -1;
-}
-
-function normalizeEventLedger(evt: any, fallbackLedger: number): number {
-  const ledger = Number(evt.ledger ?? evt.ledgerSequence ?? evt.ledgerNumber ?? fallbackLedger);
-  return Number.isFinite(ledger) ? ledger : fallbackLedger;
-}
-
-function normalizeEventTxHash(evt: any, ledger: number, contractId: string, eventName: string, topics: any[]): string {
-  const explicit = evt.txHash ?? evt.transactionHash ?? evt.tx_hash ?? evt.id ?? evt.pagingToken;
-  if (explicit) return String(explicit);
-  return `${ledger}:${contractId}:${eventName}:${topics.map((t) => String(t)).join(':')}`;
-}
-
-function toJsonSafe(value: unknown): any {
-  if (typeof value === 'bigint') return value.toString();
-  if (value == null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return value;
-  if (Array.isArray(value)) return value.map(toJsonSafe);
-  if (value instanceof Date) return value.toISOString();
-  if (typeof value === 'object') {
-    const maybeAddress = (value as { toString?: () => string }).toString;
-    if (maybeAddress && maybeAddress !== Object.prototype.toString) {
-      const rendered = maybeAddress.call(value);
-      if (rendered !== '[object Object]') return rendered;
-    }
-
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>).map(([key, nested]) => [key, toJsonSafe(nested)])
-    );
-  }
-  return String(value);
 }
 
 function sleep(ms: number) {
