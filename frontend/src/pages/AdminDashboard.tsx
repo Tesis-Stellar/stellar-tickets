@@ -174,6 +174,17 @@ const AdminDashboard = () => {
     }
   };
 
+  if (authStatus === "checking") {
+    return (
+      <div className="min-h-screen bg-background flex flex-col">
+        <Header />
+        <main className="flex-1 flex items-center justify-center px-4">
+          <p className="text-sm font-bold text-muted-foreground">Cargando sesión...</p>
+        </main>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-background flex flex-col">
       <Header />
