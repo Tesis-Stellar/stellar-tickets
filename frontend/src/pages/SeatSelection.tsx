@@ -6,6 +6,7 @@ import { SeatMap, type SectionConfig, type SelectedSeat, type VenueType } from "
 import { useAppContext } from "@/context/AppContext";
 import { ChevronLeft, ShoppingCart, Loader2 } from "lucide-react";
 import { getEventBySlug, getEventById, type EventData } from "@/data/events";
+import { getOfficialPurchasePath, shouldRedirectPurchaseMode } from "@/lib/purchaseRoute";
 
 interface SeatsApiResponse {
   venueType: VenueType;
@@ -51,6 +52,10 @@ const SeatSelection = () => {
         setEvent(ev);
 
         if (ev) {
+          if (shouldRedirectPurchaseMode("seats", ev.hasSeatSelection)) {
+            navigate(getOfficialPurchasePath(ev.id, ev.hasSeatSelection), { replace: true });
+            return;
+          }
           try {
             const data = await apiFetch<SeatsApiResponse>(`/api/events/${ev.id}/seats`);
             setSeatsResponse(data);
@@ -64,7 +69,7 @@ const SeatSelection = () => {
         setLoading(false);
       }
     })();
-  }, [id, apiFetch]);
+  }, [id, apiFetch, navigate]);
 
   const toggleSeat = (seat: SelectedSeat) => {
     setSelectedSeats((prev) => {

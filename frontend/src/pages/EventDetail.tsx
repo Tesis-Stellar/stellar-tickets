@@ -7,6 +7,7 @@ import { MapPin, Calendar, Clock, ChevronLeft, User, Info, ShieldCheck, Lock, Lo
 import { EventCard } from "@/components/ui/EventCard";
 import { useAppContext } from "@/context/AppContext";
 import { useXlmPrice, formatCOP } from "@/hooks/useXlmPrice";
+import { getOfficialPurchasePath } from "@/lib/purchaseRoute";
 
 const EventDetail = () => {
   const { id: slug } = useParams<{ id: string }>();
@@ -72,7 +73,7 @@ const EventDetail = () => {
   );
 
   const minPrice = event.ticketTypes.length ? Math.min(...event.ticketTypes.map((t) => t.price)) : 0;
-  const buyUrl = event.hasSeatSelection ? `/evento/${event.id}/asientos` : `/evento/${event.id}/boletas`;
+  const buyUrl = getOfficialPurchasePath(event.id, event.hasSeatSelection);
 
   return (
     <div className="min-h-screen bg-background flex flex-col">

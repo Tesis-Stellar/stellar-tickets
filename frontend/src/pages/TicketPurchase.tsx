@@ -6,6 +6,7 @@ import { getEventById, getEventTicketTypes, type EventData } from "@/data/events
 import { TicketSelector } from "@/components/ui/TicketSelector";
 import { useAppContext } from "@/context/AppContext";
 import { ChevronLeft, ShoppingCart } from "lucide-react";
+import { getOfficialPurchasePath, shouldRedirectPurchaseMode } from "@/lib/purchaseRoute";
 
 const TicketPurchase = () => {
   const { id } = useParams<{ id: string }>();
@@ -26,6 +27,10 @@ const TicketPurchase = () => {
           setEvent(null);
           return;
         }
+        if (shouldRedirectPurchaseMode("official", eventById.hasSeatSelection)) {
+          navigate(getOfficialPurchasePath(eventById.id, eventById.hasSeatSelection), { replace: true });
+          return;
+        }
         const ticketTypes = await getEventTicketTypes(eventById.id);
         setEvent({ ...eventById, ticketTypes });
       } catch {
@@ -34,7 +39,7 @@ const TicketPurchase = () => {
         setLoading(false);
       }
     })();
-  }, [id]);
+  }, [id, navigate]);
 
   if (loading) return <div className="min-h-screen bg-background flex flex-col"><Header /><div className="flex-1 flex items-center justify-center"><p className="text-foreground font-bold">Cargando evento...</p></div><Footer /></div>;
   if (!event) return <div className="min-h-screen bg-background flex flex-col"><Header /><div className="flex-1 flex items-center justify-center"><p className="text-foreground font-bold">Evento no encontrado</p></div><Footer /></div>;
