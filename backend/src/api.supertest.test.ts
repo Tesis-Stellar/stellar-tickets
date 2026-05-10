@@ -1,0 +1,102 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import jwt from 'jsonwebtoken';
+import request from 'supertest';
+import { PrismaClient } from '@prisma/client';
+import app, { closeAppResources } from './server';
+
+process.env.VERCEL = '1';
+process.env.RUN_INDEXER = 'false';
+process.env.JWT_SECRET ||= 'stellar-tickets-dev-secret-change-in-prod';
+
+const prisma = new PrismaClient();
+const jwtSecret = process.env.JWT_SECRET;
+
+function tokenFor(userId: string) {
+  return jwt.sign({ userId }, jwtSecret);
+}
+
+test.after(async () => {
+  await prisma.$disconnect();
+  await closeAppResources();
+});
+
+test('GET /health returns service status', async () => {
+  const res = await request(app).get('/health').expect(200);
+  assert.equal(res.body.status, 'ok');
+  assert.equal(res.body.service, 'stellar-tickets-backend');
+});
+
+test('POST /api/auth/login validates required credentials', async () => {
+  const res = await request(app).post('/api/auth/login').send({ email: 'missing-password@example.com' }).expect(400);
+  assert.match(res.body.error, /Email y contraseña/);
+});
+
+test('POST /api/auth/login rejects invalid credentials', async () => {
+  const res = await request(app)
+    .post('/api/auth/login')
+    .send({ email: `missing-${Date.now()}@example.com`, password: 'bad-password' })
+    .expect(401);
+  assert.equal(res.body.error, 'Credenciales inválidas');
+});
+
+test('GET /api/cart requires authentication', async () => {
+  const res = await request(app).get('/api/cart').expect(401);
+  assert.equal(res.body.error, 'Token requerido');
+});
+
+test('POST /api/cart/items returns 404 for unknown ticket type', async () => {
+  const res = await request(app)
+    .post('/api/cart/items')
+    .set('Authorization', `Bearer ${tokenFor('00000000-0000-0000-0000-000000000001')}`)
+    .send({ ticketTypeId: '00000000-0000-0000-0000-000000000002', quantity: 1 })
+    .expect(404);
+  assert.equal(res.body.error, 'Tipo de boleta no encontrado');
+});
+
+test('POST /api/checkout/preview rejects an empty cart', async () => {
+  const res = await request(app)
+    .post('/api/checkout/preview')
+    .set('Authorization', `Bearer ${tokenFor('00000000-0000-0000-0000-000000000003')}`)
+    .send({})
+    .expect(400);
+  assert.equal(res.body.error, 'El carrito está vacío');
+});
+
+test('POST /api/checkout/confirm returns 404 for unknown user', async () => {
+  const res = await request(app)
+    .post('/api/checkout/confirm')
+    .set('Authorization', `Bearer ${tokenFor('00000000-0000-0000-0000-000000000004')}`)
+    .send({ idempotencyKey: 'qa-unknown-user' })
+    .expect(404);
+  assert.equal(res.body.error, 'Usuario no encontrado');
+});
+
+test('POST /api/admin/scan rejects non-admin users before scanning', async () => {
+  const customer = await prisma.users.findFirst({ where: { role: 'CUSTOMER' }, select: { id: true } });
+  const userId = customer?.id ?? '00000000-0000-0000-0000-000000000005';
+
+  const res = await request(app)
+    .post('/api/admin/scan')
+    .set('Authorization', `Bearer ${tokenFor(userId)}`)
+    .send({ ticketId: '00000000-0000-0000-0000-000000000006' })
+    .expect(403);
+  assert.equal(res.body.error, 'Acceso denegado');
+});
+
+test('POST /api/admin/scan validates malformed QR payloads for admins', async () => {
+  const admin = await prisma.users.findFirst({ where: { role: 'ADMIN' }, select: { id: true } });
+  assert.ok(admin, 'expected at least one ADMIN user in the test database');
+
+  const res = await request(app)
+    .post('/api/admin/scan')
+    .set('Authorization', `Bearer ${tokenFor(admin.id)}`)
+    .send({ contractAddress: 'C_TEST', ticketRootId: 'abc' })
+    .expect(400);
+  assert.equal(res.body.error, 'Payload de QR invalido');
+});
+
+test('POST /api/transactions/transfer-nft requires authentication', async () => {
+  const res = await request(app).post('/api/transactions/transfer-nft').send({}).expect(401);
+  assert.equal(res.body.error, 'Token requerido');
+});

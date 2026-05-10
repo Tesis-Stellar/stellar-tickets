@@ -2344,3 +2344,7 @@ if (!isServerless) {
 }
 
 export default app;
+
+export async function closeAppResources() {
+  await prisma.$disconnect();
+}
