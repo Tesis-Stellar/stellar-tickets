@@ -72,7 +72,7 @@ const EventDetail = () => {
   );
 
   const minPrice = event.ticketTypes.length ? Math.min(...event.ticketTypes.map((t) => t.price)) : 0;
-  const buyUrl = `/evento/${event.id}/asientos`;
+  const buyUrl = event.hasSeatSelection ? `/evento/${event.id}/asientos` : `/evento/${event.id}/boletas`;
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
