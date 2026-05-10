@@ -1982,7 +1982,7 @@ app.delete('/api/cart/clear', authMiddleware, async (req, res) => {
   }
 });
 
-// --- CHECKOUT ENDPOINTS (real) ---
+// --- CHECKOUT ENDPOINTS (simulated payment for thesis demo) ---
 
 // POST /api/checkout/preview — validate cart, return totals
 app.post('/api/checkout/preview', authMiddleware, async (req, res) => {
