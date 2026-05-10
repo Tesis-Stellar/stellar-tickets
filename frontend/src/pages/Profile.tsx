@@ -6,9 +6,13 @@ import { AccountSidebar } from "@/components/layout/AccountSidebar";
 import { useAppContext } from "@/context/AppContext";
 
 const Profile = () => {
-  const { isLoggedIn, user, updateProfile } = useAppContext();
+  const { isLoggedIn, authStatus, user, updateProfile } = useAppContext();
   const [saved, setSaved] = useState(false);
   const [form, setForm] = useState({ name: user?.name ?? "", email: user?.email ?? "", phone: user?.phone ?? "", document: user?.document ?? "" });
+
+  if (authStatus === "checking") {
+    return <div className="min-h-screen bg-background flex flex-col"><Header /><main className="flex-1 flex items-center justify-center px-4"><p className="text-sm font-bold text-muted-foreground">Cargando sesión...</p></main><Footer /></div>;
+  }
 
   if (!isLoggedIn) return <Navigate to="/login" replace />;
 

@@ -16,7 +16,7 @@ const Field = ({ label, name, type = "text", placeholder = "", value, onChange, 
 );
 
 const Checkout = () => {
-  const { cart, checkout, isLoggedIn } = useAppContext();
+  const { cart, checkout, isLoggedIn, authStatus } = useAppContext();
   const navigate = useNavigate();
   const location = useLocation();
   const [step, setStep] = useState(1);
@@ -26,6 +26,14 @@ const Checkout = () => {
   const subtotal = cart.reduce((s, c) => s + c.ticketType.price * c.quantity, 0);
   const fees = cart.reduce((s, c) => s + c.ticketType.serviceFee * c.quantity, 0);
   const total = subtotal + fees;
+
+  if (authStatus === "checking") {
+    return (
+      <div className="min-h-screen bg-background flex flex-col"><Header />
+        <main className="flex-1 flex items-center justify-center px-4"><p className="text-sm font-bold text-muted-foreground">Cargando sesión...</p></main>
+      <Footer /></div>
+    );
+  }
 
   if (!isLoggedIn) {
     return <Navigate to="/login" replace state={{ from: location.pathname, message: "Inicia sesión para finalizar la compra." }} />;

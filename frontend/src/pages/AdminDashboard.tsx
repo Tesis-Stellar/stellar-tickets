@@ -37,7 +37,7 @@ interface AdminContractList {
 }
 
 const AdminDashboard = () => {
-  const { user, apiFetch } = useAppContext();
+  const { user, authStatus, apiFetch } = useAppContext();
   const navigate = useNavigate();
   const [events, setEvents] = useState<AdminEvent[]>([]);
   const [venues, setVenues] = useState<Venue[]>([]);
@@ -71,12 +71,13 @@ const AdminDashboard = () => {
   };
 
   useEffect(() => {
+    if (authStatus === "checking") return;
     if (!user || user.role !== "ADMIN") {
       navigate("/");
       return;
     }
     loadData();
-  }, [user, navigate]);
+  }, [authStatus, user, navigate]);
 
   const handleVenueChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const venueId = e.target.value;

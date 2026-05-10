@@ -80,6 +80,7 @@ interface AppState {
   soldTickets: SoldTicket[];
   user: UserData | null;
   isLoggedIn: boolean;
+  authStatus: "checking" | "authenticated" | "unauthenticated";
   balanceVersion: number;
   addToCart: (item: Omit<CartItem, "id">) => Promise<void>;
   removeFromCart: (id: string) => Promise<void>;
@@ -135,6 +136,9 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   const [user, setUser] = useState<UserData | null>(null);
   const [lastOrder, setLastOrder] = useState<OrderData | null>(null);
   const [token, setToken] = useState<string | null>(() => localStorage.getItem("authToken"));
+  const [authStatus, setAuthStatus] = useState<"checking" | "authenticated" | "unauthenticated">(() =>
+    localStorage.getItem("authToken") ? "checking" : "unauthenticated"
+  );
   const [walletAddress, setWalletAddress] = useState<string | null>(null);
   const [soldTickets, setSoldTickets] = useState<SoldTicket[]>([]);
   const [balanceVersion, setBalanceVersion] = useState(0);
@@ -203,15 +207,21 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       }>("/api/users/me");
       setUser(normalizeUser(profile));
       if (profile.walletAddress) setWalletAddress(profile.walletAddress);
+      setAuthStatus("authenticated");
     } catch {
       setUser(null);
       setToken(null);
+      setAuthStatus("unauthenticated");
       localStorage.removeItem("authToken");
     }
   }, [apiFetch, normalizeUser, setWalletAddress]);
 
   useEffect(() => {
-    if (!token) return;
+    if (!token) {
+      setAuthStatus("unauthenticated");
+      return;
+    }
+    setAuthStatus("checking");
     void refreshUserData();
   }, [refreshUserData, token]);
 
@@ -496,6 +506,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       setToken(response.accessToken);
       localStorage.setItem("authToken", response.accessToken);
       setUser(normalizeUser(response.user));
+      setAuthStatus("authenticated");
       return true;
     },
     [apiFetch, normalizeUser]
@@ -531,6 +542,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       setToken(response.accessToken);
       localStorage.setItem("authToken", response.accessToken);
       setUser(normalizeUser(response.user));
+      setAuthStatus("authenticated");
       return true;
     },
     [apiFetch, normalizeUser]
@@ -539,6 +551,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   const logout = useCallback(() => {
     setUser(null);
     setToken(null);
+    setAuthStatus("unauthenticated");
     setCart([]);
     setOrders([]);
     setPurchasedTickets([]);
@@ -782,6 +795,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         soldTickets,
         user,
         isLoggedIn,
+        authStatus,
         balanceVersion,
         addToCart,
         removeFromCart,

@@ -6,16 +6,17 @@ import { CheckCircle2, XCircle, Loader2, ShieldCheck, Camera } from "lucide-reac
 import { useAppContext } from "@/context/AppContext";
 
 export const ScannerPage = () => {
-  const { user, apiFetch } = useAppContext();
+  const { user, authStatus, apiFetch } = useAppContext();
   const navigate = useNavigate();
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<{ type: 'success'|'error'; message: string; submessage?: string } | null>(null);
 
   useEffect(() => {
+    if (authStatus === "checking") return;
     if (!user || !['ADMIN', 'STAFF'].includes(user.role)) {
       navigate("/");
     }
-  }, [user, navigate]);
+  }, [authStatus, user, navigate]);
 
   const handleScan = async (detectedCodes: IDetectedBarcode[]) => {
     if (loading || !detectedCodes || detectedCodes.length === 0) return;
@@ -76,6 +77,11 @@ export const ScannerPage = () => {
   return (
     <div className="min-h-screen bg-background flex flex-col">
       <Header />
+      {authStatus === "checking" ? (
+        <main className="flex-1 flex items-center justify-center px-4">
+          <p className="text-sm font-bold text-muted-foreground">Cargando sesión...</p>
+        </main>
+      ) : (
       <main className="flex-1 flex flex-col items-center justify-start py-8 px-4 w-full max-w-lg mx-auto">
         <div className="w-full text-center mb-6">
           <h1 className="text-2xl font-black text-foreground flex items-center justify-center gap-2">
@@ -126,6 +132,7 @@ export const ScannerPage = () => {
           </p>
         </div>
       </main>
+      )}
     </div>
   );
 };

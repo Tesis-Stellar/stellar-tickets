@@ -7,7 +7,10 @@ import { useAppContext } from "@/context/AppContext";
 import { Ticket } from "lucide-react";
 
 const MyTicketsAccount = () => {
-  const { isLoggedIn, purchasedTickets } = useAppContext();
+  const { isLoggedIn, authStatus, purchasedTickets } = useAppContext();
+  if (authStatus === "checking") {
+    return <div className="min-h-screen bg-background flex flex-col"><Header /><main className="flex-1 flex items-center justify-center px-4"><p className="text-sm font-bold text-muted-foreground">Cargando sesión...</p></main><Footer /></div>;
+  }
   if (!isLoggedIn) return <Navigate to="/login" replace />;
 
   return (

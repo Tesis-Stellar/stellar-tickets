@@ -7,8 +7,11 @@ import { useXlmPrice, formatCOP, stroopsToXLM } from "@/hooks/useXlmPrice";
 import { ArrowRightLeft } from "lucide-react";
 
 const MySalesP2P = () => {
-  const { isLoggedIn, soldTickets } = useAppContext();
+  const { isLoggedIn, authStatus, soldTickets } = useAppContext();
   const xlmCop = useXlmPrice();
+  if (authStatus === "checking") {
+    return <div className="min-h-screen bg-background flex flex-col"><Header /><main className="flex-1 flex items-center justify-center px-4"><p className="text-sm font-bold text-muted-foreground">Cargando sesión...</p></main><Footer /></div>;
+  }
   if (!isLoggedIn) return <Navigate to="/login" replace />;
 
   const totalXLM = soldTickets.reduce((sum, t) => sum + t.resalePrice, 0) / 10_000_000;
