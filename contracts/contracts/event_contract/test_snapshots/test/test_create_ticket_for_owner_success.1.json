@@ -73,6 +73,9 @@
                 },
                 {
                   "i128": "1000000"
+                },
+                {
+                  "bool": true
                 }
               ]
             }
@@ -272,7 +275,7 @@
                                 "symbol": "es_reventa"
                               },
                               "val": {
-                                "bool": false
+                                "bool": true
                               }
                             },
                             {
