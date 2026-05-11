@@ -26,6 +26,7 @@ import { buildSimulatedOrderNumber, normalizeIdempotencyKey } from './checkoutPo
 import { deriveChainEventId } from './secureTicketPolicy';
 import { createWalletChallenge, verifyWalletChallengeSignature } from './walletChallengePolicy';
 import { signTicketQr } from './qrPolicy';
+import { authorizeTransactionIntentSubmit, buildTransactionIntentExpiry } from './transactionIntentPolicy';
 import { exec } from 'child_process';
 import util from 'util';
 import QRCode from 'qrcode';
@@ -203,6 +204,36 @@ function buildSignedTicketQrPayload(input: {
       eventId: input.eventId,
     }),
   };
+}
+
+function transactionHashHex(tx: { hash: () => Buffer }): string {
+  return tx.hash().toString('hex');
+}
+
+async function createTransactionIntent(input: {
+  userId: string;
+  walletAddress: string;
+  operation: string;
+  contractAddress: string;
+  ticketRootId: number;
+  expectedVersion?: number | null;
+  expectedPrice?: bigint | number | null;
+  xdrHash: string;
+}) {
+  return prisma.transaction_intents.create({
+    data: {
+      user_id: input.userId,
+      wallet_address: input.walletAddress,
+      operation: input.operation,
+      contract_address: input.contractAddress,
+      ticket_root_id: input.ticketRootId,
+      expected_version: input.expectedVersion ?? null,
+      expected_price: input.expectedPrice != null ? BigInt(input.expectedPrice) : null,
+      xdr_hash: input.xdrHash,
+      expires_at: buildTransactionIntentExpiry(),
+    },
+    select: { id: true, expires_at: true },
+  });
 }
 
 // GET /api/tickets/qr/:assetCode.png — public PNG referenced by stellar.toml.
@@ -1024,7 +1055,17 @@ app.post('/api/transactions/list-ticket', authMiddleware, async (req, res) => {
     }
 
     const assembled = SorobanRpc.assembleTransaction(tx, simResponse).build();
-    res.json({ xdr: assembled.toXDR(), networkPassphrase: NETWORK_PASSPHRASE });
+    const intent = await createTransactionIntent({
+      userId: (req as any).userId,
+      walletAddress: user.wallet_address,
+      operation: 'listar_boleto',
+      contractAddress: ticket.contract_address,
+      ticketRootId: ticket.ticket_root_id,
+      expectedVersion: ticket.version,
+      expectedPrice: price,
+      xdrHash: transactionHashHex(assembled),
+    });
+    res.json({ xdr: assembled.toXDR(), networkPassphrase: NETWORK_PASSPHRASE, intentId: intent.id, intentExpiresAt: intent.expires_at });
   } catch (error: any) {
     console.error('[SOROBAN] list-ticket error:', error);
     res.status(500).json({ error: error.message });
@@ -1084,7 +1125,16 @@ app.post('/api/transactions/cancel-listing', authMiddleware, async (req, res) =>
     }
 
     const assembled = SorobanRpc.assembleTransaction(tx, simResponse).build();
-    res.json({ xdr: assembled.toXDR(), networkPassphrase: NETWORK_PASSPHRASE });
+    const intent = await createTransactionIntent({
+      userId: (req as any).userId,
+      walletAddress: user.wallet_address,
+      operation: 'cancelar_venta',
+      contractAddress: ticket.contract_address,
+      ticketRootId: ticket.ticket_root_id,
+      expectedVersion: ticket.version,
+      xdrHash: transactionHashHex(assembled),
+    });
+    res.json({ xdr: assembled.toXDR(), networkPassphrase: NETWORK_PASSPHRASE, intentId: intent.id, intentExpiresAt: intent.expires_at });
   } catch (error: any) {
     console.error('[SOROBAN] cancel-listing error:', error);
     res.status(500).json({ error: error.message });
@@ -1161,9 +1211,19 @@ app.post('/api/transactions/build-buy-xdr', authMiddleware, async (req, res) => 
     // Assemble but do NOT sign — frontend signs with Freighter
     const assembled = SorobanRpc.assembleTransaction(tx, simResponse).build();
     const xdrBase64 = assembled.toXDR();
+    const intent = await createTransactionIntent({
+      userId,
+      walletAddress: buyerPublicKey,
+      operation: 'comprar_boleto',
+      contractAddress: String(contractAddress),
+      ticketRootId: Number(ticketRootId),
+      expectedVersion: ticket.version,
+      expectedPrice: ticket.resale_price,
+      xdrHash: transactionHashHex(assembled),
+    });
 
     console.log(`[SOROBAN] XDR built for buy, ${xdrBase64.length} chars`);
-    res.json({ xdr: xdrBase64, networkPassphrase: NETWORK_PASSPHRASE });
+    res.json({ xdr: xdrBase64, networkPassphrase: NETWORK_PASSPHRASE, intentId: intent.id, intentExpiresAt: intent.expires_at });
   } catch (error: any) {
     console.error('[SOROBAN] build-buy-xdr error:', error);
     res.status(500).json({ error: error.message });
@@ -1174,9 +1234,9 @@ app.post('/api/transactions/build-buy-xdr', authMiddleware, async (req, res) => 
 app.post('/api/transactions/submit', authMiddleware, async (req, res) => {
   try {
     const userId = (req as any).userId;
-    const { signedXdr } = req.body;
-    if (!signedXdr) {
-      res.status(400).json({ error: 'signedXdr es requerido' });
+    const { signedXdr, intentId } = req.body;
+    if (!signedXdr || !intentId) {
+      res.status(400).json({ error: 'signedXdr e intentId son requeridos' });
       return;
     }
 
@@ -1196,9 +1256,42 @@ app.post('/api/transactions/submit', authMiddleware, async (req, res) => {
       return;
     }
 
+    const intent = await prisma.transaction_intents.findUnique({
+      where: { id: String(intentId) },
+      select: {
+        id: true,
+        user_id: true,
+        wallet_address: true,
+        xdr_hash: true,
+        status: true,
+        expires_at: true,
+        submitted_at: true,
+      },
+    });
+    const intentDecision = authorizeTransactionIntentSubmit({
+      intent,
+      userId,
+      walletAddress: user.wallet_address,
+      signedXdrHash: transactionHashHex(tx),
+    });
+    if (!intentDecision.ok) {
+      if (intentDecision.markExpired && intent) {
+        await prisma.transaction_intents.update({
+          where: { id: intent.id },
+          data: { status: 'EXPIRED' },
+        });
+      }
+      res.status(intentDecision.status).json({ error: intentDecision.error });
+      return;
+    }
+
     const sendResponse = await sorobanServer.sendTransaction(tx);
     if (sendResponse.status === 'ERROR') {
       console.error('[SOROBAN] Submit failed:', sendResponse);
+      await prisma.transaction_intents.update({
+        where: { id: String(intentId) },
+        data: { status: 'FAILED' },
+      });
       res.status(400).json({ error: 'La red rechazó la transacción firmada' });
       return;
     }
@@ -1212,9 +1305,18 @@ app.post('/api/transactions/submit', authMiddleware, async (req, res) => {
     } while (getResponse.status === 'NOT_FOUND' && attempts < 30);
 
     if (getResponse.status !== 'SUCCESS') {
+      await prisma.transaction_intents.update({
+        where: { id: String(intentId) },
+        data: { status: 'FAILED', tx_hash: sendResponse.hash },
+      });
       res.status(400).json({ error: 'Transacción fallida: ' + getResponse.status });
       return;
     }
+
+    await prisma.transaction_intents.update({
+      where: { id: String(intentId) },
+      data: { status: 'SUBMITTED', submitted_at: new Date(), tx_hash: sendResponse.hash },
+    });
 
     console.log(`[SOROBAN] Signed tx submitted! hash=${sendResponse.hash}`);
     res.json({ success: true, txHash: sendResponse.hash });

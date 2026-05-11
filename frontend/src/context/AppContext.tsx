@@ -34,6 +34,13 @@ export interface PurchasedTicket {
   qrPayload?: string | null;
 }
 
+type TransactionIntentResponse = {
+  xdr: string;
+  networkPassphrase: string;
+  intentId: string;
+  intentExpiresAt?: string;
+};
+
 /* ── Sold ticket ── */
 export interface SoldTicket {
   id: string;
@@ -675,7 +682,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       try {
         await ensureFreighterReady(walletAddress ?? undefined);
         const priceStroops = Math.round(priceXLM * 10_000_000);
-        const { xdr, networkPassphrase } = await apiFetch<{ xdr: string; networkPassphrase: string }>("/api/transactions/list-ticket", {
+        const { xdr, networkPassphrase, intentId } = await apiFetch<TransactionIntentResponse>("/api/transactions/list-ticket", {
           method: "POST",
           body: JSON.stringify({ ticketId, price: priceStroops }),
         });
@@ -686,7 +693,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
 
         const result = await apiFetch<{ success: boolean; txHash: string }>("/api/transactions/submit", {
           method: "POST",
-          body: JSON.stringify({ signedXdr }),
+          body: JSON.stringify({ signedXdr, intentId }),
         });
         setPurchasedTickets((prev) =>
           prev.map((t) => (t.id === ticketId ? { ...t, isForSale: true, resalePrice: priceStroops } : t))
@@ -703,7 +710,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     async (ticketId: string): Promise<{ success: boolean; txHash?: string; error?: string }> => {
       try {
         await ensureFreighterReady(walletAddress ?? undefined);
-        const { xdr, networkPassphrase } = await apiFetch<{ xdr: string; networkPassphrase: string }>("/api/transactions/cancel-listing", {
+        const { xdr, networkPassphrase, intentId } = await apiFetch<TransactionIntentResponse>("/api/transactions/cancel-listing", {
           method: "POST",
           body: JSON.stringify({ ticketId }),
         });
@@ -714,7 +721,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
 
         const result = await apiFetch<{ success: boolean; txHash: string }>("/api/transactions/submit", {
           method: "POST",
-          body: JSON.stringify({ signedXdr }),
+          body: JSON.stringify({ signedXdr, intentId }),
         });
         setPurchasedTickets((prev) =>
           prev.map((t) => (t.id === ticketId ? { ...t, isForSale: false, resalePrice: undefined } : t))
@@ -739,7 +746,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         const { signTransaction } = await import("@stellar/freighter-api");
 
         // 1. XDR sin firmar para comprar_boleto
-        const { xdr, networkPassphrase } = await apiFetch<{ xdr: string; networkPassphrase: string }>("/api/transactions/build-buy-xdr", {
+        const { xdr, networkPassphrase, intentId } = await apiFetch<TransactionIntentResponse>("/api/transactions/build-buy-xdr", {
           method: "POST",
           body: JSON.stringify({ contractAddress, ticketRootId, buyerPublicKey }),
         });
@@ -751,7 +758,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
 
         const submitResult = await apiFetch<{ success: boolean; txHash: string }>("/api/transactions/submit", {
           method: "POST",
-          body: JSON.stringify({ signedXdr }),
+          body: JSON.stringify({ signedXdr, intentId }),
         });
 
         // 3. Tras ~7s (indexer aplica boleto_revendido), pedir la transferencia

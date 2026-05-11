@@ -101,6 +101,15 @@ test('POST /api/transactions/transfer-nft requires authentication', async () => 
   assert.equal(res.body.error, 'Token requerido');
 });
 
+test('POST /api/transactions/submit requires a backend intent id', async () => {
+  const res = await request(app)
+    .post('/api/transactions/submit')
+    .set('Authorization', `Bearer ${tokenFor('00000000-0000-0000-0000-000000000009')}`)
+    .send({ signedXdr: 'AAAA' })
+    .expect(400);
+  assert.equal(res.body.error, 'signedXdr e intentId son requeridos');
+});
+
 test('POST /api/wallet/challenge requires authentication', async () => {
   const res = await request(app).post('/api/wallet/challenge').send({}).expect(401);
   assert.equal(res.body.error, 'Token requerido');
