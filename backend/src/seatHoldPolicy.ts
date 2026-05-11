@@ -17,3 +17,7 @@ export function isSeatHoldExpired(expiresAt: Date, now = new Date()): boolean {
 export function evaluateAtomicSeatReservation(requestedSeats: number, reservedSeats: number): 'OK' | 'CONFLICT' {
   return requestedSeats === reservedSeats ? 'OK' : 'CONFLICT';
 }
+
+export function evaluateAtomicSeatSale(expectedSeats: number, soldSeats: number): 'OK' | 'CONFLICT' {
+  return expectedSeats === soldSeats ? 'OK' : 'CONFLICT';
+}

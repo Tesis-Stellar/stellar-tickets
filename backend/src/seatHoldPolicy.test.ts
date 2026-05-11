@@ -3,6 +3,7 @@ import test from 'node:test';
 import {
   buildSeatHoldExpiration,
   evaluateAtomicSeatReservation,
+  evaluateAtomicSeatSale,
   isSeatHoldExpired,
   isSeatReservable,
 } from './seatHoldPolicy';
@@ -32,4 +33,10 @@ test('atomic seat reservation conflicts when not every requested seat was update
   assert.equal(evaluateAtomicSeatReservation(2, 2), 'OK');
   assert.equal(evaluateAtomicSeatReservation(2, 1), 'CONFLICT');
   assert.equal(evaluateAtomicSeatReservation(1, 0), 'CONFLICT');
+});
+
+test('atomic seat sale conflicts when not every held seat was sold', () => {
+  assert.equal(evaluateAtomicSeatSale(2, 2), 'OK');
+  assert.equal(evaluateAtomicSeatSale(2, 1), 'CONFLICT');
+  assert.equal(evaluateAtomicSeatSale(1, 0), 'CONFLICT');
 });

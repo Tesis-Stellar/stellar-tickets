@@ -30,7 +30,7 @@ import { authorizeTransactionIntentCurrentState, authorizeTransactionIntentSubmi
 import { authorizeSingleEventDeploy } from './deployEventPolicy';
 import { codeForStatus, requestIdMiddleware, sendApiError } from './apiError';
 import { evaluateRateLimit, isCorsOriginAllowed, isJwtSecretStrong, parseCorsOrigins, type RateLimitBucket } from './securityPolicy';
-import { buildSeatHoldExpiration, evaluateAtomicSeatReservation } from './seatHoldPolicy';
+import { buildSeatHoldExpiration, evaluateAtomicSeatReservation, evaluateAtomicSeatSale } from './seatHoldPolicy';
 import { exec } from 'child_process';
 import util from 'util';
 import QRCode from 'qrcode';
@@ -2088,6 +2088,13 @@ class SeatReservationConflictError extends Error {
   }
 }
 
+class CheckoutSeatSaleConflictError extends Error {
+  constructor(message = 'La reserva de uno o más asientos expiró o ya no está disponible') {
+    super(message);
+    this.name = 'CheckoutSeatSaleConflictError';
+  }
+}
+
 async function releaseExpiredSeatHolds(now = new Date()) {
   const expiredHolds = await prisma.seat_holds.findMany({
     where: { status: 'ACTIVE', expires_at: { lte: now } },
@@ -2540,57 +2547,92 @@ app.post('/api/checkout/confirm', authMiddleware, async (req, res) => {
       }
     }
 
-    // Use a batch transaction instead of an interactive tx callback. Supabase/pgBouncer
-    // can drop long-lived interactive transactions in local/demo environments.
-    const ops: any[] = [
-      prisma.orders.create({
-        data: {
-          user_id: userId,
-          order_number: orderNumber,
-          status: 'PAID',
-          subtotal_amount: subtotal,
-          service_fee_amount: serviceFees,
-          total_amount: total,
-          buyer_email: buyerEmail || user.email,
-          buyer_phone: buyerPhone || user.phone,
-          buyer_document_type: user.document_type,
-          buyer_document_number: user.document_number,
-          order_items: { create: orderItemCreates },
-          payments: {
-            create: {
-              payment_method: paymentMethod || 'CARD',
-              status: 'PAID',
-              amount: total,
-              provider_reference: `SIMULATED:${effectiveIdempotencyKey}`,
-              processed_at: now,
-            },
-          },
-        },
-      }),
-      prisma.carts.update({ where: { id: cart.id }, data: { status: 'CONVERTED' } }),
-    ];
-
+    let order;
     if (seatInventoryIdsToSell.length > 0) {
-      ops.push(
-        prisma.seat_holds.updateMany({
+      order = await prisma.$transaction(async (tx) => {
+        await tx.seat_holds.updateMany({
           where: {
             cart_id: cart.id,
             event_seat_inventory_id: { in: seatInventoryIdsToSell },
             status: 'ACTIVE',
           },
           data: { status: 'CONSUMED', updated_at: now },
-        }),
-        prisma.event_seat_inventory.updateMany({
+        });
+        const soldSeats = await tx.event_seat_inventory.updateMany({
           where: { id: { in: seatInventoryIdsToSell }, status: 'HELD' },
           data: { status: 'SOLD', updated_at: now },
-        })
-      );
-    }
+        });
 
-    const [order] = await prisma.$transaction(ops);
+        if (evaluateAtomicSeatSale(seatInventoryIdsToSell.length, soldSeats.count) !== 'OK') {
+          throw new CheckoutSeatSaleConflictError();
+        }
+
+        const createdOrder = await tx.orders.create({
+          data: {
+            user_id: userId,
+            order_number: orderNumber,
+            status: 'PAID',
+            subtotal_amount: subtotal,
+            service_fee_amount: serviceFees,
+            total_amount: total,
+            buyer_email: buyerEmail || user.email,
+            buyer_phone: buyerPhone || user.phone,
+            buyer_document_type: user.document_type,
+            buyer_document_number: user.document_number,
+            order_items: { create: orderItemCreates },
+            payments: {
+              create: {
+                payment_method: paymentMethod || 'CARD',
+                status: 'PAID',
+                amount: total,
+                provider_reference: `SIMULATED:${effectiveIdempotencyKey}`,
+                processed_at: now,
+              },
+            },
+          },
+        });
+        await tx.carts.update({ where: { id: cart.id }, data: { status: 'CONVERTED' } });
+        return createdOrder;
+      });
+    } else {
+      // General admission keeps the batch transaction path; no seat inventory
+      // count must be checked here.
+      const [createdOrder] = await prisma.$transaction([
+        prisma.orders.create({
+          data: {
+            user_id: userId,
+            order_number: orderNumber,
+            status: 'PAID',
+            subtotal_amount: subtotal,
+            service_fee_amount: serviceFees,
+            total_amount: total,
+            buyer_email: buyerEmail || user.email,
+            buyer_phone: buyerPhone || user.phone,
+            buyer_document_type: user.document_type,
+            buyer_document_number: user.document_number,
+            order_items: { create: orderItemCreates },
+            payments: {
+              create: {
+                payment_method: paymentMethod || 'CARD',
+                status: 'PAID',
+                amount: total,
+                provider_reference: `SIMULATED:${effectiveIdempotencyKey}`,
+                processed_at: now,
+              },
+            },
+          },
+        }),
+        prisma.carts.update({ where: { id: cart.id }, data: { status: 'CONVERTED' } }),
+      ]);
+      order = createdOrder;
+    }
 
     res.json(formatCheckoutOrderResponse(order, false));
   } catch (error: any) {
+    if (error instanceof CheckoutSeatSaleConflictError) {
+      res.status(409).json({ error: error.message });
+      return;
+    }
     if (error?.code === 'P2002') {
       const userId = (req as any).userId;
       const requestedIdempotencyKey = normalizeIdempotencyKey(req.body?.idempotencyKey ?? req.headers['idempotency-key']);
