@@ -3,6 +3,7 @@ import test from 'node:test';
 import {
   buildCreatedTicketProjection,
   buildCursorUpdate,
+  buildListingCancellationProjection,
   buildListingProjection,
   buildOnchainEventIdentity,
   buildRedemptionProjection,
@@ -43,6 +44,27 @@ test('projects boleto_listado for the exact listed version', () => {
     data: {
       is_for_sale: true,
       resale_price: 25n,
+      lifecycle_reason: 'LISTED_FOR_RESALE',
+    },
+  });
+});
+
+test('projects venta_cancelada with an explicit listing cancellation reason', () => {
+  assert.deepEqual(buildListingCancellationProjection({
+    contractId: 'C_EVENT',
+    rootId: 10,
+    version: 2,
+  }), {
+    where: {
+      contract_address: 'C_EVENT',
+      ticket_root_id: 10,
+      status: 'ACTIVE',
+      version: 2,
+    },
+    data: {
+      is_for_sale: false,
+      resale_price: null,
+      lifecycle_reason: 'LISTING_CANCELLED',
     },
   });
 });
@@ -73,6 +95,7 @@ test('projects boleto_redimido as USED with used_at', () => {
       status: 'USED',
       used_at: usedAt,
       is_for_sale: false,
+      lifecycle_reason: 'REDEEMED_ONCHAIN',
     },
   });
 });

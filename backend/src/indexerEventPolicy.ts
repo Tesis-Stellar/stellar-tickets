@@ -69,6 +69,27 @@ export function buildListingProjection(input: {
     data: {
       is_for_sale: true,
       ...(input.resalePrice !== undefined ? { resale_price: input.resalePrice } : {}),
+      lifecycle_reason: 'LISTED_FOR_RESALE' as const,
+    },
+  };
+}
+
+export function buildListingCancellationProjection(input: {
+  contractId: string;
+  rootId: number;
+  version?: number;
+}) {
+  return {
+    where: {
+      contract_address: input.contractId,
+      ticket_root_id: input.rootId,
+      status: 'ACTIVE' as const,
+      ...(input.version !== undefined ? { version: input.version } : {}),
+    },
+    data: {
+      is_for_sale: false,
+      resale_price: null,
+      lifecycle_reason: 'LISTING_CANCELLED' as const,
     },
   };
 }
@@ -88,6 +109,7 @@ export function buildRedemptionProjection(input: {
       status: 'USED' as const,
       used_at: input.usedAt,
       is_for_sale: false,
+      lifecycle_reason: 'REDEEMED_ONCHAIN' as const,
     },
   };
 }

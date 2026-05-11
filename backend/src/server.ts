@@ -1751,7 +1751,7 @@ app.post('/api/admin/scan', scannerRateLimit, authMiddleware, async (req, res) =
     await prisma.$transaction([
       prisma.tickets.update({
         where: { id: scanDecision.ticketId },
-        data: { status: 'USED', used_at: new Date(), is_for_sale: false },
+        data: { status: 'USED', used_at: new Date(), is_for_sale: false, lifecycle_reason: 'REDEEMED_DB_SCAN' },
       }),
       prisma.checkins.create({
         data: {
@@ -2815,12 +2815,12 @@ app.get('/api/tickets', authMiddleware, async (req, res) => {
 app.get('/api/tickets/sold', authMiddleware, async (req, res) => {
   try {
     const userId = (req as any).userId;
-    // Sold tickets = CANCELLED + had a resale_price (distinguishes from invalidated)
+    // Sold tickets are previous versions explicitly replaced by a resale flow.
     const tickets = await prisma.tickets.findMany({
       where: {
         owner_user_id: userId,
         status: 'CANCELLED',
-        resale_price: { not: null },
+        lifecycle_reason: { in: ['RESOLD_PREVIOUS_VERSION', 'PRIMARY_P2P_REPLACED'] },
       },
       include: {
         order_items: {

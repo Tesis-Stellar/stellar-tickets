@@ -181,6 +181,7 @@ model tickets {
   nft_token_id     Int?
   qr_payload       String?
   status           ticket_status @default(ACTIVE)
+  lifecycle_reason ticket_lifecycle_reason?
   issued_at        DateTime      @default(now()) @db.Timestamptz(6)
   used_at          DateTime?     @db.Timestamptz(6)
   cancelled_at     DateTime?     @db.Timestamptz(6)
@@ -481,6 +482,21 @@ enum ticket_status {
   USED
   CANCELLED
   REFUNDED
+
+  @@schema("ticketing")
+}
+
+enum ticket_lifecycle_reason {
+  LISTED_FOR_RESALE
+  LISTING_CANCELLED
+  RESOLD_PREVIOUS_VERSION
+  PRIMARY_P2P_REPLACED
+  REDEEMED_DB_SCAN
+  REDEEMED_ONCHAIN
+  INVALIDATED_ONCHAIN
+  LEGACY_USED
+  LEGACY_CANCELLED
+  REFUNDED_PAYMENT
 
   @@schema("ticketing")
 }

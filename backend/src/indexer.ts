@@ -5,6 +5,7 @@ import { assertActivePreviousVersion, buildTicketVersionIdentity, resolveResaleV
 import {
   buildCreatedTicketProjection,
   buildCursorUpdate,
+  buildListingCancellationProjection,
   buildListingProjection,
   buildOnchainEventIdentity,
   buildRedemptionProjection,
@@ -177,15 +178,11 @@ export async function runIndexer() {
             // Topics: [venta_cancelada, ticket_root_id, id_evento]
             const rootId = Number(topics[1]);
             const cancelledVersion = data.version != null ? Number(data.version) : undefined;
-            await prisma.tickets.updateMany({
-              where: {
-                contract_address: contractId,
-                ticket_root_id: rootId,
-                status: 'ACTIVE',
-                ...(cancelledVersion !== undefined ? { version: cancelledVersion } : {}),
-              },
-              data: { is_for_sale: false, resale_price: null }
-            });
+            await prisma.tickets.updateMany(buildListingCancellationProjection({
+              contractId,
+              rootId,
+              version: cancelledVersion,
+            }));
             console.log(`[INDEXER] Cancelled listing root_id=${rootId}`);
           }
 
@@ -213,7 +210,7 @@ export async function runIndexer() {
               });
               await prisma.tickets.updateMany({
                 where: { contract_address: contractId, ticket_root_id: rootId, status: 'ACTIVE' },
-                data: { status: 'CANCELLED', is_for_sale: false }
+                data: { status: 'CANCELLED', is_for_sale: false, lifecycle_reason: 'PRIMARY_P2P_REPLACED' }
               });
               if (!alreadyCreated) {
                 await prisma.tickets.create({
@@ -271,7 +268,7 @@ export async function runIndexer() {
               await prisma.$transaction([
                 prisma.tickets.updateMany({
                   where: { ...previousIdentity, status: 'ACTIVE' },
-                  data: { status: 'CANCELLED', is_for_sale: false }
+                  data: { status: 'CANCELLED', is_for_sale: false, lifecycle_reason: 'RESOLD_PREVIOUS_VERSION' }
                 }),
                 prisma.tickets.create({
                   data: {
@@ -303,7 +300,7 @@ export async function runIndexer() {
             const rootId = Number(topics[1]);
             await prisma.tickets.updateMany({
               where: { contract_address: contractId, ticket_root_id: rootId, status: 'ACTIVE' },
-              data: { status: 'CANCELLED', is_for_sale: false }
+              data: { status: 'CANCELLED', is_for_sale: false, lifecycle_reason: 'INVALIDATED_ONCHAIN' }
             });
             console.log(`[INDEXER] Invalidated root_id=${rootId}`);
           }
