@@ -64,6 +64,28 @@ type TicketApiResponse = {
   qrPayload?: string | null;
 };
 
+type OrderApiResponse = {
+  id: string;
+  orderNumber?: string;
+  buyerEmail?: string;
+  buyerPhone?: string;
+  buyerDocument?: string;
+  createdAt?: string;
+  total?: number;
+  subtotal?: number;
+  serviceFees?: number;
+  status?: string;
+  items?: TicketApiResponse[];
+};
+
+type EventApiResponse = Omit<Partial<EventData>, "city" | "venue" | "organizer"> & {
+  posterImage?: string;
+  bannerImage?: string;
+  city?: string | { name?: unknown } | null;
+  venue?: string | { name?: unknown } | null;
+  organizer?: string | { name?: unknown } | null;
+};
+
 /* ── Sold ticket ── */
 export interface SoldTicket {
   id: string;
@@ -134,15 +156,25 @@ interface AppState {
   setWalletAddress: (address: string | null) => void;
   lastOrder: OrderData | null;
   apiFetch: <T>(path: string, init?: RequestInit) => Promise<T>;
+  getOrderById: (orderId: string) => Promise<OrderData>;
 }
 
 const AppContext = createContext<AppState | null>(null);
 
-const normalizeEventData = (event?: Partial<EventData>): EventData =>
+const textFromApiValue = (value: unknown, fallback: string) => {
+  if (typeof value === "string") return value;
+  if (value && typeof value === "object" && "name" in value) return String((value as { name?: unknown }).name ?? fallback);
+  return fallback;
+};
+
+const normalizeEventData = (event?: EventApiResponse): EventData =>
   ({
     ...event,
-    image: (event as any)?.posterImage || (event as any)?.bannerImage || event?.image || "https://placehold.co/800x500?text=Evento",
-    bannerImage: (event as any)?.bannerImage || (event as any)?.posterImage || event?.bannerImage || "https://placehold.co/1200x400?text=Evento",
+    city: textFromApiValue(event?.city, "Ciudad por confirmar"),
+    venue: textFromApiValue(event?.venue, "Venue por confirmar"),
+    organizer: textFromApiValue(event?.organizer, "Organizador por confirmar"),
+    image: event?.posterImage || event?.bannerImage || event?.image || "https://placehold.co/800x500?text=Evento",
+    bannerImage: event?.bannerImage || event?.posterImage || "https://placehold.co/1200x400?text=Evento",
   }) as EventData;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -294,6 +326,34 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     []
   );
 
+  const mapOrderResponse = useCallback(
+    (order: OrderApiResponse, fallbackBuyer?: { name?: string; email?: string; phone?: string; document?: string }): OrderData => ({
+      id: order.id,
+      orderNumber: order.orderNumber ?? `ORD-${order.id.slice(-6).toUpperCase()}`,
+      items: mapTicketsResponse(order.items ?? []),
+      buyerName: fallbackBuyer?.name ?? user?.name ?? "",
+      buyerEmail: order.buyerEmail ?? fallbackBuyer?.email ?? user?.email ?? "",
+      buyerPhone: order.buyerPhone ?? fallbackBuyer?.phone ?? user?.phone ?? "",
+      buyerDocument: order.buyerDocument ?? fallbackBuyer?.document ?? user?.document ?? "",
+      subtotal: order.subtotal ?? order.total ?? 0,
+      serviceFees: order.serviceFees ?? 0,
+      total: order.total ?? 0,
+      createdAt: order.createdAt ?? new Date().toISOString(),
+      status: order.status?.toLowerCase() === "pending" ? "pending" : "confirmed",
+    }),
+    [mapTicketsResponse, user]
+  );
+
+  const getOrderById = useCallback(
+    async (orderId: string) => {
+      const order = await apiFetch<OrderApiResponse>(`/api/orders/${orderId}`);
+      const mapped = mapOrderResponse(order);
+      setLastOrder(mapped);
+      return mapped;
+    },
+    [apiFetch, mapOrderResponse]
+  );
+
   const fetchPurchasedTicketsSnapshot = useCallback(async () => {
     const ticketsData = await apiFetch<TicketApiResponse[]>("/api/tickets");
     const mapped = mapTicketsResponse(ticketsData);
@@ -372,7 +432,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       }
 
       const ordersData = await load("órdenes", () =>
-        apiFetch<Array<{ id: string; orderNumber?: string; createdAt: string; total: number; subtotal?: number; serviceFees?: number; status?: string }>>("/api/orders")
+        apiFetch<OrderApiResponse[]>("/api/orders")
       );
       if (ordersData) {
         setOrders(
@@ -384,10 +444,10 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
             buyerEmail: user?.email ?? "",
             buyerPhone: user?.phone ?? "",
             buyerDocument: user?.document ?? "",
-            subtotal: order.subtotal ?? order.total,
+            subtotal: order.subtotal ?? order.total ?? 0,
             serviceFees: order.serviceFees ?? 0,
-            total: order.total,
-            createdAt: order.createdAt,
+            total: order.total ?? 0,
+            createdAt: order.createdAt ?? new Date().toISOString(),
             status: order.status?.toLowerCase() === "pending" ? "pending" : "confirmed",
           }))
         );
@@ -498,7 +558,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         method: "POST",
         body: JSON.stringify({ buyerEmail: buyerInfo.email, buyerPhone: buyerInfo.phone }),
       });
-      const orderResponse = await apiFetch<{ id?: string; orderNumber?: string; total?: number; subtotal?: number; serviceFees?: number; paymentMode?: "SIMULATED"; idempotentReplay?: boolean }>("/api/checkout/confirm", {
+      const orderResponse = await apiFetch<OrderApiResponse & { paymentMode?: "SIMULATED"; idempotentReplay?: boolean }>("/api/checkout/confirm", {
         method: "POST",
         headers: { "Idempotency-Key": idempotencyKey },
         body: JSON.stringify({
@@ -508,49 +568,19 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
           idempotencyKey,
         }),
       });
-      const subtotal = cart.reduce((s, c) => s + c.ticketType.price * c.quantity, 0);
-      const serviceFees = cart.reduce((s, c) => s + c.ticketType.serviceFee * c.quantity, 0);
-      const order: OrderData = {
-        id: orderResponse.id ?? `order-${Date.now()}`,
-        orderNumber: orderResponse.orderNumber ?? `EY-${Date.now().toString().slice(-8)}`,
-        items: [],
-        buyerName: buyerInfo.name,
-        buyerEmail: buyerInfo.email,
-        buyerPhone: buyerInfo.phone,
-        buyerDocument: buyerInfo.document,
-        subtotal: orderResponse.subtotal ?? subtotal,
-        serviceFees: orderResponse.serviceFees ?? serviceFees,
-        total: orderResponse.total ?? subtotal + serviceFees,
-        createdAt: new Date().toISOString(),
-        status: "confirmed",
-      };
+      const order = mapOrderResponse(orderResponse, buyerInfo);
       setLastOrder(order);
       setCart([]);
 
       // Refresh real tickets and orders from API to get DB UUIDs
-      const ordersData = await apiFetch<Array<{ id: string; orderNumber?: string; createdAt: string; total: number; subtotal?: number; serviceFees?: number; status?: string }>>("/api/orders");
+      const ordersData = await apiFetch<OrderApiResponse[]>("/api/orders");
       await refreshTickets();
 
-      setOrders(
-        ordersData.map((o) => ({
-          id: o.id,
-          orderNumber: o.orderNumber ?? `ORD-${o.id.slice(-6).toUpperCase()}`,
-          items: [],
-          buyerName: user?.name ?? "",
-          buyerEmail: user?.email ?? "",
-          buyerPhone: user?.phone ?? "",
-          buyerDocument: user?.document ?? "",
-          subtotal: o.subtotal ?? o.total,
-          serviceFees: o.serviceFees ?? 0,
-          total: o.total,
-          createdAt: o.createdAt,
-          status: o.status?.toLowerCase() === "pending" ? "pending" : "confirmed",
-        }))
-      );
+      setOrders(ordersData.map((o) => mapOrderResponse(o)));
 
       return order;
     },
-    [apiFetch, cart, refreshTickets, user?.document, user?.email, user?.name, user?.phone]
+    [apiFetch, cart, mapOrderResponse, refreshTickets]
   );
 
   const login = useCallback(
@@ -962,6 +992,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         setWalletAddress,
         lastOrder,
         apiFetch,
+        getOrderById,
       }}
     >
       {children}

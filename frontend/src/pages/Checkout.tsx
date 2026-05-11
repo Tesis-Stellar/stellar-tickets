@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Navigate, useNavigate, Link, useLocation } from "react-router-dom";
+import { Navigate, Link, useLocation } from "react-router-dom";
 import { Header } from "@/components/layout/Header";
 import { Footer } from "@/components/layout/Footer";
 import { CheckoutStepper } from "@/components/ui/CheckoutStepper";
@@ -17,11 +17,11 @@ const Field = ({ label, name, type = "text", placeholder = "", value, onChange, 
 
 const Checkout = () => {
   const { cart, checkout, isLoggedIn, authStatus } = useAppContext();
-  const navigate = useNavigate();
   const location = useLocation();
   const [step, setStep] = useState(1);
   const [form, setForm] = useState({ name: "", email: "", phone: "", document: "", docType: "CC", payMethod: "card", terms: false });
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [completedOrderId, setCompletedOrderId] = useState<string | null>(null);
 
   const subtotal = cart.reduce((s, c) => s + c.ticketType.price * c.quantity, 0);
   const fees = cart.reduce((s, c) => s + c.ticketType.serviceFee * c.quantity, 0);
@@ -69,13 +69,14 @@ const Checkout = () => {
         pse: "PSE",
         nequi: "CASHPOINT",
       };
-      await checkout({
+      const order = await checkout({
         name: form.name,
         email: form.email,
         phone: form.phone,
         document: `${form.docType} ${form.document}`,
         paymentMethod: paymentMap[form.payMethod] ?? "CARD",
       });
+      setCompletedOrderId(order?.id ?? null);
       setStep(3);
     }
   };
@@ -94,7 +95,7 @@ const Checkout = () => {
             <h1 className="text-2xl font-black text-foreground">Compra Simulada Exitosa</h1>
             <p className="text-sm text-muted-foreground">Tus boletos fueron emitidos en el entorno de demo. No se realizó ningún cargo real.</p>
             <div className="flex flex-col sm:flex-row gap-3">
-              <Link to="/confirmacion" className="flex-1 py-3 bg-primary text-primary-foreground font-bold rounded-lg text-center text-sm hover:bg-primary/90 transition-colors">Ver Confirmación</Link>
+              <Link to={completedOrderId ? `/confirmacion?orderId=${completedOrderId}` : "/confirmacion"} className="flex-1 py-3 bg-primary text-primary-foreground font-bold rounded-lg text-center text-sm hover:bg-primary/90 transition-colors">Ver Confirmación</Link>
               <Link to="/" className="flex-1 py-3 bg-secondary text-secondary-foreground font-bold rounded-lg text-center text-sm hover:bg-secondary/80 transition-colors">Seguir Comprando</Link>
             </div>
           </div>
