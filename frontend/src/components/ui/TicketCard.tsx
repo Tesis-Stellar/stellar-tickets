@@ -215,15 +215,10 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
       <div className="flex flex-col items-center justify-center sm:border-l sm:border-border sm:pl-4 min-w-[120px]">
         <div className="p-2 bg-white rounded-lg shadow-sm">
           <QRCodeCanvas
-            value={JSON.stringify(
-              ticket.contractAddress && ticket.ticketRootId != null
-                ? {
-                    contractAddress: ticket.contractAddress,
-                    ticketRootId: ticket.ticketRootId,
-                    version: ticket.version ?? 1,
-                  }
-                : { ticketId: ticket.id, code: ticket.ticketCode || ticket.id }
-            )}
+            value={
+              ticket.qrPayload ??
+              JSON.stringify({ ticketId: ticket.id, code: ticket.ticketCode || ticket.id })
+            }
             size={80}
             level={"H"}
             bgColor={"#ffffff"}

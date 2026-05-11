@@ -31,6 +31,7 @@ export interface PurchasedTicket {
   resalePrice?: number;
   nftContractAddress?: string | null;
   nftTokenId?: number | null;
+  qrPayload?: string | null;
 }
 
 /* ── Sold ticket ── */
@@ -228,7 +229,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   }, [refreshUserData, token]);
 
   const mapTicketsResponse = useCallback(
-    (ticketsData: Array<{ id: string; purchasedAt?: string; quantity: number; seatIds?: string[]; ticketType?: { id: string; name: string; price: number; serviceFee: number }; event?: Partial<EventData>; isSecuredOnChain?: boolean; isForSale?: boolean; contractAddress?: string; ticketRootId?: number; version?: number; ownerWallet?: string; resalePrice?: number | null }>): PurchasedTicket[] =>
+    (ticketsData: Array<{ id: string; purchasedAt?: string; quantity: number; seatIds?: string[]; ticketType?: { id: string; name: string; price: number; serviceFee: number }; event?: Partial<EventData>; isSecuredOnChain?: boolean; isForSale?: boolean; contractAddress?: string; ticketRootId?: number; version?: number; ownerWallet?: string; resalePrice?: number | null; qrPayload?: string | null }>): PurchasedTicket[] =>
       ticketsData.map((ticket) => ({
         id: ticket.id,
         event: normalizeEventData(ticket.event),
@@ -253,12 +254,13 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         resalePrice: ticket.resalePrice ?? undefined,
         nftContractAddress: (ticket as any).nftContractAddress ?? null,
         nftTokenId: (ticket as any).nftTokenId ?? null,
+        qrPayload: ticket.qrPayload ?? null,
       })),
     []
   );
 
   const refreshTickets = useCallback(async () => {
-    const ticketsData = await apiFetch<Array<{ id: string; purchasedAt?: string; quantity: number; seatIds?: string[]; ticketType?: { id: string; name: string; price: number; serviceFee: number }; event?: Partial<EventData>; isSecuredOnChain?: boolean; isForSale?: boolean; contractAddress?: string; ticketRootId?: number; version?: number; ownerWallet?: string; resalePrice?: number | null }>>("/api/tickets");
+    const ticketsData = await apiFetch<Array<{ id: string; purchasedAt?: string; quantity: number; seatIds?: string[]; ticketType?: { id: string; name: string; price: number; serviceFee: number }; event?: Partial<EventData>; isSecuredOnChain?: boolean; isForSale?: boolean; contractAddress?: string; ticketRootId?: number; version?: number; ownerWallet?: string; resalePrice?: number | null; qrPayload?: string | null }>>("/api/tickets");
     setPurchasedTickets(mapTicketsResponse(ticketsData));
   }, [apiFetch, mapTicketsResponse]);
 
@@ -337,7 +339,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       }
 
       const ticketsData = await load("tickets", () =>
-        apiFetch<Array<{ id: string; purchasedAt?: string; quantity: number; seatIds?: string[]; ticketType?: { id: string; name: string; price: number; serviceFee: number }; event?: Partial<EventData>; isSecuredOnChain?: boolean; isForSale?: boolean; contractAddress?: string; ticketRootId?: number; version?: number; ownerWallet?: string; resalePrice?: number | null }>>("/api/tickets")
+        apiFetch<Array<{ id: string; purchasedAt?: string; quantity: number; seatIds?: string[]; ticketType?: { id: string; name: string; price: number; serviceFee: number }; event?: Partial<EventData>; isSecuredOnChain?: boolean; isForSale?: boolean; contractAddress?: string; ticketRootId?: number; version?: number; ownerWallet?: string; resalePrice?: number | null; qrPayload?: string | null }>>("/api/tickets")
       );
       if (ticketsData) {
         setPurchasedTickets(mapTicketsResponse(ticketsData));

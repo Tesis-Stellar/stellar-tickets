@@ -91,9 +91,9 @@ test('POST /api/admin/scan validates malformed QR payloads for admins', async ()
   const res = await request(app)
     .post('/api/admin/scan')
     .set('Authorization', `Bearer ${tokenFor(admin.id)}`)
-    .send({ contractAddress: 'C_TEST', ticketRootId: 'abc' })
+    .send({ qrToken: 'not-a-token' })
     .expect(400);
-  assert.equal(res.body.error, 'Payload de QR invalido');
+  assert.equal(res.body.error, 'QR firmado invalido');
 });
 
 test('POST /api/transactions/transfer-nft requires authentication', async () => {

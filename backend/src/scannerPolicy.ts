@@ -1,8 +1,10 @@
+import { verifyTicketQr } from './qrPolicy';
+
 type TicketStatus = 'ACTIVE' | 'USED' | 'CANCELLED' | 'REFUNDED' | string;
 
 export type ScanRequest =
   | { kind: 'ticketId'; ticketId: string }
-  | { kind: 'contractTicket'; contractAddress: string; ticketRootId: number; version?: number };
+  | { kind: 'contractTicket'; contractAddress: string; ticketRootId: number; version: number; eventId: string; nonce: string; exp: number };
 
 export type ScanTicketSnapshot = {
   id: string;
@@ -21,27 +23,35 @@ export function authorizeScannerRole(role: string | null | undefined): ScanPolic
   return { ok: false, status: 403, error: 'Acceso denegado' };
 }
 
-export function parseScanRequest(body: Record<string, unknown>): ScanRequest | ScanPolicyError {
+export function parseScanRequest(body: Record<string, unknown>, options?: { qrSecret?: string }): ScanRequest | ScanPolicyError {
   if (typeof body.ticketId === 'string' && body.ticketId.trim()) {
     return { kind: 'ticketId', ticketId: body.ticketId.trim() };
   }
 
-  if (typeof body.contractAddress === 'string' && body.contractAddress.trim() && body.ticketRootId != null) {
-    const ticketRootId = Number(body.ticketRootId);
-    const version = body.version != null ? Number(body.version) : undefined;
-    if (!Number.isFinite(ticketRootId) || (version !== undefined && !Number.isFinite(version))) {
-      return { ok: false, status: 400, error: 'Payload de QR invalido' };
+  if (typeof body.qrToken === 'string' && body.qrToken.trim()) {
+    if (!options?.qrSecret) {
+      return { ok: false, status: 400, error: 'Configuracion de firma QR no disponible' };
     }
-
+    const verification = verifyTicketQr({ token: body.qrToken.trim(), secret: options.qrSecret });
+    if (!verification.ok) {
+      return verification;
+    }
     return {
       kind: 'contractTicket',
-      contractAddress: body.contractAddress.trim(),
-      ticketRootId,
-      ...(version !== undefined ? { version } : {}),
+      contractAddress: verification.claims.contractAddress,
+      ticketRootId: verification.claims.ticketRootId,
+      version: verification.claims.version,
+      eventId: verification.claims.eventId,
+      nonce: verification.claims.nonce,
+      exp: verification.claims.exp,
     };
   }
 
-  return { ok: false, status: 400, error: 'Se requiere ticketId o (contractAddress + ticketRootId)' };
+  if (typeof body.contractAddress === 'string' && body.contractAddress.trim() && body.ticketRootId != null) {
+    return { ok: false, status: 400, error: 'QR firmado requerido' };
+  }
+
+  return { ok: false, status: 400, error: 'Se requiere ticketId o qrToken firmado' };
 }
 
 export function evaluateScanTicket(ticket: ScanTicketSnapshot | null, requestedVersion?: number): ScanPolicyResult {

@@ -25,6 +25,7 @@ import { authorizeScannerRole, evaluateScanTicket, parseScanRequest } from './sc
 import { buildSimulatedOrderNumber, normalizeIdempotencyKey } from './checkoutPolicy';
 import { deriveChainEventId } from './secureTicketPolicy';
 import { createWalletChallenge, verifyWalletChallengeSignature } from './walletChallengePolicy';
+import { signTicketQr } from './qrPolicy';
 import { exec } from 'child_process';
 import util from 'util';
 import QRCode from 'qrcode';
@@ -54,6 +55,7 @@ if (!configuredJwtSecret) {
   console.warn('[WARN] JWT_SECRET is not set. Using insecure development fallback; do not use this in shared, demo, or production environments.');
 }
 const JWT_EXPIRES_IN = '7d';
+const QR_SIGNING_SECRET = process.env.QR_SIGNING_SECRET || EFFECTIVE_JWT_SECRET;
 
 // Soroban / Stellar config
 const SOROBAN_RPC_URL = process.env.SOROBAN_RPC_URL || 'https://soroban-testnet.stellar.org';
@@ -186,6 +188,22 @@ async function buildTicketQrPng(payload: object): Promise<Buffer> {
   });
 }
 
+function buildSignedTicketQrPayload(input: {
+  contractAddress: string;
+  ticketRootId: number;
+  version: number;
+  eventId: string;
+}): { qrToken: string } {
+  return {
+    qrToken: signTicketQr({
+      secret: QR_SIGNING_SECRET,
+      contractAddress: input.contractAddress,
+      ticketRootId: input.ticketRootId,
+      version: input.version,
+      eventId: input.eventId,
+    }),
+  };
+}
 
 // GET /api/tickets/qr/:assetCode.png — public PNG referenced by stellar.toml.
 // QR encodes { contractAddress, ticketRootId } so the door scanner can resolve
@@ -200,10 +218,32 @@ app.get('/api/tickets/qr/:assetCode.png', async (req, res) => {
 
     const ticket = await prisma.tickets.findFirst({
       where: { asset_code: assetCode, contract_address: { not: null } },
-      select: { contract_address: true, ticket_root_id: true } as any,
+      select: {
+        contract_address: true,
+        ticket_root_id: true,
+        order_items: {
+          select: {
+            event_ticket_types: {
+              select: { event_id: true },
+            },
+          },
+        },
+      } as any,
     });
     if (!ticket?.contract_address || (ticket as any).ticket_root_id == null) {
       res.status(404).type('text/plain').send('Ticket not found');
+      return;
+    }
+    let eventId = (ticket as any).order_items?.event_ticket_types?.event_id as string | undefined;
+    if (!eventId) {
+      const event = await prisma.events.findFirst({
+        where: { contract_address: ticket.contract_address } as any,
+        select: { id: true } as any,
+      });
+      eventId = (event as any)?.id;
+    }
+    if (!eventId) {
+      res.status(404).type('text/plain').send('Event not found');
       return;
     }
     const live = await prisma.tickets.findFirst({
@@ -219,11 +259,12 @@ app.get('/api/tickets/qr/:assetCode.png', async (req, res) => {
     const cacheKey = `${assetCode}:v${version}`;
 
     if (!qrCache.has(cacheKey)) {
-      const buf = await buildTicketQrPng({
+      const buf = await buildTicketQrPng(buildSignedTicketQrPayload({
         contractAddress: ticket.contract_address,
         ticketRootId: (ticket as any).ticket_root_id,
         version,
-      });
+        eventId,
+      }));
       qrCache.set(cacheKey, buf);
     }
 
@@ -1329,7 +1370,7 @@ app.get('/api/nft/qr/:nftContractAddress/:tokenIdRaw', async (req, res) => {
     }
     const event = await prisma.events.findFirst({
       where: { nft_contract_address: nftContractAddress } as any,
-      select: { contract_address: true } as any,
+      select: { id: true, contract_address: true } as any,
     });
     const eventContract = (event as any)?.contract_address as string | null | undefined;
     if (!eventContract) {
@@ -1348,11 +1389,12 @@ app.get('/api/nft/qr/:nftContractAddress/:tokenIdRaw', async (req, res) => {
     const version = (live as any)?.version ?? 1;
     const cacheKey = `nft:${nftContractAddress}:${tokenId}:v${version}`;
     if (!qrCache.has(cacheKey)) {
-      const buf = await buildTicketQrPng({
+      const buf = await buildTicketQrPng(buildSignedTicketQrPayload({
         contractAddress: eventContract,
         ticketRootId: tokenId,
         version,
-      });
+        eventId: (event as any).id,
+      }));
       qrCache.set(cacheKey, buf);
     }
     res.setHeader('Cache-Control', 'public, max-age=60, must-revalidate');
@@ -1428,9 +1470,9 @@ app.post('/api/admin/scan', authMiddleware, async (req, res) => {
     }
 
     // Accept either:
-    //   { ticketId }                          <- legacy QR (DB UUID, version-bound)
-    //   { contractAddress, ticketRootId }     <- NFT QR, resolved to the latest ticket version.
-    const scanRequest = parseScanRequest(req.body);
+    //   { ticketId }   <- legacy QR (DB UUID, version-bound)
+    //   { qrToken }   <- signed NFT QR with contractAddress, ticketRootId, version, eventId, exp and nonce.
+    const scanRequest = parseScanRequest(req.body, { qrSecret: QR_SIGNING_SECRET });
     if ('ok' in scanRequest) {
       res.status(scanRequest.status).json({ error: scanRequest.error });
       return;
@@ -1443,6 +1485,17 @@ app.post('/api/admin/scan', authMiddleware, async (req, res) => {
       ticket = await prisma.tickets.findUnique({ where: { id: scanRequest.ticketId } });
     } else {
       requestedVersion = scanRequest.version;
+      const event = await prisma.events.findFirst({
+        where: {
+          id: scanRequest.eventId,
+          contract_address: scanRequest.contractAddress,
+        } as any,
+        select: { id: true } as any,
+      });
+      if (!event) {
+        res.status(409).json({ error: 'QR no corresponde al evento del contrato' });
+        return;
+      }
       // Resolve the latest version for this root. Status is checked below so
       // duplicate scans return 409 instead of looking like a missing ticket.
       ticket = await prisma.tickets.findFirst({
@@ -2307,6 +2360,14 @@ app.get('/api/tickets', authMiddleware, async (req, res) => {
     res.json(tickets.map((t) => {
       const tt = t.order_items?.event_ticket_types ?? t.order_items?.event_seat_inventory?.event_ticket_types;
       const evt = tt?.events;
+      const signedQrPayload = t.contract_address && t.ticket_root_id != null && t.version != null && evt?.id
+        ? JSON.stringify(buildSignedTicketQrPayload({
+            contractAddress: t.contract_address,
+            ticketRootId: t.ticket_root_id,
+            version: t.version,
+            eventId: evt.id,
+          }))
+        : t.qr_payload;
       return {
         id: t.id,
         ticketCode: t.ticket_code,
@@ -2329,6 +2390,7 @@ app.get('/api/tickets', authMiddleware, async (req, res) => {
         resalePrice: t.resale_price ? Number(t.resale_price) : null,
         nftContractAddress: (evt as any)?.nft_contract_address ?? null,
         nftTokenId: (t as any).nft_token_id ?? null,
+        qrPayload: signedQrPayload,
       };
     }));
   } catch (error: any) {

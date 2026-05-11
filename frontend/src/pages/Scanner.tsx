@@ -29,11 +29,15 @@ export const ScannerPage = () => {
       // Attempt to parse JSON
       const payload = JSON.parse(value);
 
-      // New format (Freighter collectible QR): { contractAddress, ticketRootId }
+      // Signed format: { qrToken }
+      // Legacy format (old collectible QR): { contractAddress, ticketRootId } is rejected by backend.
       // Legacy format (in-app QR): { ticketId, code? }
       let body: Record<string, unknown>;
       let label: string;
-      if (payload.contractAddress && payload.ticketRootId != null) {
+      if (payload.qrToken) {
+        body = { qrToken: payload.qrToken };
+        label = "QR firmado";
+      } else if (payload.contractAddress && payload.ticketRootId != null) {
         body = {
           contractAddress: payload.contractAddress,
           ticketRootId: payload.ticketRootId,

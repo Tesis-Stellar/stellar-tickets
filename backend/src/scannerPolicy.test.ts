@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { authorizeScannerRole, evaluateScanTicket, parseScanRequest } from './scannerPolicy';
+import { signTicketQr } from './qrPolicy';
 
 test('authorizes ADMIN and STAFF but rejects regular customers', () => {
   assert.equal(authorizeScannerRole('ADMIN'), null);
@@ -16,13 +17,43 @@ test('rejects invalid scan payloads', () => {
   assert.deepEqual(parseScanRequest({}), {
     ok: false,
     status: 400,
-    error: 'Se requiere ticketId o (contractAddress + ticketRootId)',
+    error: 'Se requiere ticketId o qrToken firmado',
   });
 
   assert.deepEqual(parseScanRequest({ contractAddress: 'CABC', ticketRootId: 'abc' }), {
     ok: false,
     status: 400,
-    error: 'Payload de QR invalido',
+    error: 'QR firmado requerido',
+  });
+});
+
+test('accepts signed QR tokens and extracts ticket identity', () => {
+  const token = signTicketQr({
+    secret: 'scanner-secret',
+    contractAddress: 'CABC',
+    ticketRootId: 123,
+    version: 2,
+    eventId: 'event-1',
+    nonce: 'nonce-1',
+    now: new Date('2026-05-11T00:00:00.000Z'),
+  });
+
+  assert.deepEqual(parseScanRequest({ qrToken: token }, { qrSecret: 'scanner-secret' }), {
+    kind: 'contractTicket',
+    contractAddress: 'CABC',
+    ticketRootId: 123,
+    version: 2,
+    eventId: 'event-1',
+    nonce: 'nonce-1',
+    exp: 1778544000,
+  });
+});
+
+test('rejects unsigned or altered QR tokens', () => {
+  assert.deepEqual(parseScanRequest({ qrToken: 'not-a-token' }, { qrSecret: 'scanner-secret' }), {
+    ok: false,
+    status: 400,
+    error: 'QR firmado invalido',
   });
 });
 
