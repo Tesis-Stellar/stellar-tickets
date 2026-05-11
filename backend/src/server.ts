@@ -1,6 +1,6 @@
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
-import { PrismaClient } from '@prisma/client';
+import { Prisma, PrismaClient } from '@prisma/client';
 import dotenv from 'dotenv';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
@@ -31,7 +31,7 @@ import { authorizeTransactionIntentCurrentState, authorizeTransactionIntentSubmi
 import { authorizeSingleEventDeploy } from './deployEventPolicy';
 import { codeForStatus, requestIdMiddleware, sendApiError } from './apiError';
 import { evaluateRateLimit, isCorsOriginAllowed, isJwtSecretStrong, parseCorsOrigins, type RateLimitBucket } from './securityPolicy';
-import { buildSeatHoldExpiration, evaluateAtomicSeatSale, isSeatReservable } from './seatHoldPolicy';
+import { buildSeatHoldExpiration, isSeatReservable } from './seatHoldPolicy';
 import { exec } from 'child_process';
 import util from 'util';
 import QRCode from 'qrcode';
@@ -2146,6 +2146,34 @@ function isSeatHoldAvailabilityDatabaseError(error: any) {
   return message.includes('is not available for holding');
 }
 
+function isCheckoutSeatSaleDatabaseConflict(error: any) {
+  const message = `${String(error?.message ?? '')} ${String(error?.meta?.message ?? '')} ${String(error?.meta?.error ?? '')}`;
+  return message.includes('division by zero');
+}
+
+function markHeldSeatInventoryAsSoldOrFail(inventoryIds: string[], expectedCount: number, now: Date) {
+  const inventoryIdSql = inventoryIds.map((id) => Prisma.sql`${id}::uuid`);
+  return prisma.$executeRaw`
+    WITH updated AS (
+      UPDATE ticketing.event_seat_inventory
+         SET status = 'SOLD'::ticketing.seat_inventory_status,
+             updated_at = ${now}
+       WHERE id IN (${Prisma.join(inventoryIdSql)})
+         AND status = 'HELD'::ticketing.seat_inventory_status
+       RETURNING id
+    ),
+    checked AS (
+      SELECT COUNT(*)::int AS sold_count
+        FROM updated
+    )
+    SELECT CASE
+             WHEN sold_count = ${expectedCount} THEN 1
+             ELSE 1 / (sold_count - sold_count)
+           END
+      FROM checked
+  `;
+}
+
 async function releaseExpiredSeatHolds(now = new Date()) {
   const expiredHolds = await prisma.seat_holds.findMany({
     where: { status: 'ACTIVE', expires_at: { lte: now } },
@@ -2621,25 +2649,17 @@ app.post('/api/checkout/confirm', authMiddleware, async (req, res) => {
 
     let order;
     if (seatInventoryIdsToSell.length > 0) {
-      order = await prisma.$transaction(async (tx) => {
-        await tx.seat_holds.updateMany({
+      const [, , createdOrder] = await prisma.$transaction([
+        markHeldSeatInventoryAsSoldOrFail(seatInventoryIdsToSell, seatInventoryIdsToSell.length, now),
+        prisma.seat_holds.updateMany({
           where: {
             cart_id: cart.id,
             event_seat_inventory_id: { in: seatInventoryIdsToSell },
             status: 'ACTIVE',
           },
           data: { status: 'CONSUMED', updated_at: now },
-        });
-        const soldSeats = await tx.event_seat_inventory.updateMany({
-          where: { id: { in: seatInventoryIdsToSell }, status: 'HELD' },
-          data: { status: 'SOLD', updated_at: now },
-        });
-
-        if (evaluateAtomicSeatSale(seatInventoryIdsToSell.length, soldSeats.count) !== 'OK') {
-          throw new CheckoutSeatSaleConflictError();
-        }
-
-        const createdOrder = await tx.orders.create({
+        }),
+        prisma.orders.create({
           data: {
             user_id: userId,
             order_number: orderNumber,
@@ -2662,10 +2682,10 @@ app.post('/api/checkout/confirm', authMiddleware, async (req, res) => {
               },
             },
           },
-        });
-        await tx.carts.update({ where: { id: cart.id }, data: { status: 'CONVERTED' } });
-        return createdOrder;
-      });
+        }),
+        prisma.carts.update({ where: { id: cart.id }, data: { status: 'CONVERTED' } }),
+      ]);
+      order = createdOrder;
     } else {
       // General admission keeps the batch transaction path; no seat inventory
       // count must be checked here.
@@ -2706,8 +2726,8 @@ app.post('/api/checkout/confirm', authMiddleware, async (req, res) => {
 
     res.json(formatCheckoutOrderResponse(fullOrder ?? order, false));
   } catch (error: any) {
-    if (error instanceof CheckoutSeatSaleConflictError) {
-      sendApiError(req, res, 409, 'CONFLICT', error.message);
+    if (error instanceof CheckoutSeatSaleConflictError || isCheckoutSeatSaleDatabaseConflict(error)) {
+      sendApiError(req, res, 409, 'CONFLICT', 'La reserva de uno o más asientos expiró o ya no está disponible');
       return;
     }
     if (error?.code === 'P2002') {
