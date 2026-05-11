@@ -797,13 +797,13 @@ app.post('/api/transactions/buy', async (req, res) => {
 app.post('/api/transactions/secure-ticket', authMiddleware, async (req, res) => {
   try {
     if (!organizerKeypair) {
-      res.status(503).json({ error: 'Blockchain no configurada (falta ORGANIZER_SECRET)' });
+      sendApiError(req, res, 503, 'BLOCKCHAIN_NOT_CONFIGURED', 'Blockchain no configurada');
       return;
     }
 
     const { ticketId } = req.body;
     if (!ticketId) {
-      res.status(400).json({ error: 'ticketId es requerido' });
+      sendApiError(req, res, 400, 'BAD_REQUEST', 'ticketId es requerido');
       return;
     }
 
@@ -829,15 +829,15 @@ app.post('/api/transactions/secure-ticket', authMiddleware, async (req, res) => 
     });
 
     if (!ticket) {
-      res.status(404).json({ error: 'Ticket no encontrado' });
+      sendApiError(req, res, 404, 'NOT_FOUND', 'Ticket no encontrado');
       return;
     }
     if (ticket.owner_user_id !== (req as any).userId) {
-      res.status(403).json({ error: 'No autorizado' });
+      sendApiError(req, res, 403, 'FORBIDDEN', 'No autorizado');
       return;
     }
     if (ticket.contract_address) {
-      res.status(409).json({ error: 'Ticket ya asegurado en blockchain', txHash: ticket.contract_address });
+      sendApiError(req, res, 409, 'CONFLICT', 'Ticket ya asegurado en blockchain');
       return;
     }
 
@@ -846,14 +846,14 @@ app.post('/api/transactions/secure-ticket', authMiddleware, async (req, res) => 
       select: { wallet_address: true },
     });
     if (!ownerUser?.wallet_address) {
-      res.status(400).json({ error: 'Debes vincular una wallet antes de asegurar el ticket en blockchain' });
+      sendApiError(req, res, 400, 'BAD_REQUEST', 'Debes vincular una wallet antes de asegurar el ticket en blockchain');
       return;
     }
 
     const ticketType = ticket.order_items?.event_ticket_types ?? ticket.order_items?.event_seat_inventory?.event_ticket_types;
     const event = ticketType?.events;
     if (!event?.contract_address) {
-      res.status(400).json({ error: 'Evento sin contrato desplegado' });
+      sendApiError(req, res, 400, 'BAD_REQUEST', 'Evento sin contrato desplegado');
       return;
     }
 
@@ -873,7 +873,7 @@ app.post('/api/transactions/secure-ticket', authMiddleware, async (req, res) => 
     // that any future secondary sale correctly distributes commissions.
     const buyerWallet = ownerUser?.wallet_address;
     if (!buyerWallet) {
-      res.status(400).json({ error: 'El usuario no tiene wallet vinculada. Vincula tu wallet primero.' });
+      sendApiError(req, res, 400, 'BAD_REQUEST', 'El usuario no tiene wallet vinculada. Vincula tu wallet primero.');
       return;
     }
 
@@ -903,7 +903,7 @@ app.post('/api/transactions/secure-ticket', authMiddleware, async (req, res) => 
     const simResponse = await sorobanServer.simulateTransaction(tx);
     if (SorobanRpc.Api.isSimulationError(simResponse)) {
       console.error('[SOROBAN] Simulation failed:', (simResponse as any).error);
-      res.status(500).json({ error: 'Error en simulación blockchain' });
+      sendApiError(req, res, 400, 'SOROBAN_SIMULATION_FAILED', 'No fue posible preparar la transaccion blockchain');
       return;
     }
     // Warn if contract entries need restoration (TTL expired)
@@ -919,7 +919,7 @@ app.post('/api/transactions/secure-ticket', authMiddleware, async (req, res) => 
     const sendResponse = await sorobanServer.sendTransaction(assembled);
     if (sendResponse.status === 'ERROR') {
       console.error('[SOROBAN] Send failed:', sendResponse);
-      res.status(500).json({ error: 'Error enviando transacción a la red' });
+      sendApiError(req, res, 400, 'SOROBAN_REJECTED', 'La red rechazo la transaccion');
       return;
     }
 
@@ -989,12 +989,7 @@ app.post('/api/transactions/secure-ticket', authMiddleware, async (req, res) => 
       console.error('[SOROBAN] result XDR base64:', resB64);
       console.error('[SOROBAN] Diagnostic events:', diagnosticSummary.length ? diagnosticSummary : '(vacío)');
 
-      res.status(500).json({
-        error: 'Transacción blockchain fallida',
-        detail: getResponse.status,
-        diagnostics: diagnosticSummary,
-        metaXdr: metaB64,
-      });
+      sendApiError(req, res, 400, 'SOROBAN_FAILED', `Transaccion blockchain fallida: ${getResponse.status}`);
       return;
     }
 
@@ -1068,7 +1063,7 @@ app.post('/api/transactions/secure-ticket', authMiddleware, async (req, res) => 
     });
   } catch (error: any) {
     console.error('[SOROBAN] secure-ticket error:', error);
-    res.status(500).json({ error: error.message });
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error asegurando ticket en blockchain');
   }
 });
 
@@ -1085,23 +1080,23 @@ app.post('/api/transactions/list-ticket', authMiddleware, async (req, res) => {
   try {
     const { ticketId, price } = req.body; // price in XLM stroops (1 XLM = 10_000_000)
     if (!ticketId || !price || price <= 0) {
-      res.status(400).json({ error: 'ticketId y price son requeridos' });
+      sendApiError(req, res, 400, 'BAD_REQUEST', 'ticketId y price son requeridos');
       return;
     }
 
     const user = await prisma.users.findUnique({ where: { id: (req as any).userId }, select: { wallet_address: true } });
     if (!user?.wallet_address) {
-      res.status(400).json({ error: 'Debes vincular una wallet antes de listar un ticket' });
+      sendApiError(req, res, 400, 'BAD_REQUEST', 'Debes vincular una wallet antes de listar un ticket');
       return;
     }
 
     const ticket = await prisma.tickets.findUnique({ where: { id: ticketId } });
-    if (!ticket) { res.status(404).json({ error: 'Ticket no encontrado' }); return; }
-    if (ticket.owner_user_id !== (req as any).userId) { res.status(403).json({ error: 'No autorizado' }); return; }
-    if (!ticket.contract_address || ticket.ticket_root_id === null) { res.status(400).json({ error: 'Ticket no registrado en blockchain' }); return; }
-    if (ticket.is_for_sale) { res.status(409).json({ error: 'Ticket ya está en venta' }); return; }
+    if (!ticket) { sendApiError(req, res, 404, 'NOT_FOUND', 'Ticket no encontrado'); return; }
+    if (ticket.owner_user_id !== (req as any).userId) { sendApiError(req, res, 403, 'FORBIDDEN', 'No autorizado'); return; }
+    if (!ticket.contract_address || ticket.ticket_root_id === null) { sendApiError(req, res, 400, 'BAD_REQUEST', 'Ticket no registrado en blockchain'); return; }
+    if (ticket.is_for_sale) { sendApiError(req, res, 409, 'CONFLICT', 'Ticket ya está en venta'); return; }
     if (!ticket.owner_wallet || ticket.owner_wallet !== user.wallet_address) {
-      res.status(403).json({ error: 'La wallet vinculada no coincide con el propietario on-chain registrado' });
+      sendApiError(req, res, 403, 'FORBIDDEN', 'La wallet vinculada no coincide con el propietario on-chain registrado');
       return;
     }
 
@@ -1129,7 +1124,7 @@ app.post('/api/transactions/list-ticket', authMiddleware, async (req, res) => {
     if (SorobanRpc.Api.isSimulationError(simResponse)) {
       const simError = (simResponse as any).error || 'desconocido';
       console.error('[SOROBAN] List simulation failed:', simError);
-      res.status(400).json({ error: 'No fue posible preparar la firma de reventa: ' + simError });
+      sendApiError(req, res, 400, 'SOROBAN_SIMULATION_FAILED', 'No fue posible preparar la firma de reventa');
       return;
     }
 
@@ -1147,7 +1142,7 @@ app.post('/api/transactions/list-ticket', authMiddleware, async (req, res) => {
     res.json({ xdr: assembled.toXDR(), networkPassphrase: NETWORK_PASSPHRASE, intentId: intent.id, intentExpiresAt: intent.expires_at });
   } catch (error: any) {
     console.error('[SOROBAN] list-ticket error:', error);
-    res.status(500).json({ error: error.message });
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error preparando reventa');
   }
 });
 
@@ -1156,23 +1151,23 @@ app.post('/api/transactions/cancel-listing', authMiddleware, async (req, res) =>
   try {
     const { ticketId } = req.body;
     if (!ticketId) {
-      res.status(400).json({ error: 'ticketId es requerido' });
+      sendApiError(req, res, 400, 'BAD_REQUEST', 'ticketId es requerido');
       return;
     }
 
     const user = await prisma.users.findUnique({ where: { id: (req as any).userId }, select: { wallet_address: true } });
     if (!user?.wallet_address) {
-      res.status(400).json({ error: 'Debes vincular una wallet antes de cancelar una reventa' });
+      sendApiError(req, res, 400, 'BAD_REQUEST', 'Debes vincular una wallet antes de cancelar una reventa');
       return;
     }
 
     const ticket = await prisma.tickets.findUnique({ where: { id: ticketId } });
-    if (!ticket) { res.status(404).json({ error: 'Ticket no encontrado' }); return; }
-    if (ticket.owner_user_id !== (req as any).userId) { res.status(403).json({ error: 'No autorizado' }); return; }
-    if (!ticket.contract_address || ticket.ticket_root_id === null) { res.status(400).json({ error: 'Ticket no registrado en blockchain' }); return; }
-    if (!ticket.is_for_sale) { res.status(409).json({ error: 'Ticket no está en venta' }); return; }
+    if (!ticket) { sendApiError(req, res, 404, 'NOT_FOUND', 'Ticket no encontrado'); return; }
+    if (ticket.owner_user_id !== (req as any).userId) { sendApiError(req, res, 403, 'FORBIDDEN', 'No autorizado'); return; }
+    if (!ticket.contract_address || ticket.ticket_root_id === null) { sendApiError(req, res, 400, 'BAD_REQUEST', 'Ticket no registrado en blockchain'); return; }
+    if (!ticket.is_for_sale) { sendApiError(req, res, 409, 'CONFLICT', 'Ticket no está en venta'); return; }
     if (!ticket.owner_wallet || ticket.owner_wallet !== user.wallet_address) {
-      res.status(403).json({ error: 'La wallet vinculada no coincide con el propietario on-chain registrado' });
+      sendApiError(req, res, 403, 'FORBIDDEN', 'La wallet vinculada no coincide con el propietario on-chain registrado');
       return;
     }
 
@@ -1199,7 +1194,7 @@ app.post('/api/transactions/cancel-listing', authMiddleware, async (req, res) =>
     if (SorobanRpc.Api.isSimulationError(simResponse)) {
       const simError = (simResponse as any).error || 'desconocido';
       console.error('[SOROBAN] Cancel listing simulation failed:', simError);
-      res.status(400).json({ error: 'No fue posible preparar la firma de cancelación: ' + simError });
+      sendApiError(req, res, 400, 'SOROBAN_SIMULATION_FAILED', 'No fue posible preparar la firma de cancelación');
       return;
     }
 
@@ -1216,7 +1211,7 @@ app.post('/api/transactions/cancel-listing', authMiddleware, async (req, res) =>
     res.json({ xdr: assembled.toXDR(), networkPassphrase: NETWORK_PASSPHRASE, intentId: intent.id, intentExpiresAt: intent.expires_at });
   } catch (error: any) {
     console.error('[SOROBAN] cancel-listing error:', error);
-    res.status(500).json({ error: error.message });
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error preparando cancelacion de reventa');
   }
 });
 
@@ -1226,17 +1221,17 @@ app.post('/api/transactions/build-buy-xdr', authMiddleware, async (req, res) => 
     const userId = (req as any).userId;
     const { contractAddress, ticketRootId, buyerPublicKey } = req.body;
     if (!contractAddress || ticketRootId === undefined || !buyerPublicKey) {
-      res.status(400).json({ error: 'contractAddress, ticketRootId y buyerPublicKey son requeridos' });
+      sendApiError(req, res, 400, 'BAD_REQUEST', 'contractAddress, ticketRootId y buyerPublicKey son requeridos');
       return;
     }
 
     const user = await prisma.users.findUnique({ where: { id: userId }, select: { wallet_address: true } });
     if (!user?.wallet_address) {
-      res.status(400).json({ error: 'Debes vincular una wallet antes de construir una transacción' });
+      sendApiError(req, res, 400, 'BAD_REQUEST', 'Debes vincular una wallet antes de construir una transacción');
       return;
     }
     if (buyerPublicKey !== user.wallet_address) {
-      res.status(403).json({ error: 'buyerPublicKey no coincide con la wallet vinculada al usuario' });
+      sendApiError(req, res, 403, 'FORBIDDEN', 'buyerPublicKey no coincide con la wallet vinculada al usuario');
       return;
     }
 
@@ -1245,7 +1240,7 @@ app.post('/api/transactions/build-buy-xdr', authMiddleware, async (req, res) => 
       where: { contract_address: contractAddress, ticket_root_id: ticketRootId, is_for_sale: true, status: 'ACTIVE' },
     });
     if (!ticket) {
-      res.status(404).json({ error: 'Ticket no está en venta' });
+      sendApiError(req, res, 404, 'NOT_FOUND', 'Ticket no está en venta');
       return;
     }
 
@@ -1276,14 +1271,14 @@ app.post('/api/transactions/build-buy-xdr', authMiddleware, async (req, res) => 
       console.error('[SOROBAN] Buy simulation failed:', simError);
       // Parse common errors for user-friendly messages
       if (simError.includes('not within the allowed range') || simError.includes('balance')) {
-        res.status(400).json({ error: 'Saldo insuficiente en tu billetera Stellar. Necesitas más XLM para completar la compra. Puedes obtener XLM de prueba en friendbot.stellar.org' });
+        sendApiError(req, res, 400, 'BAD_REQUEST', 'Saldo insuficiente en tu billetera Stellar. Necesitas más XLM para completar la compra.');
         return;
       }
       if (simError.includes('#8')) {
-        res.status(400).json({ error: 'No puedes comprar tu propio boleto' });
+        sendApiError(req, res, 400, 'BAD_REQUEST', 'No puedes comprar tu propio boleto');
         return;
       }
-      res.status(500).json({ error: 'Error en simulación: ' + simError });
+      sendApiError(req, res, 400, 'SOROBAN_SIMULATION_FAILED', 'No fue posible preparar la firma de compra');
       return;
     }
 
@@ -1305,7 +1300,7 @@ app.post('/api/transactions/build-buy-xdr', authMiddleware, async (req, res) => 
     res.json({ xdr: xdrBase64, networkPassphrase: NETWORK_PASSPHRASE, intentId: intent.id, intentExpiresAt: intent.expires_at });
   } catch (error: any) {
     console.error('[SOROBAN] build-buy-xdr error:', error);
-    res.status(500).json({ error: error.message });
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error preparando compra de reventa');
   }
 });
 
@@ -1628,20 +1623,20 @@ app.post('/api/transactions/submit-classic', transactionRateLimit, authMiddlewar
   try {
     const userId = (req as any).userId;
     const { signedXdr } = req.body;
-    if (!signedXdr) { res.status(400).json({ error: 'signedXdr es requerido' }); return; }
+    if (!signedXdr) { sendApiError(req, res, 400, 'BAD_REQUEST', 'signedXdr es requerido'); return; }
 
     const user = await prisma.users.findUnique({ where: { id: userId }, select: { wallet_address: true } });
     if (!user?.wallet_address) {
-      res.status(400).json({ error: 'Debes vincular una wallet antes de enviar una transacción' });
+      sendApiError(req, res, 400, 'BAD_REQUEST', 'Debes vincular una wallet antes de enviar una transacción');
       return;
     }
 
     const tx = TransactionBuilder.fromXDR(signedXdr, NETWORK_PASSPHRASE);
     if (tx instanceof FeeBumpTransaction) {
-      res.status(400).json({ error: 'Fee-bump no soportado' }); return;
+      sendApiError(req, res, 400, 'BAD_REQUEST', 'Fee-bump no soportado'); return;
     }
     if (tx.source !== user.wallet_address) {
-      res.status(403).json({ error: 'La transacción no corresponde a tu wallet' });
+      sendApiError(req, res, 403, 'FORBIDDEN', 'La transacción no corresponde a tu wallet');
       return;
     }
 
@@ -1650,7 +1645,7 @@ app.post('/api/transactions/submit-classic', transactionRateLimit, authMiddlewar
   } catch (error: any) {
     const data = error?.response?.data;
     console.error('[CLASSIC] submit error:', data ?? error?.message);
-    res.status(500).json({ error: error.message ?? 'Error enviando transacción clásica', detail: data });
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error enviando transacción clásica');
   }
 });
 
@@ -2235,7 +2230,7 @@ app.get('/api/cart', authMiddleware, async (req, res) => {
     res.json((cart?.cart_items ?? []).map(toCartItemDto));
   } catch (error: any) {
     console.error('[CART] GET error:', error);
-    res.status(500).json({ error: error.message });
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error obteniendo carrito');
   }
 });
 
@@ -2249,13 +2244,13 @@ app.post('/api/cart/items', authMiddleware, async (req, res) => {
     const { ticketTypeId, quantity, seatIds } = req.body;
     await releaseExpiredSeatHolds();
     if (!ticketTypeId) {
-      res.status(400).json({ error: 'ticketTypeId es requerido' });
+      sendApiError(req, res, 400, 'BAD_REQUEST', 'ticketTypeId es requerido');
       return;
     }
 
     const ticketType = await prisma.event_ticket_types.findUnique({ where: { id: ticketTypeId } });
     if (!ticketType) {
-      res.status(404).json({ error: 'Tipo de boleta no encontrado' });
+      sendApiError(req, res, 404, 'NOT_FOUND', 'Tipo de boleta no encontrado');
       return;
     }
 
@@ -2265,7 +2260,7 @@ app.post('/api/cart/items', authMiddleware, async (req, res) => {
     if (hasSeatIds) {
       // Assigned seating: one cart_item per seat. Mark each inventory row as HELD.
       if (!ticketType.event_id) {
-        res.status(400).json({ error: 'Ticket type sin evento' });
+        sendApiError(req, res, 400, 'BAD_REQUEST', 'Ticket type sin evento');
         return;
       }
 
@@ -2278,7 +2273,7 @@ app.post('/api/cart/items', authMiddleware, async (req, res) => {
       });
 
       if (inventoryRows.length !== seatIds.length) {
-        res.status(400).json({ error: 'Uno o más asientos no existen en el inventario del evento' });
+        sendApiError(req, res, 400, 'BAD_REQUEST', 'Uno o más asientos no existen en el inventario del evento');
         return;
       }
 
@@ -2330,7 +2325,7 @@ app.post('/api/cart/items', authMiddleware, async (req, res) => {
 
     // General admission flow (unchanged)
     if (!quantity || quantity < 1) {
-      res.status(400).json({ error: 'quantity es requerido para admisión general' });
+      sendApiError(req, res, 400, 'BAD_REQUEST', 'quantity es requerido para admisión general');
       return;
     }
 
@@ -2358,11 +2353,11 @@ app.post('/api/cart/items', authMiddleware, async (req, res) => {
     res.json(toCartItemDto(item));
   } catch (error: any) {
     if (error instanceof SeatReservationConflictError) {
-      res.status(409).json({ error: error.message });
+      sendApiError(req, res, 409, 'CONFLICT', error.message);
       return;
     }
     console.error('[CART] POST error:', error);
-    res.status(500).json({ error: error.message });
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error agregando item al carrito');
   }
 });
 
@@ -2372,7 +2367,7 @@ app.patch('/api/cart/items/:id', authMiddleware, async (req, res) => {
     const userId = (req as any).userId;
     const { quantity } = req.body;
     if (!quantity || quantity < 1) {
-      res.status(400).json({ error: 'quantity debe ser >= 1' });
+      sendApiError(req, res, 400, 'BAD_REQUEST', 'quantity debe ser >= 1');
       return;
     }
     const result = await prisma.cart_items.updateMany({
@@ -2383,13 +2378,13 @@ app.patch('/api/cart/items/:id', authMiddleware, async (req, res) => {
       data: { quantity },
     });
     if (result.count === 0) {
-      res.status(404).json({ error: 'Item de carrito no encontrado' });
+      sendApiError(req, res, 404, 'NOT_FOUND', 'Item de carrito no encontrado');
       return;
     }
     res.status(204).send();
   } catch (error: any) {
     console.error('[CART] PATCH error:', error);
-    res.status(500).json({ error: error.message });
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error actualizando carrito');
   }
 });
 
@@ -2405,7 +2400,7 @@ app.delete('/api/cart/items/:id', authMiddleware, async (req, res) => {
       select: { id: true, cart_id: true, event_seat_inventory_id: true },
     });
     if (!item) {
-      res.status(404).json({ error: 'Item de carrito no encontrado' });
+      sendApiError(req, res, 404, 'NOT_FOUND', 'Item de carrito no encontrado');
       return;
     }
 
@@ -2431,7 +2426,7 @@ app.delete('/api/cart/items/:id', authMiddleware, async (req, res) => {
     res.status(204).send();
   } catch (error: any) {
     console.error('[CART] DELETE error:', error);
-    res.status(500).json({ error: error.message });
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error eliminando item del carrito');
   }
 });
 
@@ -2472,7 +2467,7 @@ app.delete('/api/cart/clear', authMiddleware, async (req, res) => {
     res.status(204).send();
   } catch (error: any) {
     console.error('[CART] CLEAR error:', error);
-    res.status(500).json({ error: error.message });
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error limpiando carrito');
   }
 });
 
@@ -2488,7 +2483,7 @@ app.post('/api/checkout/preview', authMiddleware, async (req, res) => {
       include: { cart_items: { include: { event_ticket_types: true } } },
     });
     if (!cart || cart.cart_items.length === 0) {
-      res.status(400).json({ error: 'El carrito está vacío' });
+      sendApiError(req, res, 400, 'BAD_REQUEST', 'El carrito está vacío');
       return;
     }
 
@@ -2509,7 +2504,7 @@ app.post('/api/checkout/preview', authMiddleware, async (req, res) => {
     });
   } catch (error: any) {
     console.error('[CHECKOUT] Preview error:', error);
-    res.status(500).json({ error: error.message });
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error calculando checkout');
   }
 });
 
@@ -2522,7 +2517,7 @@ app.post('/api/checkout/confirm', authMiddleware, async (req, res) => {
     await releaseExpiredSeatHolds();
 
     const user = await prisma.users.findUnique({ where: { id: userId } });
-    if (!user) { res.status(404).json({ error: 'Usuario no encontrado' }); return; }
+    if (!user) { sendApiError(req, res, 404, 'NOT_FOUND', 'Usuario no encontrado'); return; }
 
     if (requestedIdempotencyKey) {
       const orderNumber = buildSimulatedOrderNumber(requestedIdempotencyKey);
@@ -2540,7 +2535,7 @@ app.post('/api/checkout/confirm', authMiddleware, async (req, res) => {
       include: { cart_items: { include: { event_ticket_types: true } } },
     });
     if (!cart || cart.cart_items.length === 0) {
-      res.status(400).json({ error: 'El carrito está vacío' });
+      sendApiError(req, res, 400, 'BAD_REQUEST', 'El carrito está vacío');
       return;
     }
 
@@ -2593,7 +2588,7 @@ app.post('/api/checkout/confirm', authMiddleware, async (req, res) => {
       ]);
 
       if (activeHolds !== seatInventoryIdsToSell.length || heldSeats !== seatInventoryIdsToSell.length) {
-        res.status(409).json({ error: 'La reserva de uno o más asientos expiró o ya no está disponible' });
+        sendApiError(req, res, 409, 'CONFLICT', 'La reserva de uno o más asientos expiró o ya no está disponible');
         return;
       }
     }
@@ -2681,7 +2676,7 @@ app.post('/api/checkout/confirm', authMiddleware, async (req, res) => {
     res.json(formatCheckoutOrderResponse(order, false));
   } catch (error: any) {
     if (error instanceof CheckoutSeatSaleConflictError) {
-      res.status(409).json({ error: error.message });
+      sendApiError(req, res, 409, 'CONFLICT', error.message);
       return;
     }
     if (error?.code === 'P2002') {
@@ -2698,7 +2693,7 @@ app.post('/api/checkout/confirm', authMiddleware, async (req, res) => {
       }
     }
     console.error('[CHECKOUT] Confirm error:', error);
-    res.status(500).json({ error: error.message });
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error confirmando checkout');
   }
 });
 

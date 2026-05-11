@@ -88,7 +88,9 @@ test('POST /api/cart/items returns 404 for unknown ticket type', async () => {
     .set('Authorization', `Bearer ${tokenFor('00000000-0000-0000-0000-000000000001')}`)
     .send({ ticketTypeId: '00000000-0000-0000-0000-000000000002', quantity: 1 })
     .expect(404);
-  assert.equal(res.body.error, 'Tipo de boleta no encontrado');
+  assert.equal(res.body.code, 'NOT_FOUND');
+  assert.equal(res.body.message, 'Tipo de boleta no encontrado');
+  assert.ok(res.body.requestId);
 });
 
 test('POST /api/checkout/preview rejects an empty cart', async () => {
@@ -97,7 +99,9 @@ test('POST /api/checkout/preview rejects an empty cart', async () => {
     .set('Authorization', `Bearer ${tokenFor('00000000-0000-0000-0000-000000000003')}`)
     .send({})
     .expect(400);
-  assert.equal(res.body.error, 'El carrito está vacío');
+  assert.equal(res.body.code, 'BAD_REQUEST');
+  assert.equal(res.body.message, 'El carrito está vacío');
+  assert.ok(res.body.requestId);
 });
 
 test('POST /api/checkout/confirm returns 404 for unknown user', async () => {
@@ -106,7 +110,31 @@ test('POST /api/checkout/confirm returns 404 for unknown user', async () => {
     .set('Authorization', `Bearer ${tokenFor('00000000-0000-0000-0000-000000000004')}`)
     .send({ idempotencyKey: 'qa-unknown-user' })
     .expect(404);
-  assert.equal(res.body.error, 'Usuario no encontrado');
+  assert.equal(res.body.code, 'NOT_FOUND');
+  assert.equal(res.body.message, 'Usuario no encontrado');
+  assert.ok(res.body.requestId);
+});
+
+test('POST /api/transactions/build-buy-xdr returns standard error envelope for missing input', async () => {
+  const res = await request(app)
+    .post('/api/transactions/build-buy-xdr')
+    .set('Authorization', `Bearer ${tokenFor('00000000-0000-0000-0000-000000000007')}`)
+    .send({})
+    .expect(400);
+  assert.equal(res.body.code, 'BAD_REQUEST');
+  assert.equal(res.body.message, 'contractAddress, ticketRootId y buyerPublicKey son requeridos');
+  assert.ok(res.body.requestId);
+});
+
+test('POST /api/transactions/submit-classic returns standard error envelope for missing XDR', async () => {
+  const res = await request(app)
+    .post('/api/transactions/submit-classic')
+    .set('Authorization', `Bearer ${tokenFor('00000000-0000-0000-0000-000000000008')}`)
+    .send({})
+    .expect(400);
+  assert.equal(res.body.code, 'BAD_REQUEST');
+  assert.equal(res.body.message, 'signedXdr es requerido');
+  assert.ok(res.body.requestId);
 });
 
 test('POST /api/admin/scan rejects non-admin users before scanning', async () => {
