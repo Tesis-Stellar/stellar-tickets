@@ -110,6 +110,18 @@ test('POST /api/transactions/submit requires a backend intent id', async () => {
   assert.equal(res.body.error, 'signedXdr e intentId son requeridos');
 });
 
+test('POST /api/admin/events/:id/deploy rejects customers before deployment', async () => {
+  const customer = await prisma.users.findFirst({ where: { role: 'CUSTOMER' }, select: { id: true } });
+  const userId = customer?.id ?? '00000000-0000-0000-0000-000000000010';
+
+  const res = await request(app)
+    .post('/api/admin/events/00000000-0000-0000-0000-000000000011/deploy')
+    .set('Authorization', `Bearer ${tokenFor(userId)}`)
+    .send({})
+    .expect(403);
+  assert.equal(res.body.error, 'Acceso denegado');
+});
+
 test('POST /api/wallet/challenge requires authentication', async () => {
   const res = await request(app).post('/api/wallet/challenge').send({}).expect(401);
   assert.equal(res.body.error, 'Token requerido');

@@ -27,6 +27,7 @@ import { deriveChainEventId } from './secureTicketPolicy';
 import { createWalletChallenge, verifyWalletChallengeSignature } from './walletChallengePolicy';
 import { signTicketQr } from './qrPolicy';
 import { authorizeTransactionIntentSubmit, buildTransactionIntentExpiry } from './transactionIntentPolicy';
+import { authorizeSingleEventDeploy } from './deployEventPolicy';
 import { exec } from 'child_process';
 import util from 'util';
 import QRCode from 'qrcode';
@@ -1729,12 +1730,29 @@ app.post('/api/admin/events/:id/deploy', authMiddleware, async (req, res) => {
     if (user?.role !== 'ADMIN') { res.status(403).json({ error: 'Acceso denegado' }); return; }
 
     const eventId = req.params.id as string;
-    const event = await prisma.events.findUnique({ where: { id: eventId } });
-    if (!event) { res.status(404).json({ error: 'Evento no encontrado' }); return; }
-    if (event.contract_address) { res.status(400).json({ error: 'El evento ya tiene contrato' }); return; }
+    const event = await prisma.events.findUnique({
+      where: { id: eventId },
+      select: { id: true, contract_address: true },
+    });
+    const soldTicketsCount = await prisma.tickets.count({
+      where: {
+        order_items: {
+          event_ticket_types: { event_id: eventId },
+        },
+      },
+    });
+    const deployDecision = authorizeSingleEventDeploy({ event, soldTicketsCount });
+    if (!deployDecision.ok) {
+      res.status(deployDecision.status).json({ error: deployDecision.error });
+      return;
+    }
 
-    // Run the Soroban deploy script inside Node Environment
-    const { stdout, stderr } = await execPromise('npx tsx scripts/deploy-contracts.ts', { cwd: require('path').resolve(__dirname, '..') });
+    // Run the Soroban deploy script for this event only. It must not clear or
+    // redeploy contracts for other published events.
+    const { stdout, stderr } = await execPromise('npx tsx scripts/deploy-contracts.ts', {
+      cwd: require('path').resolve(__dirname, '..'),
+      env: { ...process.env, DEPLOY_EVENT_ID: eventId },
+    });
     console.log(`[ADMIN] Deploy Output:\n${stdout}`);
     if (stderr) console.error(`[ADMIN] Deploy Stderr:\n${stderr}`);
 
