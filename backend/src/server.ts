@@ -30,6 +30,7 @@ import { authorizeTransactionIntentSubmit, buildTransactionIntentExpiry } from '
 import { authorizeSingleEventDeploy } from './deployEventPolicy';
 import { codeForStatus, requestIdMiddleware, sendApiError } from './apiError';
 import { evaluateRateLimit, isCorsOriginAllowed, isJwtSecretStrong, parseCorsOrigins, type RateLimitBucket } from './securityPolicy';
+import { buildSeatHoldExpiration, evaluateAtomicSeatReservation } from './seatHoldPolicy';
 import { exec } from 'child_process';
 import util from 'util';
 import QRCode from 'qrcode';
@@ -617,6 +618,7 @@ app.get('/api/events/:id/ticket-types', async (req, res) => {
 app.get('/api/events/:id/seats', async (req, res) => {
   try {
     const eventId = req.params.id;
+    await releaseExpiredSeatHolds();
 
     const event = await prisma.events.findUnique({
       where: { id: eventId },
@@ -2044,6 +2046,50 @@ async function getOrCreateCart(userId: string) {
   return cart;
 }
 
+class SeatReservationConflictError extends Error {
+  constructor(message = 'Uno o más asientos ya no están disponibles') {
+    super(message);
+    this.name = 'SeatReservationConflictError';
+  }
+}
+
+async function releaseExpiredSeatHolds(now = new Date()) {
+  const expiredHolds = await prisma.seat_holds.findMany({
+    where: { status: 'ACTIVE', expires_at: { lte: now } },
+    select: { id: true, cart_id: true, event_seat_inventory_id: true },
+  });
+
+  if (expiredHolds.length === 0) {
+    return { released: 0 };
+  }
+
+  const holdIds = expiredHolds.map((hold) => hold.id);
+  const inventoryIds = Array.from(new Set(expiredHolds.map((hold) => hold.event_seat_inventory_id)));
+  const expiredCartItemPairs = expiredHolds.map((hold) => ({
+    cart_id: hold.cart_id,
+    event_seat_inventory_id: hold.event_seat_inventory_id,
+  }));
+
+  await prisma.$transaction([
+    prisma.seat_holds.updateMany({
+      where: { id: { in: holdIds }, status: 'ACTIVE' },
+      data: { status: 'EXPIRED', updated_at: now },
+    }),
+    prisma.cart_items.deleteMany({
+      where: {
+        OR: expiredCartItemPairs,
+        carts: { is: { status: 'ACTIVE' } },
+      },
+    }),
+    prisma.event_seat_inventory.updateMany({
+      where: { id: { in: inventoryIds }, status: 'HELD' },
+      data: { status: 'AVAILABLE', updated_at: now },
+    }),
+  ]);
+
+  return { released: inventoryIds.length };
+}
+
 // Helper: transform cart_items rows into the shape the frontend expects
 function toCartItemDto(item: any) {
   const tt = item.event_ticket_types ?? item.event_seat_inventory?.event_ticket_types;
@@ -2088,6 +2134,7 @@ const cartItemIncludes = {
 app.get('/api/cart', authMiddleware, async (req, res) => {
   try {
     const userId = (req as any).userId;
+    await releaseExpiredSeatHolds();
     const cart = await prisma.carts.findFirst({
       where: { user_id: userId, status: 'ACTIVE' },
       include: { cart_items: { include: cartItemIncludes } },
@@ -2107,6 +2154,7 @@ app.post('/api/cart/items', authMiddleware, async (req, res) => {
   try {
     const userId = (req as any).userId;
     const { ticketTypeId, quantity, seatIds } = req.body;
+    await releaseExpiredSeatHolds();
     if (!ticketTypeId) {
       res.status(400).json({ error: 'ticketTypeId es requerido' });
       return;
@@ -2141,19 +2189,30 @@ app.post('/api/cart/items', authMiddleware, async (req, res) => {
         return;
       }
 
-      const unavailable = inventoryRows.filter((r) => r.status !== 'AVAILABLE');
-      if (unavailable.length > 0) {
-        res.status(409).json({ error: 'Uno o más asientos ya no están disponibles' });
-        return;
-      }
+      const expiresAt = buildSeatHoldExpiration();
+      const createdCartItems = await prisma.$transaction(async (tx) => {
+        const cartItems: any[] = [];
 
-      const created = await prisma.$transaction(
-        inventoryRows.flatMap((inv) => [
-          prisma.event_seat_inventory.update({
-            where: { id: inv.id },
-            data: { status: 'HELD' },
-          }),
-          prisma.cart_items.create({
+        for (const inv of inventoryRows) {
+          const reserved = await tx.event_seat_inventory.updateMany({
+            where: { id: inv.id, status: 'AVAILABLE' },
+            data: { status: 'HELD', updated_at: new Date() },
+          });
+
+          if (evaluateAtomicSeatReservation(1, reserved.count) !== 'OK') {
+            throw new SeatReservationConflictError();
+          }
+
+          await tx.seat_holds.create({
+            data: {
+              cart_id: cart.id,
+              event_seat_inventory_id: inv.id,
+              expires_at: expiresAt,
+              status: 'ACTIVE',
+            },
+          });
+
+          const item = await tx.cart_items.create({
             data: {
               cart_id: cart.id,
               event_seat_inventory_id: inv.id,
@@ -2162,13 +2221,16 @@ app.post('/api/cart/items', authMiddleware, async (req, res) => {
               service_fee_amount: ticketType.service_fee_amount,
             },
             include: cartItemIncludes,
-          }),
-        ])
-      );
+          });
+
+          cartItems.push(item);
+        }
+
+        return cartItems;
+      });
 
       // Return the last cart_item created (or all of them — frontend treats them individually)
-      const cartItems = created.filter((r: any) => r && r.cart_id);
-      const last = cartItems[cartItems.length - 1];
+      const last = createdCartItems[createdCartItems.length - 1];
       res.json(toCartItemDto(last));
       return;
     }
@@ -2202,6 +2264,10 @@ app.post('/api/cart/items', authMiddleware, async (req, res) => {
 
     res.json(toCartItemDto(item));
   } catch (error: any) {
+    if (error instanceof SeatReservationConflictError) {
+      res.status(409).json({ error: error.message });
+      return;
+    }
     console.error('[CART] POST error:', error);
     res.status(500).json({ error: error.message });
   }
@@ -2243,7 +2309,7 @@ app.delete('/api/cart/items/:id', authMiddleware, async (req, res) => {
         id: req.params.id as string,
         carts: { is: { user_id: userId, status: 'ACTIVE' } },
       },
-      select: { id: true, event_seat_inventory_id: true },
+      select: { id: true, cart_id: true, event_seat_inventory_id: true },
     });
     if (!item) {
       res.status(404).json({ error: 'Item de carrito no encontrado' });
@@ -2252,9 +2318,17 @@ app.delete('/api/cart/items/:id', authMiddleware, async (req, res) => {
 
     if (item.event_seat_inventory_id) {
       await prisma.$transaction([
-        prisma.event_seat_inventory.update({
-          where: { id: item.event_seat_inventory_id },
-          data: { status: 'AVAILABLE' },
+        prisma.seat_holds.updateMany({
+          where: {
+            cart_id: item.cart_id,
+            event_seat_inventory_id: item.event_seat_inventory_id,
+            status: 'ACTIVE',
+          },
+          data: { status: 'RELEASED', updated_at: new Date() },
+        }),
+        prisma.event_seat_inventory.updateMany({
+          where: { id: item.event_seat_inventory_id, status: 'HELD' },
+          data: { status: 'AVAILABLE', updated_at: new Date() },
         }),
         prisma.cart_items.delete({ where: { id: item.id } }),
       ]);
@@ -2283,10 +2357,19 @@ app.delete('/api/cart/clear', authMiddleware, async (req, res) => {
 
       const ops: any[] = [];
       if (heldInventoryIds.length > 0) {
+        const now = new Date();
         ops.push(
+          prisma.seat_holds.updateMany({
+            where: {
+              cart_id: cart.id,
+              event_seat_inventory_id: { in: heldInventoryIds },
+              status: 'ACTIVE',
+            },
+            data: { status: 'RELEASED', updated_at: now },
+          }),
           prisma.event_seat_inventory.updateMany({
             where: { id: { in: heldInventoryIds }, status: 'HELD' },
-            data: { status: 'AVAILABLE' },
+            data: { status: 'AVAILABLE', updated_at: now },
           })
         );
       }
@@ -2306,6 +2389,7 @@ app.delete('/api/cart/clear', authMiddleware, async (req, res) => {
 app.post('/api/checkout/preview', authMiddleware, async (req, res) => {
   try {
     const userId = (req as any).userId;
+    await releaseExpiredSeatHolds();
     const cart = await prisma.carts.findFirst({
       where: { user_id: userId, status: 'ACTIVE' },
       include: { cart_items: { include: { event_ticket_types: true } } },
@@ -2342,6 +2426,7 @@ app.post('/api/checkout/confirm', authMiddleware, async (req, res) => {
     const userId = (req as any).userId;
     const { buyerEmail, buyerPhone, paymentMethod } = req.body;
     const requestedIdempotencyKey = normalizeIdempotencyKey(req.body?.idempotencyKey ?? req.headers['idempotency-key']);
+    await releaseExpiredSeatHolds();
 
     const user = await prisma.users.findUnique({ where: { id: userId } });
     if (!user) { res.status(404).json({ error: 'Usuario no encontrado' }); return; }
@@ -2395,9 +2480,30 @@ app.post('/api/checkout/confirm', authMiddleware, async (req, res) => {
       },
     }));
 
-    const seatInventoryIdsToSell = cart.cart_items
+    const seatInventoryIdsToSell = Array.from(new Set(cart.cart_items
       .map((i) => i.event_seat_inventory_id)
-      .filter((v): v is string => Boolean(v));
+      .filter((v): v is string => Boolean(v))));
+
+    if (seatInventoryIdsToSell.length > 0) {
+      const [activeHolds, heldSeats] = await Promise.all([
+        prisma.seat_holds.count({
+          where: {
+            cart_id: cart.id,
+            event_seat_inventory_id: { in: seatInventoryIdsToSell },
+            status: 'ACTIVE',
+            expires_at: { gt: now },
+          },
+        }),
+        prisma.event_seat_inventory.count({
+          where: { id: { in: seatInventoryIdsToSell }, status: 'HELD' },
+        }),
+      ]);
+
+      if (activeHolds !== seatInventoryIdsToSell.length || heldSeats !== seatInventoryIdsToSell.length) {
+        res.status(409).json({ error: 'La reserva de uno o más asientos expiró o ya no está disponible' });
+        return;
+      }
+    }
 
     // Use a batch transaction instead of an interactive tx callback. Supabase/pgBouncer
     // can drop long-lived interactive transactions in local/demo environments.
@@ -2431,9 +2537,17 @@ app.post('/api/checkout/confirm', authMiddleware, async (req, res) => {
 
     if (seatInventoryIdsToSell.length > 0) {
       ops.push(
+        prisma.seat_holds.updateMany({
+          where: {
+            cart_id: cart.id,
+            event_seat_inventory_id: { in: seatInventoryIdsToSell },
+            status: 'ACTIVE',
+          },
+          data: { status: 'CONSUMED', updated_at: now },
+        }),
         prisma.event_seat_inventory.updateMany({
-          where: { id: { in: seatInventoryIdsToSell } },
-          data: { status: 'SOLD' },
+          where: { id: { in: seatInventoryIdsToSell }, status: 'HELD' },
+          data: { status: 'SOLD', updated_at: now },
         })
       );
     }
