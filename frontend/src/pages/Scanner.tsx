@@ -10,6 +10,7 @@ export const ScannerPage = () => {
   const navigate = useNavigate();
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<{ type: 'success'|'error'; message: string; submessage?: string } | null>(null);
+  const e2eScanEnabled = import.meta.env.VITE_E2E === "true";
 
   useEffect(() => {
     if (authStatus === "checking") return;
@@ -78,6 +79,15 @@ export const ScannerPage = () => {
     }
   };
 
+  const simulateE2eScan = async () => {
+    const rawValue = window.localStorage.getItem("e2eScanPayload");
+    if (!rawValue) {
+      setResult({ type: "error", message: "Acceso Denegado", submessage: "Payload E2E no configurado." });
+      return;
+    }
+    await handleScan([{ rawValue } as IDetectedBarcode]);
+  };
+
   return (
     <div className="min-h-screen bg-background flex flex-col">
       <Header />
@@ -96,11 +106,21 @@ export const ScannerPage = () => {
 
         <div className="w-full aspect-square bg-black rounded-3xl overflow-hidden relative shadow-2xl border-4 border-border">
           {!result && !loading && (
+            e2eScanEnabled ? (
+              <button
+                type="button"
+                onClick={() => void simulateE2eScan()}
+                className="h-full w-full bg-slate-950 text-white font-black text-sm uppercase tracking-widest"
+              >
+                Simular escaneo QA
+              </button>
+            ) : (
             <Scanner 
               onScan={handleScan}
               formats={["qr_code"]}
               styles={{ container: { width: '100%', height: '100%' } }}
             />
+            )
           )}
 
           {/* Overlay scanning state */}

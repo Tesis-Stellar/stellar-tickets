@@ -48,6 +48,7 @@ export const TicketSelector = ({ tickets, selected, onUpdate }: TicketSelectorPr
             {!soldOut && (
               <div className="flex items-center gap-2">
                 <button
+                  aria-label={`Quitar ${ticket.name}`}
                   onClick={() => onUpdate(ticket.id, -1)}
                   disabled={qty === 0}
                   className="w-8 h-8 rounded-full bg-secondary border border-border flex items-center justify-center text-foreground disabled:opacity-30 hover:bg-muted transition-colors"
@@ -56,6 +57,7 @@ export const TicketSelector = ({ tickets, selected, onUpdate }: TicketSelectorPr
                 </button>
                 <span className="w-6 text-center font-bold text-foreground text-sm">{qty}</span>
                 <button
+                  aria-label={`Agregar ${ticket.name}`}
                   onClick={() => onUpdate(ticket.id, 1)}
                   disabled={qty >= ticket.maxPerOrder}
                   className="w-8 h-8 rounded-full bg-secondary border border-border flex items-center justify-center text-foreground disabled:opacity-30 hover:bg-muted transition-colors"
