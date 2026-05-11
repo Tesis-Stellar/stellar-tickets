@@ -31,7 +31,7 @@ import { authorizeTransactionIntentCurrentState, authorizeTransactionIntentSubmi
 import { authorizeSingleEventDeploy } from './deployEventPolicy';
 import { codeForStatus, requestIdMiddleware, sendApiError } from './apiError';
 import { evaluateRateLimit, isCorsOriginAllowed, isJwtSecretStrong, parseCorsOrigins, type RateLimitBucket } from './securityPolicy';
-import { buildSeatHoldExpiration, evaluateAtomicSeatReservation, evaluateAtomicSeatSale } from './seatHoldPolicy';
+import { buildSeatHoldExpiration, evaluateAtomicSeatSale, isSeatReservable } from './seatHoldPolicy';
 import { exec } from 'child_process';
 import util from 'util';
 import QRCode from 'qrcode';
@@ -148,7 +148,7 @@ function toUserDto(user: { id: string; first_name: string; last_name: string; em
 async function authMiddleware(req: Request, res: Response, next: NextFunction) {
   const header = req.headers.authorization;
   if (!header?.startsWith('Bearer ')) {
-    res.status(401).json({ error: 'Token requerido' });
+    sendApiError(req, res, 401, 'UNAUTHORIZED', 'Token requerido');
     return;
   }
   try {
@@ -164,7 +164,7 @@ async function authMiddleware(req: Request, res: Response, next: NextFunction) {
     }
     next();
   } catch {
-    res.status(401).json({ error: 'Token inválido o expirado' });
+    sendApiError(req, res, 401, 'UNAUTHORIZED', 'Token inválido o expirado');
   }
 }
 
@@ -1914,19 +1914,19 @@ app.post('/api/auth/login', authRateLimit, async (req, res) => {
   try {
     const { email, password } = req.body;
     if (!email || !password) {
-      res.status(400).json({ error: 'Email y contraseña son requeridos' });
+      sendApiError(req, res, 400, 'BAD_REQUEST', 'Email y contraseña son requeridos');
       return;
     }
 
     const user = await prisma.users.findFirst({ where: { email } });
     if (!user) {
-      res.status(401).json({ error: 'Credenciales inválidas' });
+      sendApiError(req, res, 401, 'UNAUTHORIZED', 'Credenciales inválidas');
       return;
     }
 
     const valid = await bcrypt.compare(password, user.password_hash);
     if (!valid) {
-      res.status(401).json({ error: 'Credenciales inválidas' });
+      sendApiError(req, res, 401, 'UNAUTHORIZED', 'Credenciales inválidas');
       return;
     }
 
@@ -1937,7 +1937,7 @@ app.post('/api/auth/login', authRateLimit, async (req, res) => {
     res.json({ accessToken, user: toUserDto(user) });
   } catch (error: any) {
     console.error('[AUTH] Login error:', error);
-    res.status(500).json({ error: 'Error interno del servidor' });
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error interno del servidor');
   }
 });
 
@@ -1945,14 +1945,14 @@ app.post('/api/auth/register', authRateLimit, async (req, res) => {
   try {
     const { firstName, lastName, email, password, documentType, documentNumber, phone } = req.body;
     if (!firstName || !email || !password || !documentNumber) {
-      res.status(400).json({ error: 'Campos requeridos: firstName, email, password, documentNumber' });
+      sendApiError(req, res, 400, 'BAD_REQUEST', 'Campos requeridos: firstName, email, password, documentNumber');
       return;
     }
 
     // Check if email already exists
     const existing = await prisma.users.findFirst({ where: { email } });
     if (existing) {
-      res.status(409).json({ error: 'Ya existe una cuenta con ese correo electrónico' });
+      sendApiError(req, res, 409, 'CONFLICT', 'Ya existe una cuenta con ese correo electrónico');
       return;
     }
 
@@ -1973,7 +1973,7 @@ app.post('/api/auth/register', authRateLimit, async (req, res) => {
     res.json({ accessToken, user: toUserDto(user) });
   } catch (error: any) {
     console.error('[AUTH] Register error:', error);
-    res.status(500).json({ error: 'Error interno del servidor' });
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error interno del servidor');
   }
 });
 
@@ -1981,13 +1981,13 @@ app.get('/api/users/me', authMiddleware, async (req, res) => {
   try {
     const user = await prisma.users.findUnique({ where: { id: (req as any).userId } });
     if (!user) {
-      res.status(404).json({ error: 'Usuario no encontrado' });
+      sendApiError(req, res, 404, 'NOT_FOUND', 'Usuario no encontrado');
       return;
     }
     res.json(toUserDto(user));
   } catch (error: any) {
     console.error('[AUTH] Me error:', error);
-    res.status(500).json({ error: 'Error interno del servidor' });
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error interno del servidor');
   }
 });
 
@@ -2008,7 +2008,7 @@ app.patch('/api/users/me', authMiddleware, async (req, res) => {
     res.json(toUserDto(user));
   } catch (error: any) {
     console.error('[AUTH] Update profile error:', error);
-    res.status(500).json({ error: 'Error interno del servidor' });
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error interno del servidor');
   }
 });
 
@@ -2141,6 +2141,11 @@ class CheckoutSeatSaleConflictError extends Error {
   }
 }
 
+function isSeatHoldAvailabilityDatabaseError(error: any) {
+  const message = String(error?.message ?? '');
+  return message.includes('is not available for holding');
+}
+
 async function releaseExpiredSeatHolds(now = new Date()) {
   const expiredHolds = await prisma.seat_holds.findMany({
     where: { status: 'ACTIVE', expires_at: { lte: now } },
@@ -2218,6 +2223,29 @@ const cartItemIncludes = {
   },
 };
 
+const orderItemIncludes = {
+  event_ticket_types: {
+    include: {
+      events: { include: eventIncludes },
+    },
+  },
+  event_seat_inventory: {
+    include: {
+      seats: true,
+      event_ticket_types: {
+        include: {
+          events: { include: eventIncludes },
+        },
+      },
+    },
+  },
+  tickets: true,
+};
+
+const orderIncludes = {
+  order_items: { include: orderItemIncludes },
+};
+
 // GET /api/cart — list items in user's active cart
 app.get('/api/cart', authMiddleware, async (req, res) => {
   try {
@@ -2258,7 +2286,7 @@ app.post('/api/cart/items', authMiddleware, async (req, res) => {
     const hasSeatIds = Array.isArray(seatIds) && seatIds.length > 0;
 
     if (hasSeatIds) {
-      // Assigned seating: one cart_item per seat. Mark each inventory row as HELD.
+      // Assigned seating: one cart_item per seat. The seat_holds trigger marks inventory as HELD.
       if (!ticketType.event_id) {
         sendApiError(req, res, 400, 'BAD_REQUEST', 'Ticket type sin evento');
         return;
@@ -2278,29 +2306,23 @@ app.post('/api/cart/items', authMiddleware, async (req, res) => {
       }
 
       const expiresAt = buildSeatHoldExpiration();
-      const createdCartItems = await prisma.$transaction(async (tx) => {
-        const cartItems: any[] = [];
+      const reservationOps: any[] = [];
 
-        for (const inv of inventoryRows) {
-          const reserved = await tx.event_seat_inventory.updateMany({
-            where: { id: inv.id, status: 'AVAILABLE' },
-            data: { status: 'HELD', updated_at: new Date() },
-          });
+      for (const inv of inventoryRows) {
+        if (!isSeatReservable(inv.status)) {
+          throw new SeatReservationConflictError();
+        }
 
-          if (evaluateAtomicSeatReservation(1, reserved.count) !== 'OK') {
-            throw new SeatReservationConflictError();
-          }
-
-          await tx.seat_holds.create({
+        reservationOps.push(
+          prisma.seat_holds.create({
             data: {
               cart_id: cart.id,
               event_seat_inventory_id: inv.id,
               expires_at: expiresAt,
               status: 'ACTIVE',
             },
-          });
-
-          const item = await tx.cart_items.create({
+          }),
+          prisma.cart_items.create({
             data: {
               cart_id: cart.id,
               event_seat_inventory_id: inv.id,
@@ -2309,13 +2331,12 @@ app.post('/api/cart/items', authMiddleware, async (req, res) => {
               service_fee_amount: ticketType.service_fee_amount,
             },
             include: cartItemIncludes,
-          });
+          })
+        );
+      }
 
-          cartItems.push(item);
-        }
-
-        return cartItems;
-      });
+      const transactionResults = await prisma.$transaction(reservationOps);
+      const createdCartItems = transactionResults.filter((_result, index) => index % 2 === 1);
 
       // Return the last cart_item created (or all of them — frontend treats them individually)
       const last = createdCartItems[createdCartItems.length - 1];
@@ -2354,6 +2375,10 @@ app.post('/api/cart/items', authMiddleware, async (req, res) => {
   } catch (error: any) {
     if (error instanceof SeatReservationConflictError) {
       sendApiError(req, res, 409, 'CONFLICT', error.message);
+      return;
+    }
+    if (isSeatHoldAvailabilityDatabaseError(error)) {
+      sendApiError(req, res, 409, 'CONFLICT', 'Uno o más asientos ya no están disponibles');
       return;
     }
     console.error('[CART] POST error:', error);
@@ -2523,6 +2548,7 @@ app.post('/api/checkout/confirm', authMiddleware, async (req, res) => {
       const orderNumber = buildSimulatedOrderNumber(requestedIdempotencyKey);
       const existingOrder = await prisma.orders.findFirst({
         where: { user_id: userId, order_number: orderNumber },
+        include: orderIncludes,
       });
       if (existingOrder) {
         res.json(formatCheckoutOrderResponse(existingOrder, true));
@@ -2673,7 +2699,12 @@ app.post('/api/checkout/confirm', authMiddleware, async (req, res) => {
       order = createdOrder;
     }
 
-    res.json(formatCheckoutOrderResponse(order, false));
+    const fullOrder = await prisma.orders.findUnique({
+      where: { id: order.id },
+      include: orderIncludes,
+    });
+
+    res.json(formatCheckoutOrderResponse(fullOrder ?? order, false));
   } catch (error: any) {
     if (error instanceof CheckoutSeatSaleConflictError) {
       sendApiError(req, res, 409, 'CONFLICT', error.message);
@@ -2685,6 +2716,7 @@ app.post('/api/checkout/confirm', authMiddleware, async (req, res) => {
       if (requestedIdempotencyKey) {
         const existingOrder = await prisma.orders.findFirst({
           where: { user_id: userId, order_number: buildSimulatedOrderNumber(requestedIdempotencyKey) },
+          include: orderIncludes,
         });
         if (existingOrder) {
           res.json(formatCheckoutOrderResponse(existingOrder, true));
@@ -2700,22 +2732,58 @@ app.post('/api/checkout/confirm', authMiddleware, async (req, res) => {
 function formatCheckoutOrderResponse(order: {
   id: string;
   order_number: string;
+  buyer_email?: unknown;
+  buyer_phone?: string | null;
+  buyer_document_type?: unknown;
+  buyer_document_number?: string | null;
   subtotal_amount: unknown;
   service_fee_amount: unknown;
   total_amount: unknown;
+  created_at?: Date;
+  status?: string;
+  order_items?: any[];
 }, idempotentReplay: boolean) {
   return {
     id: order.id,
     orderNumber: order.order_number,
+    buyerEmail: order.buyer_email ? String(order.buyer_email) : '',
+    buyerPhone: order.buyer_phone ?? '',
+    buyerDocument: order.buyer_document_type && order.buyer_document_number
+      ? `${String(order.buyer_document_type)} ${order.buyer_document_number}`
+      : '',
     subtotal: Number(order.subtotal_amount),
     serviceFees: Number(order.service_fee_amount),
     total: Number(order.total_amount),
-    status: 'confirmed',
+    createdAt: order.created_at?.toISOString?.() ?? new Date().toISOString(),
+    status: order.status === 'PENDING_PAYMENT' ? 'pending' : 'confirmed',
+    items: (order.order_items ?? []).flatMap((item: any) => toOrderItemTicketDtos(item)),
     paymentMode: 'SIMULATED',
     paymentStatus: 'SIMULATED_PAID',
     idempotentReplay,
     message: 'Pago simulado para demo academica; no se proceso una pasarela fiat real.',
   };
+}
+
+function toOrderItemTicketDtos(item: any) {
+  const tt = item.event_ticket_types ?? item.event_seat_inventory?.event_ticket_types;
+  const evt = tt?.events;
+  const seat = item.event_seat_inventory?.seats;
+  const tickets = item.tickets?.length ? item.tickets : Array.from({ length: item.quantity }, (_unused, index) => ({ id: `${item.id}-${index}` }));
+
+  return tickets.map((ticket: any) => ({
+    id: ticket.id,
+    ticketCode: ticket.ticket_code,
+    purchasedAt: ticket.issued_at?.toISOString?.() ?? item.created_at?.toISOString?.() ?? new Date().toISOString(),
+    quantity: 1,
+    seatIds: seat ? [seat.id] : [],
+    ticketType: tt ? {
+      id: tt.id,
+      name: tt.ticket_type_name,
+      price: Number(tt.price_amount),
+      serviceFee: Number(tt.service_fee_amount),
+    } : undefined,
+    event: evt ? toEventDto(evt) : undefined,
+  }));
 }
 
 // --- ORDERS & TICKETS ENDPOINTS (real) ---
@@ -2739,7 +2807,27 @@ app.get('/api/orders', authMiddleware, async (req, res) => {
     })));
   } catch (error: any) {
     console.error('[ORDERS] GET error:', error);
-    res.status(500).json({ error: error.message });
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error obteniendo ordenes');
+  }
+});
+
+// GET /api/orders/:id — full order detail for confirmation refresh
+app.get('/api/orders/:id', authMiddleware, async (req, res) => {
+  try {
+    const userId = (req as any).userId;
+    const order = await prisma.orders.findFirst({
+      where: { id: String(req.params.id), user_id: userId },
+      include: orderIncludes,
+    });
+    if (!order) {
+      sendApiError(req, res, 404, 'NOT_FOUND', 'Orden no encontrada');
+      return;
+    }
+
+    res.json(formatCheckoutOrderResponse(order, false));
+  } catch (error: any) {
+    console.error('[ORDERS] GET detail error:', error);
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error obteniendo orden');
   }
 });
 
@@ -2807,7 +2895,7 @@ app.get('/api/tickets', authMiddleware, async (req, res) => {
     }));
   } catch (error: any) {
     console.error('[TICKETS] GET error:', error);
-    res.status(500).json({ error: error.message });
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error obteniendo tickets');
   }
 });
 
@@ -2880,7 +2968,7 @@ app.get('/api/tickets/sold', authMiddleware, async (req, res) => {
     res.json(results);
   } catch (error: any) {
     console.error('[TICKETS/SOLD] GET error:', error);
-    res.status(500).json({ error: error.message });
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error obteniendo ventas P2P');
   }
 });
 

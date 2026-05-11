@@ -37,7 +37,9 @@ test('CORS allowlist permits configured local frontend origin', async () => {
 
 test('POST /api/auth/login validates required credentials', async () => {
   const res = await request(app).post('/api/auth/login').send({ email: 'missing-password@example.com' }).expect(400);
-  assert.match(res.body.error, /Email y contraseña/);
+  assert.equal(res.body.code, 'BAD_REQUEST');
+  assert.equal(res.body.message, 'Email y contraseña son requeridos');
+  assert.ok(res.body.requestId);
 });
 
 test('POST /api/auth/login rejects invalid credentials', async () => {
@@ -45,12 +47,16 @@ test('POST /api/auth/login rejects invalid credentials', async () => {
     .post('/api/auth/login')
     .send({ email: `missing-${Date.now()}@example.com`, password: 'bad-password' })
     .expect(401);
-  assert.equal(res.body.error, 'Credenciales inválidas');
+  assert.equal(res.body.code, 'UNAUTHORIZED');
+  assert.equal(res.body.message, 'Credenciales inválidas');
+  assert.ok(res.body.requestId);
 });
 
 test('GET /api/cart requires authentication', async () => {
   const res = await request(app).get('/api/cart').expect(401);
-  assert.equal(res.body.error, 'Token requerido');
+  assert.equal(res.body.code, 'UNAUTHORIZED');
+  assert.equal(res.body.message, 'Token requerido');
+  assert.ok(res.body.requestId);
 });
 
 test('authenticated routes reject inactive users', async () => {
@@ -167,7 +173,9 @@ test('POST /api/admin/scan validates malformed QR payloads for admins', async ()
 
 test('POST /api/transactions/transfer-nft requires authentication', async () => {
   const res = await request(app).post('/api/transactions/transfer-nft').send({}).expect(401);
-  assert.equal(res.body.error, 'Token requerido');
+  assert.equal(res.body.code, 'UNAUTHORIZED');
+  assert.equal(res.body.message, 'Token requerido');
+  assert.ok(res.body.requestId);
 });
 
 test('POST /api/transactions/submit requires a backend intent id', async () => {
@@ -197,7 +205,9 @@ test('POST /api/admin/events/:id/deploy rejects customers before deployment', as
 
 test('POST /api/wallet/challenge requires authentication', async () => {
   const res = await request(app).post('/api/wallet/challenge').send({}).expect(401);
-  assert.equal(res.body.error, 'Token requerido');
+  assert.equal(res.body.code, 'UNAUTHORIZED');
+  assert.equal(res.body.message, 'Token requerido');
+  assert.ok(res.body.requestId);
 });
 
 test('POST /api/wallet/challenge rejects malformed Stellar wallets', async () => {
