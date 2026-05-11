@@ -5,7 +5,7 @@ import { Footer } from "@/components/layout/Footer";
 import { getEventBySlug, getEventTicketTypes, getRelatedEvents, type EventData, type LiveTicket } from "@/data/events";
 import { MapPin, Calendar, Clock, ChevronLeft, User, Info, ShieldCheck, Lock, Loader2 } from "lucide-react";
 import { EventCard } from "@/components/ui/EventCard";
-import { useAppContext } from "@/context/AppContext";
+import { useAppContext, type ResaleFlowStatus } from "@/context/AppContext";
 import { useXlmPrice, formatCOP } from "@/hooks/useXlmPrice";
 import { getOfficialPurchasePath } from "@/lib/purchaseRoute";
 
@@ -18,6 +18,7 @@ const EventDetail = () => {
   const [liveTickets, setLiveTickets] = useState<LiveTicket[]>([]);
   const [buyingId, setBuyingId] = useState<string | null>(null);
   const [cancellingId, setCancellingId] = useState<string | null>(null);
+  const [flowStatusByTicketId, setFlowStatusByTicketId] = useState<Record<string, ResaleFlowStatus>>({});
   const { buyResaleTicket, cancelResaleListing, linkWallet, walletAddress } = useAppContext();
   const xlmCop = useXlmPrice();
 
@@ -74,6 +75,17 @@ const EventDetail = () => {
 
   const minPrice = event.ticketTypes.length ? Math.min(...event.ticketTypes.map((t) => t.price)) : 0;
   const buyUrl = getOfficialPurchasePath(event.id, event.hasSeatSelection);
+  const flowStatusLabel: Record<ResaleFlowStatus, string> = {
+    building_xdr: "Preparando XDR...",
+    signing: "Esperando firma...",
+    submitted: "Enviada...",
+    reconciling: "Confirmando...",
+    confirmed: "Confirmado",
+    failed: "Falló",
+  };
+  const setTicketFlowStatus = (ticketId: string, status: ResaleFlowStatus) => {
+    setFlowStatusByTicketId((prev) => ({ ...prev, [ticketId]: status }));
+  };
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
@@ -171,9 +183,10 @@ const EventDetail = () => {
                           onClick={async () => {
                             try {
                               setCancellingId(lt.id);
-                              const result = await cancelResaleListing(lt.id);
+                              setTicketFlowStatus(lt.id, "building_xdr");
+                              const result = await cancelResaleListing(lt.id, { onStatus: (status) => setTicketFlowStatus(lt.id, status) });
                               if (result.success) {
-                                alert("Reventa cancelada. Tu boleto ha sido retirado del mercado.");
+                                alert("Reventa confirmada como cancelada. Tu boleto fue retirado del mercado.");
                                 setLiveTickets((prev) => prev.filter((t) => t.id !== lt.id));
                               } else {
                                 alert("Error: " + result.error);
@@ -188,7 +201,7 @@ const EventDetail = () => {
                           className="bg-red-600 hover:bg-red-700 text-white text-xs font-bold px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1 shadow-md shadow-red-900/20 disabled:opacity-50"
                         >
                           {cancellingId === lt.id ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
-                          {cancellingId === lt.id ? "Cancelando..." : "Cancelar Reventa"}
+                          {cancellingId === lt.id ? flowStatusLabel[flowStatusByTicketId[lt.id]] ?? "Cancelando..." : "Cancelar Reventa"}
                         </button>
                       ) : (
                         <button
@@ -198,10 +211,13 @@ const EventDetail = () => {
                               if (!walletAddress) return alert("Conecta tu billetera Freighter desde el botón del header primero.");
                               const pk = walletAddress;
                               setBuyingId(lt.id);
+                              setTicketFlowStatus(lt.id, "building_xdr");
                               await linkWallet(pk).catch(() => {});
-                              const buyResult = await buyResaleTicket(lt.contractAddress, lt.ticketRootId, pk, lt.version);
+                              const buyResult = await buyResaleTicket(lt.contractAddress, lt.ticketRootId, pk, lt.version, {
+                                onStatus: (status) => setTicketFlowStatus(lt.id, status),
+                              });
                               if (buyResult.success) {
-                                alert("¡Compra exitosa! Tu boleto aparecerá en Mis Entradas en unos segundos.\nTx: " + buyResult.txHash?.slice(0, 12) + "...");
+                                alert("Compra confirmada. Tu boleto ya fue reconciliado por el backend.\nTx: " + buyResult.txHash?.slice(0, 12) + "...");
                                 setLiveTickets((prev) => prev.filter((t) => t.id !== lt.id));
                               } else {
                                 alert("Error: " + buyResult.error);
@@ -216,7 +232,7 @@ const EventDetail = () => {
                           className="bg-purple-600 hover:bg-purple-700 text-white text-xs font-bold px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1 shadow-md shadow-purple-900/20 disabled:opacity-50"
                         >
                           {buyingId === lt.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <Lock className="w-3 h-3" />}
-                          {buyingId === lt.id ? "Firmando..." : "Comprar"}
+                          {buyingId === lt.id ? flowStatusLabel[flowStatusByTicketId[lt.id]] ?? "Firmando..." : "Comprar"}
                         </button>
                       )}
                     </div>

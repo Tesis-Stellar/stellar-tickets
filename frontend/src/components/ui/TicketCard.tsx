@@ -1,6 +1,6 @@
 import { QrCode, MapPin, Calendar, ShieldCheck, Lock, ExternalLink, Tag } from "lucide-react";
 import { QRCodeCanvas } from "qrcode.react";
-import type { PurchasedTicket } from "@/context/AppContext";
+import type { PurchasedTicket, ResaleFlowStatus } from "@/context/AppContext";
 import { useAppContext } from "@/context/AppContext";
 import { useXlmPrice, formatCOP } from "@/hooks/useXlmPrice";
 import { useState } from "react";
@@ -28,9 +28,18 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
   const [resalePriceInput, setResalePriceInput] = useState("");
   const [nftDialogOpen, setNftDialogOpen] = useState(false);
   const [justMintedNftAddress, setJustMintedNftAddress] = useState<string | null>(null);
+  const [resaleFlowStatus, setResaleFlowStatus] = useState<ResaleFlowStatus | null>(null);
 
   const parsedPriceCOP = Number(resalePriceInput.replace(/[^\d]/g, ""));
   const previewXLM = xlmCopPrice && parsedPriceCOP > 0 ? parsedPriceCOP / xlmCopPrice : 0;
+  const resaleStatusLabel: Record<ResaleFlowStatus, string> = {
+    building_xdr: "Preparando XDR...",
+    signing: "Esperando firma...",
+    submitted: "Enviada a Soroban...",
+    reconciling: "Confirmando indexer...",
+    confirmed: "Confirmado",
+    failed: "Falló",
+  };
 
   const claimTicket = async () => {
     if (!walletAddress) {
@@ -78,7 +87,8 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
     setResaleDialogOpen(false);
     try {
       setIsListing(true);
-      const result = await listTicketForSale(ticket.id, priceXLM);
+      setResaleFlowStatus("building_xdr");
+      const result = await listTicketForSale(ticket.id, priceXLM, { onStatus: setResaleFlowStatus });
       if (result.success) {
         setIsListed(true);
         setTxHash(result.txHash ?? txHash);
@@ -146,7 +156,8 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
                     onClick={async () => {
                       try {
                         setIsCancelling(true);
-                        const result = await cancelResaleListing(ticket.id);
+                        setResaleFlowStatus("building_xdr");
+                        const result = await cancelResaleListing(ticket.id, { onStatus: setResaleFlowStatus });
                         if (result.success) {
                           setIsListed(false);
                           setTxHash(result.txHash ?? txHash);
@@ -163,7 +174,7 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
                     disabled={isCancelling}
                     className={`inline-flex items-center gap-1 px-3 py-1 text-xs font-black rounded-lg transition-colors w-fit ${isCancelling ? "bg-muted text-muted-foreground" : "bg-red-600 hover:bg-red-700 text-white shadow-md shadow-red-900/20"}`}
                   >
-                    {isCancelling ? "Cancelando..." : "Cancelar Reventa"}
+                    {isCancelling && resaleFlowStatus ? resaleStatusLabel[resaleFlowStatus] : isCancelling ? "Cancelando..." : "Cancelar Reventa"}
                   </button>
                 </>
               )}
@@ -195,9 +206,12 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
                 disabled={isListing}
                 className={`inline-flex items-center gap-1 px-3 py-1 text-xs font-black rounded-lg transition-colors shadow-md shadow-blue-900/20 w-fit ${isListing ? "bg-muted text-muted-foreground" : "bg-blue-600 hover:bg-blue-700 text-white"}`}
               >
-                {isListing ? "Listando en Soroban..." : "Revender NFT"}
+                {isListing && resaleFlowStatus ? resaleStatusLabel[resaleFlowStatus] : isListing ? "Listando en Soroban..." : "Revender NFT"}
               </button>
             )}
+            {(isListing || isCancelling) && resaleFlowStatus ? (
+              <p className="text-[11px] text-muted-foreground">{resaleStatusLabel[resaleFlowStatus]}</p>
+            ) : null}
           </div>
         ) : (
           <button

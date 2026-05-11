@@ -41,6 +41,29 @@ type TransactionIntentResponse = {
   intentExpiresAt?: string;
 };
 
+export type ResaleFlowStatus = "building_xdr" | "signing" | "submitted" | "reconciling" | "confirmed" | "failed";
+
+type ResaleFlowOptions = {
+  onStatus?: (status: ResaleFlowStatus) => void;
+};
+
+type TicketApiResponse = {
+  id: string;
+  purchasedAt?: string;
+  quantity: number;
+  seatIds?: string[];
+  ticketType?: { id: string; name: string; price: number; serviceFee: number };
+  event?: Partial<EventData>;
+  isSecuredOnChain?: boolean;
+  isForSale?: boolean;
+  contractAddress?: string;
+  ticketRootId?: number;
+  version?: number;
+  ownerWallet?: string;
+  resalePrice?: number | null;
+  qrPayload?: string | null;
+};
+
 /* ── Sold ticket ── */
 export interface SoldTicket {
   id: string;
@@ -102,9 +125,9 @@ interface AppState {
   logout: () => void;
   updateProfile: (data: Partial<UserData>) => Promise<void>;
   secureTicketOnChain: (ticketId: string) => Promise<{ success: boolean; txHash?: string; nftContractAddress?: string | null; error?: string }>;
-  listTicketForSale: (ticketId: string, priceXLM: number) => Promise<{ success: boolean; txHash?: string; error?: string }>;
-  cancelResaleListing: (ticketId: string) => Promise<{ success: boolean; txHash?: string; error?: string }>;
-  buyResaleTicket: (contractAddress: string, ticketRootId: number, buyerPublicKey: string, currentVersion: number) => Promise<{ success: boolean; txHash?: string; error?: string }>;
+  listTicketForSale: (ticketId: string, priceXLM: number, options?: ResaleFlowOptions) => Promise<{ success: boolean; txHash?: string; error?: string }>;
+  cancelResaleListing: (ticketId: string, options?: ResaleFlowOptions) => Promise<{ success: boolean; txHash?: string; error?: string }>;
+  buyResaleTicket: (contractAddress: string, ticketRootId: number, buyerPublicKey: string, currentVersion: number, options?: ResaleFlowOptions) => Promise<{ success: boolean; txHash?: string; error?: string }>;
   linkWallet: (walletAddress: string) => Promise<void>;
   refreshTickets: () => Promise<void>;
   walletAddress: string | null;
@@ -121,6 +144,11 @@ const normalizeEventData = (event?: Partial<EventData>): EventData =>
     image: (event as any)?.posterImage || (event as any)?.bannerImage || event?.image || "https://placehold.co/800x500?text=Evento",
     bannerImage: (event as any)?.bannerImage || (event as any)?.posterImage || event?.bannerImage || "https://placehold.co/1200x400?text=Evento",
   }) as EventData;
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const RESALE_RECONCILE_ATTEMPTS = 6;
+const RESALE_RECONCILE_DELAY_MS = 2500;
 
 class ApiRequestError extends Error {
   status: number;
@@ -236,7 +264,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   }, [refreshUserData, token]);
 
   const mapTicketsResponse = useCallback(
-    (ticketsData: Array<{ id: string; purchasedAt?: string; quantity: number; seatIds?: string[]; ticketType?: { id: string; name: string; price: number; serviceFee: number }; event?: Partial<EventData>; isSecuredOnChain?: boolean; isForSale?: boolean; contractAddress?: string; ticketRootId?: number; version?: number; ownerWallet?: string; resalePrice?: number | null; qrPayload?: string | null }>): PurchasedTicket[] =>
+    (ticketsData: TicketApiResponse[]): PurchasedTicket[] =>
       ticketsData.map((ticket) => ({
         id: ticket.id,
         event: normalizeEventData(ticket.event),
@@ -266,10 +294,32 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     []
   );
 
-  const refreshTickets = useCallback(async () => {
-    const ticketsData = await apiFetch<Array<{ id: string; purchasedAt?: string; quantity: number; seatIds?: string[]; ticketType?: { id: string; name: string; price: number; serviceFee: number }; event?: Partial<EventData>; isSecuredOnChain?: boolean; isForSale?: boolean; contractAddress?: string; ticketRootId?: number; version?: number; ownerWallet?: string; resalePrice?: number | null; qrPayload?: string | null }>>("/api/tickets");
-    setPurchasedTickets(mapTicketsResponse(ticketsData));
+  const fetchPurchasedTicketsSnapshot = useCallback(async () => {
+    const ticketsData = await apiFetch<TicketApiResponse[]>("/api/tickets");
+    const mapped = mapTicketsResponse(ticketsData);
+    setPurchasedTickets(mapped);
+    return mapped;
   }, [apiFetch, mapTicketsResponse]);
+
+  const refreshTickets = useCallback(async () => {
+    await fetchPurchasedTicketsSnapshot();
+  }, [fetchPurchasedTicketsSnapshot]);
+
+  const waitForTicketReconciliation = useCallback(
+    async (
+      predicate: (tickets: PurchasedTicket[]) => boolean,
+      onStatus?: (status: ResaleFlowStatus) => void
+    ) => {
+      onStatus?.("reconciling");
+      for (let attempt = 0; attempt < RESALE_RECONCILE_ATTEMPTS; attempt += 1) {
+        await sleep(RESALE_RECONCILE_DELAY_MS);
+        const snapshot = await fetchPurchasedTicketsSnapshot();
+        if (predicate(snapshot)) return true;
+      }
+      return false;
+    },
+    [fetchPurchasedTicketsSnapshot]
+  );
 
   const refreshSoldTickets = useCallback(async () => {
     const data = await apiFetch<Array<{ id: string; soldAt: string; resalePrice: number; contractAddress?: string; ticketRootId?: number; version?: number; ticketType?: { id: string; name: string; price: number }; event?: Partial<EventData> }>>("/api/tickets/sold");
@@ -346,7 +396,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       }
 
       const ticketsData = await load("tickets", () =>
-        apiFetch<Array<{ id: string; purchasedAt?: string; quantity: number; seatIds?: string[]; ticketType?: { id: string; name: string; price: number; serviceFee: number }; event?: Partial<EventData>; isSecuredOnChain?: boolean; isForSale?: boolean; contractAddress?: string; ticketRootId?: number; version?: number; ownerWallet?: string; resalePrice?: number | null; qrPayload?: string | null }>>("/api/tickets")
+        apiFetch<TicketApiResponse[]>("/api/tickets")
       );
       if (ticketsData) {
         setPurchasedTickets(mapTicketsResponse(ticketsData));
@@ -678,60 +728,86 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   );
 
   const listTicketForSale = useCallback(
-    async (ticketId: string, priceXLM: number): Promise<{ success: boolean; txHash?: string; error?: string }> => {
+    async (ticketId: string, priceXLM: number, options?: ResaleFlowOptions): Promise<{ success: boolean; txHash?: string; error?: string }> => {
       try {
         await ensureFreighterReady(walletAddress ?? undefined);
         const priceStroops = Math.round(priceXLM * 10_000_000);
+        options?.onStatus?.("building_xdr");
         const { xdr, networkPassphrase, intentId } = await apiFetch<TransactionIntentResponse>("/api/transactions/list-ticket", {
           method: "POST",
           body: JSON.stringify({ ticketId, price: priceStroops }),
         });
+        options?.onStatus?.("signing");
         const { signTransaction } = await import("@stellar/freighter-api");
         const signResult = await signTransaction(xdr, { networkPassphrase });
         const signedXdr = typeof signResult === "string" ? signResult : (signResult as any)?.signedTxXdr ?? "";
-        if (!signedXdr) return { success: false, error: "Firma cancelada por el usuario" };
+        if (!signedXdr) {
+          options?.onStatus?.("failed");
+          return { success: false, error: "Firma cancelada por el usuario" };
+        }
 
         const result = await apiFetch<{ success: boolean; txHash: string }>("/api/transactions/submit", {
           method: "POST",
           body: JSON.stringify({ signedXdr, intentId }),
         });
-        setPurchasedTickets((prev) =>
-          prev.map((t) => (t.id === ticketId ? { ...t, isForSale: true, resalePrice: priceStroops } : t))
+        options?.onStatus?.("submitted");
+        const confirmed = await waitForTicketReconciliation(
+          (tickets) => tickets.some((t) => t.id === ticketId && t.isForSale === true && t.resalePrice === priceStroops),
+          options?.onStatus
         );
+        if (!confirmed) {
+          options?.onStatus?.("failed");
+          return { success: false, txHash: result.txHash, error: "Transaccion enviada, pero el indexer aun no confirma el listado." };
+        }
+        options?.onStatus?.("confirmed");
         return { success: true, txHash: result.txHash };
       } catch (error: any) {
+        options?.onStatus?.("failed");
         return { success: false, error: error.message || "Error listando ticket" };
       }
     },
-    [apiFetch, ensureFreighterReady, walletAddress]
+    [apiFetch, ensureFreighterReady, waitForTicketReconciliation, walletAddress]
   );
 
   const cancelResaleListing = useCallback(
-    async (ticketId: string): Promise<{ success: boolean; txHash?: string; error?: string }> => {
+    async (ticketId: string, options?: ResaleFlowOptions): Promise<{ success: boolean; txHash?: string; error?: string }> => {
       try {
         await ensureFreighterReady(walletAddress ?? undefined);
+        options?.onStatus?.("building_xdr");
         const { xdr, networkPassphrase, intentId } = await apiFetch<TransactionIntentResponse>("/api/transactions/cancel-listing", {
           method: "POST",
           body: JSON.stringify({ ticketId }),
         });
+        options?.onStatus?.("signing");
         const { signTransaction } = await import("@stellar/freighter-api");
         const signResult = await signTransaction(xdr, { networkPassphrase });
         const signedXdr = typeof signResult === "string" ? signResult : (signResult as any)?.signedTxXdr ?? "";
-        if (!signedXdr) return { success: false, error: "Firma cancelada por el usuario" };
+        if (!signedXdr) {
+          options?.onStatus?.("failed");
+          return { success: false, error: "Firma cancelada por el usuario" };
+        }
 
         const result = await apiFetch<{ success: boolean; txHash: string }>("/api/transactions/submit", {
           method: "POST",
           body: JSON.stringify({ signedXdr, intentId }),
         });
-        setPurchasedTickets((prev) =>
-          prev.map((t) => (t.id === ticketId ? { ...t, isForSale: false, resalePrice: undefined } : t))
+        options?.onStatus?.("submitted");
+        const confirmed = await waitForTicketReconciliation(
+          (tickets) => tickets.some((t) => t.id === ticketId && t.isForSale !== true),
+          options?.onStatus
         );
+        if (!confirmed) {
+          options?.onStatus?.("failed");
+          return { success: false, txHash: result.txHash, error: "Transaccion enviada, pero el indexer aun no confirma la cancelacion." };
+        }
+        options?.onStatus?.("confirmed");
         return { success: true, txHash: result.txHash };
       } catch (error: any) {
+        options?.onStatus?.("failed");
         return { success: false, error: error.message || "Error cancelando listado" };
       }
     },
-    [apiFetch, ensureFreighterReady, walletAddress]
+    [apiFetch, ensureFreighterReady, waitForTicketReconciliation, walletAddress]
   );
 
   const buyResaleTicket = useCallback(
@@ -739,58 +815,78 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       contractAddress: string,
       ticketRootId: number,
       buyerPublicKey: string,
-      currentVersion: number
+      currentVersion: number,
+      options?: ResaleFlowOptions
     ): Promise<{ success: boolean; txHash?: string; error?: string }> => {
       try {
         await ensureFreighterReady(buyerPublicKey);
         const { signTransaction } = await import("@stellar/freighter-api");
 
         // 1. XDR sin firmar para comprar_boleto
+        options?.onStatus?.("building_xdr");
         const { xdr, networkPassphrase, intentId } = await apiFetch<TransactionIntentResponse>("/api/transactions/build-buy-xdr", {
           method: "POST",
           body: JSON.stringify({ contractAddress, ticketRootId, buyerPublicKey }),
         });
 
         // 2. Firma + submit del comprar_boleto
+        options?.onStatus?.("signing");
         const signResult = await signTransaction(xdr, { networkPassphrase });
         const signedXdr = typeof signResult === "string" ? signResult : (signResult as any)?.signedTxXdr ?? "";
-        if (!signedXdr) return { success: false, error: "Firma cancelada por el usuario" };
+        if (!signedXdr) {
+          options?.onStatus?.("failed");
+          return { success: false, error: "Firma cancelada por el usuario" };
+        }
 
         const submitResult = await apiFetch<{ success: boolean; txHash: string }>("/api/transactions/submit", {
           method: "POST",
           body: JSON.stringify({ signedXdr, intentId }),
         });
+        options?.onStatus?.("submitted");
 
         // 3. Tras ~7s (indexer aplica boleto_revendido), pedir la transferencia
         //    del collectible NFT solo si el backend puede verificar txHash/comprador/version.
+        options?.onStatus?.("reconciling");
         setBalanceVersion((v) => v + 1);
-        void (async () => {
-          await new Promise((r) => setTimeout(r, 7000));
-          try {
-            await apiFetch("/api/transactions/transfer-nft", {
-              method: "POST",
-              body: JSON.stringify({
-                contractAddress,
-                ticketRootId,
-                buyerWallet: buyerPublicKey,
-                txHash: submitResult.txHash,
-                expectedVersion: currentVersion + 1,
-              }),
-            });
-          } catch (e: any) {
-            console.warn("[nft] verified transfer skipped:", e?.message);
-          }
-          await refreshTickets().catch(() => {});
-          await refreshSoldTickets().catch(() => {});
-          setBalanceVersion((v) => v + 1);
-        })();
+        await sleep(7000);
+        try {
+          await apiFetch("/api/transactions/transfer-nft", {
+            method: "POST",
+            body: JSON.stringify({
+              contractAddress,
+              ticketRootId,
+              buyerWallet: buyerPublicKey,
+              txHash: submitResult.txHash,
+              expectedVersion: currentVersion + 1,
+            }),
+          });
+        } catch (e: any) {
+          console.warn("[nft] verified transfer skipped:", e?.message);
+        }
+        const confirmed = await waitForTicketReconciliation(
+          (tickets) =>
+            tickets.some((t) =>
+              t.contractAddress === contractAddress &&
+              t.ticketRootId === ticketRootId &&
+              t.version === currentVersion + 1
+            ),
+          options?.onStatus
+        );
+        await refreshSoldTickets().catch(() => {});
+        setBalanceVersion((v) => v + 1);
+        if (!confirmed) {
+          options?.onStatus?.("failed");
+          return { success: false, txHash: submitResult.txHash, error: "Transaccion enviada, pero el indexer aun no confirma la compra." };
+        }
 
+        options?.onStatus?.("confirmed");
         return { success: true, txHash: submitResult.txHash };
       } catch (error: any) {
+        options?.onStatus?.("failed");
         return { success: false, error: error.message || "Error comprando ticket" };
       }
     },
-    [apiFetch, refreshTickets, refreshSoldTickets, ensureFreighterReady]
+    [apiFetch, refreshSoldTickets, ensureFreighterReady, waitForTicketReconciliation]
   );
 
   const linkWallet = useCallback(
