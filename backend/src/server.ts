@@ -26,7 +26,7 @@ import { buildSimulatedOrderNumber, normalizeIdempotencyKey } from './checkoutPo
 import { deriveChainEventId } from './secureTicketPolicy';
 import { createWalletChallenge, verifyWalletChallengeSignature } from './walletChallengePolicy';
 import { signTicketQr } from './qrPolicy';
-import { authorizeTransactionIntentSubmit, buildTransactionIntentExpiry } from './transactionIntentPolicy';
+import { authorizeTransactionIntentCurrentState, authorizeTransactionIntentSubmit, buildTransactionIntentExpiry } from './transactionIntentPolicy';
 import { authorizeSingleEventDeploy } from './deployEventPolicy';
 import { codeForStatus, requestIdMiddleware, sendApiError } from './apiError';
 import { evaluateRateLimit, isCorsOriginAllowed, isJwtSecretStrong, parseCorsOrigins, type RateLimitBucket } from './securityPolicy';
@@ -1320,6 +1320,11 @@ app.post('/api/transactions/submit', transactionRateLimit, authMiddleware, async
         id: true,
         user_id: true,
         wallet_address: true,
+        operation: true,
+        contract_address: true,
+        ticket_root_id: true,
+        expected_version: true,
+        expected_price: true,
         xdr_hash: true,
         status: true,
         expires_at: true,
@@ -1340,6 +1345,36 @@ app.post('/api/transactions/submit', transactionRateLimit, authMiddleware, async
         });
       }
       sendApiError(req, res, intentDecision.status, codeForStatus(intentDecision.status), intentDecision.error);
+      return;
+    }
+    if (!intent) {
+      sendApiError(req, res, 400, 'BAD_REQUEST', 'Intencion de transaccion no encontrada');
+      return;
+    }
+
+    const currentTicket = await prisma.tickets.findFirst({
+      where: {
+        contract_address: intent.contract_address,
+        ticket_root_id: intent.ticket_root_id,
+        version: intent.expected_version,
+      },
+      select: {
+        contract_address: true,
+        ticket_root_id: true,
+        version: true,
+        owner_wallet: true,
+        status: true,
+        is_for_sale: true,
+        resale_price: true,
+      },
+    });
+    const currentStateDecision = authorizeTransactionIntentCurrentState({
+      intent,
+      ticket: currentTicket,
+      walletAddress: user.wallet_address,
+    });
+    if (!currentStateDecision.ok) {
+      sendApiError(req, res, currentStateDecision.status, codeForStatus(currentStateDecision.status), currentStateDecision.error);
       return;
     }
 

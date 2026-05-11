@@ -6,10 +6,25 @@ export type TransactionIntentSnapshot = {
   id: string;
   user_id: string;
   wallet_address: string;
+  operation?: string;
+  contract_address?: string;
+  ticket_root_id?: number;
+  expected_version?: number | null;
+  expected_price?: bigint | number | null;
   xdr_hash: string;
   status: string;
   expires_at: Date;
   submitted_at?: Date | null;
+};
+
+export type TransactionIntentTicketSnapshot = {
+  contract_address: string | null;
+  ticket_root_id: number | null;
+  version: number | null;
+  owner_wallet: string | null;
+  status: string;
+  is_for_sale: boolean;
+  resale_price: bigint | number | null;
 };
 
 export type TransactionIntentDecision =
@@ -49,4 +64,62 @@ export function authorizeTransactionIntentSubmit(input: {
   }
 
   return { ok: true };
+}
+
+export function authorizeTransactionIntentCurrentState(input: {
+  intent: TransactionIntentSnapshot;
+  ticket: TransactionIntentTicketSnapshot | null;
+  walletAddress: string;
+}): TransactionIntentDecision {
+  const { intent, ticket, walletAddress } = input;
+  if (!ticket) {
+    return { ok: false, status: 409, error: 'Ticket de la intencion no encontrado o ya no esta activo' };
+  }
+
+  if (
+    ticket.contract_address !== intent.contract_address ||
+    ticket.ticket_root_id !== intent.ticket_root_id ||
+    ticket.version !== intent.expected_version
+  ) {
+    return { ok: false, status: 409, error: 'La version actual del ticket no coincide con la intencion firmada' };
+  }
+
+  if (ticket.status !== 'ACTIVE') {
+    return { ok: false, status: 409, error: `Ticket ya no esta activo: ${ticket.status}` };
+  }
+
+  if (intent.operation === 'listar_boleto') {
+    if (ticket.owner_wallet !== walletAddress) {
+      return { ok: false, status: 403, error: 'La wallet ya no coincide con el propietario del ticket' };
+    }
+    if (ticket.is_for_sale) {
+      return { ok: false, status: 409, error: 'Ticket ya esta en venta' };
+    }
+    return { ok: true };
+  }
+
+  if (intent.operation === 'cancelar_venta') {
+    if (ticket.owner_wallet !== walletAddress) {
+      return { ok: false, status: 403, error: 'La wallet ya no coincide con el propietario del ticket' };
+    }
+    if (!ticket.is_for_sale) {
+      return { ok: false, status: 409, error: 'Ticket ya no esta en venta' };
+    }
+    return { ok: true };
+  }
+
+  if (intent.operation === 'comprar_boleto') {
+    if (!ticket.is_for_sale) {
+      return { ok: false, status: 409, error: 'Ticket ya no esta en venta' };
+    }
+    if (ticket.owner_wallet === walletAddress) {
+      return { ok: false, status: 403, error: 'No puedes comprar tu propio boleto' };
+    }
+    if (String(ticket.resale_price ?? '') !== String(intent.expected_price ?? '')) {
+      return { ok: false, status: 409, error: 'El precio actual del ticket no coincide con la intencion firmada' };
+    }
+    return { ok: true };
+  }
+
+  return { ok: false, status: 400, error: `Operacion de intencion no soportada: ${intent.operation}` };
 }
