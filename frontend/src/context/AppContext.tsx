@@ -1,6 +1,8 @@
 import { createContext, useContext, useState, useCallback, useMemo, useEffect, type ReactNode } from "react";
 import type { EventData, TicketType } from "@/data/events";
 
+const STELLAR_TESTNET_PASSPHRASE = "Test SDF Network ; September 2015";
+
 /* ── Cart ── */
 export interface CartItem {
   id: string;
@@ -784,9 +786,42 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
 
   const linkWallet = useCallback(
     async (walletAddress: string) => {
+      const challenge = await apiFetch<{
+        challengeId: string;
+        message: string;
+        expiresAt: string;
+      }>("/api/wallet/challenge", {
+        method: "POST",
+        body: JSON.stringify({ walletAddress }),
+      });
+
+      const { signMessage } = await import("@stellar/freighter-api");
+      const signed = await signMessage(challenge.message, {
+        networkPassphrase: STELLAR_TESTNET_PASSPHRASE,
+        address: walletAddress,
+      });
+      if ((signed as any)?.error) {
+        throw new Error((signed as any).error.message ?? "Freighter no pudo firmar el challenge de wallet");
+      }
+
+      const signedMessage = (signed as any)?.signedMessage;
+      const signerAddress = (signed as any)?.signerAddress;
+      if (signerAddress && signerAddress !== walletAddress) {
+        throw new Error("La firma no corresponde a la wallet seleccionada en Freighter");
+      }
+
+      const signature =
+        typeof signedMessage === "string"
+          ? signedMessage
+          : btoa(String.fromCharCode(...Array.from(signedMessage ?? [])));
+
       await apiFetch("/api/users/me/wallet", {
         method: "PATCH",
-        body: JSON.stringify({ walletAddress }),
+        body: JSON.stringify({
+          walletAddress,
+          challengeId: challenge.challengeId,
+          signature,
+        }),
       });
     },
     [apiFetch]

@@ -100,3 +100,26 @@ test('POST /api/transactions/transfer-nft requires authentication', async () => 
   const res = await request(app).post('/api/transactions/transfer-nft').send({}).expect(401);
   assert.equal(res.body.error, 'Token requerido');
 });
+
+test('POST /api/wallet/challenge requires authentication', async () => {
+  const res = await request(app).post('/api/wallet/challenge').send({}).expect(401);
+  assert.equal(res.body.error, 'Token requerido');
+});
+
+test('POST /api/wallet/challenge rejects malformed Stellar wallets', async () => {
+  const res = await request(app)
+    .post('/api/wallet/challenge')
+    .set('Authorization', `Bearer ${tokenFor('00000000-0000-0000-0000-000000000007')}`)
+    .send({ walletAddress: 'not-a-stellar-public-key' })
+    .expect(400);
+  assert.equal(res.body.error, 'walletAddress Stellar invalida');
+});
+
+test('PATCH /api/users/me/wallet requires proof fields', async () => {
+  const res = await request(app)
+    .patch('/api/users/me/wallet')
+    .set('Authorization', `Bearer ${tokenFor('00000000-0000-0000-0000-000000000008')}`)
+    .send({ walletAddress: 'GA3GQMZLZBE4VTVNZPZ2SQZGR5F6TFVMHY65IQCY2MMZ4KUMRYWSOVRD' })
+    .expect(400);
+  assert.equal(res.body.error, 'walletAddress, challengeId y signature son requeridos');
+});

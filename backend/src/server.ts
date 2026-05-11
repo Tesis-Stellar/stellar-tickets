@@ -24,6 +24,7 @@ import { authorizeVerifiedNftTransfer } from './nftTransferPolicy';
 import { authorizeScannerRole, evaluateScanTicket, parseScanRequest } from './scannerPolicy';
 import { buildSimulatedOrderNumber, normalizeIdempotencyKey } from './checkoutPolicy';
 import { deriveChainEventId } from './secureTicketPolicy';
+import { createWalletChallenge, verifyWalletChallengeSignature } from './walletChallengePolicy';
 import { exec } from 'child_process';
 import util from 'util';
 import QRCode from 'qrcode';
@@ -184,6 +185,7 @@ async function buildTicketQrPng(payload: object): Promise<Buffer> {
     color: { dark: '#000000', light: '#FFFFFF' },
   });
 }
+
 
 // GET /api/tickets/qr/:assetCode.png — public PNG referenced by stellar.toml.
 // QR encodes { contractAddress, ticketRootId } so the door scanner can resolve
@@ -1699,15 +1701,99 @@ app.patch('/api/users/me', authMiddleware, async (req, res) => {
   }
 });
 
-// PATCH /api/users/me/wallet — link Freighter wallet to user account
+// POST /api/wallet/challenge — issue a short-lived message to prove wallet ownership
+app.post('/api/wallet/challenge', authMiddleware, async (req, res) => {
+  try {
+    const walletAddress = String(req.body?.walletAddress ?? '').trim();
+    if (!walletAddress) {
+      res.status(400).json({ error: 'walletAddress requerido' });
+      return;
+    }
+
+    const challenge = createWalletChallenge({
+      userId: (req as any).userId,
+      walletAddress,
+    });
+    if ('ok' in challenge) {
+      res.status(challenge.status).json({ error: challenge.error });
+      return;
+    }
+
+    const row = await prisma.wallet_challenges.create({
+      data: {
+        user_id: (req as any).userId,
+        wallet_address: walletAddress,
+        nonce: challenge.nonce,
+        message: challenge.message,
+        expires_at: challenge.expiresAt,
+      },
+      select: { id: true, message: true, expires_at: true },
+    });
+
+    res.status(201).json({
+      challengeId: row.id,
+      message: row.message,
+      expiresAt: row.expires_at,
+    });
+  } catch (error: any) {
+    console.error('[AUTH] Wallet challenge error:', error);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// PATCH /api/users/me/wallet — link Freighter wallet to user account after signature proof
 app.patch('/api/users/me/wallet', authMiddleware, async (req, res) => {
   try {
-    const { walletAddress } = req.body;
-    if (!walletAddress) { res.status(400).json({ error: 'walletAddress requerido' }); return; }
-    const user = await prisma.users.update({
-      where: { id: (req as any).userId },
-      data: { wallet_address: walletAddress },
+    const walletAddress = String(req.body?.walletAddress ?? '').trim();
+    const challengeId = String(req.body?.challengeId ?? '').trim();
+    const signature = String(req.body?.signature ?? '').trim();
+    if (!walletAddress || !challengeId || !signature) {
+      res.status(400).json({ error: 'walletAddress, challengeId y signature son requeridos' });
+      return;
+    }
+
+    const challenge = await prisma.wallet_challenges.findFirst({
+      where: {
+        id: challengeId,
+        user_id: (req as any).userId,
+        wallet_address: walletAddress,
+      },
+      select: {
+        id: true,
+        message: true,
+        expires_at: true,
+        consumed_at: true,
+      },
     });
+
+    if (!challenge) {
+      res.status(404).json({ error: 'Challenge de wallet no encontrado' });
+      return;
+    }
+
+    const verification = verifyWalletChallengeSignature({
+      walletAddress,
+      message: challenge.message,
+      signature,
+      expiresAt: challenge.expires_at,
+      consumedAt: challenge.consumed_at,
+    });
+    if (!verification.ok) {
+      res.status(verification.status).json({ error: verification.error });
+      return;
+    }
+
+    const user = await prisma.$transaction(async (tx) => {
+      await tx.wallet_challenges.update({
+        where: { id: challenge.id },
+        data: { consumed_at: new Date() },
+      });
+      return tx.users.update({
+        where: { id: (req as any).userId },
+        data: { wallet_address: walletAddress },
+      });
+    });
+
     res.json({ walletAddress: user.wallet_address });
   } catch (error: any) {
     if (error.code === 'P2002') {
@@ -1715,7 +1801,7 @@ app.patch('/api/users/me/wallet', authMiddleware, async (req, res) => {
       return;
     }
     console.error('[AUTH] Link wallet error:', error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Error interno del servidor' });
   }
 });
 

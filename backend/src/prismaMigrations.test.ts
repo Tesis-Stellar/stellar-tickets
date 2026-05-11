@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import test from 'node:test';
 
@@ -8,6 +8,11 @@ const initMigration = readFileSync(
   join(migrationsDir, '202605100000_init_current_schema/migration.sql'),
   'utf8',
 );
+const allMigrations = readdirSync(migrationsDir)
+  .filter((entry) => entry !== 'migration_lock.toml')
+  .sort()
+  .map((entry) => readFileSync(join(migrationsDir, entry, 'migration.sql'), 'utf8'))
+  .join('\n');
 const schema = readFileSync(join(__dirname, '../prisma/schema.prisma'), 'utf8');
 
 test('Prisma migrations are configured for PostgreSQL deploys', () => {
@@ -16,14 +21,14 @@ test('Prisma migrations are configured for PostgreSQL deploys', () => {
   assert.match(readFileSync(lockPath, 'utf8'), /provider = "postgresql"/);
 });
 
-test('initial migration recreates every ticketing table declared in schema.prisma', () => {
+test('versioned migrations recreate every ticketing table declared in schema.prisma', () => {
   const modelTableNames = Array.from(schema.matchAll(/^model\s+(\w+)\s+\{/gm)).map(([, model]) => model);
 
   assert.ok(modelTableNames.length > 0);
   for (const tableName of modelTableNames) {
     assert.match(
-      initMigration,
-      new RegExp(`CREATE TABLE "ticketing"\\."${tableName}"`),
+      allMigrations,
+      new RegExp(`CREATE TABLE (IF NOT EXISTS )?"?ticketing"?\\."?${tableName}"?`),
       `missing CREATE TABLE for ${tableName}`,
     );
   }
