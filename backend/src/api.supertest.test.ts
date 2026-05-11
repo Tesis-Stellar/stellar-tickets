@@ -81,7 +81,9 @@ test('POST /api/admin/scan rejects non-admin users before scanning', async () =>
     .set('Authorization', `Bearer ${tokenFor(userId)}`)
     .send({ ticketId: '00000000-0000-0000-0000-000000000006' })
     .expect(403);
-  assert.equal(res.body.error, 'Acceso denegado');
+  assert.equal(res.body.code, 'FORBIDDEN');
+  assert.equal(res.body.message, 'Acceso denegado');
+  assert.ok(res.body.requestId);
 });
 
 test('POST /api/admin/scan validates malformed QR payloads for admins', async () => {
@@ -93,7 +95,9 @@ test('POST /api/admin/scan validates malformed QR payloads for admins', async ()
     .set('Authorization', `Bearer ${tokenFor(admin.id)}`)
     .send({ qrToken: 'not-a-token' })
     .expect(400);
-  assert.equal(res.body.error, 'QR firmado invalido');
+  assert.equal(res.body.code, 'BAD_REQUEST');
+  assert.equal(res.body.message, 'QR firmado invalido');
+  assert.ok(res.body.requestId);
 });
 
 test('POST /api/transactions/transfer-nft requires authentication', async () => {
@@ -107,7 +111,9 @@ test('POST /api/transactions/submit requires a backend intent id', async () => {
     .set('Authorization', `Bearer ${tokenFor('00000000-0000-0000-0000-000000000009')}`)
     .send({ signedXdr: 'AAAA' })
     .expect(400);
-  assert.equal(res.body.error, 'signedXdr e intentId son requeridos');
+  assert.equal(res.body.code, 'BAD_REQUEST');
+  assert.equal(res.body.message, 'signedXdr e intentId son requeridos');
+  assert.ok(res.body.requestId);
 });
 
 test('POST /api/admin/events/:id/deploy rejects customers before deployment', async () => {
@@ -119,7 +125,9 @@ test('POST /api/admin/events/:id/deploy rejects customers before deployment', as
     .set('Authorization', `Bearer ${tokenFor(userId)}`)
     .send({})
     .expect(403);
-  assert.equal(res.body.error, 'Acceso denegado');
+  assert.equal(res.body.code, 'FORBIDDEN');
+  assert.equal(res.body.message, 'Acceso denegado');
+  assert.ok(res.body.requestId);
 });
 
 test('POST /api/wallet/challenge requires authentication', async () => {
@@ -133,7 +141,9 @@ test('POST /api/wallet/challenge rejects malformed Stellar wallets', async () =>
     .set('Authorization', `Bearer ${tokenFor('00000000-0000-0000-0000-000000000007')}`)
     .send({ walletAddress: 'not-a-stellar-public-key' })
     .expect(400);
-  assert.equal(res.body.error, 'walletAddress Stellar invalida');
+  assert.equal(res.body.code, 'BAD_REQUEST');
+  assert.equal(res.body.message, 'walletAddress Stellar invalida');
+  assert.ok(res.body.requestId);
 });
 
 test('PATCH /api/users/me/wallet requires proof fields', async () => {
@@ -142,5 +152,7 @@ test('PATCH /api/users/me/wallet requires proof fields', async () => {
     .set('Authorization', `Bearer ${tokenFor('00000000-0000-0000-0000-000000000008')}`)
     .send({ walletAddress: 'GA3GQMZLZBE4VTVNZPZ2SQZGR5F6TFVMHY65IQCY2MMZ4KUMRYWSOVRD' })
     .expect(400);
-  assert.equal(res.body.error, 'walletAddress, challengeId y signature son requeridos');
+  assert.equal(res.body.code, 'BAD_REQUEST');
+  assert.equal(res.body.message, 'walletAddress, challengeId y signature son requeridos');
+  assert.ok(res.body.requestId);
 });

@@ -28,6 +28,7 @@ import { createWalletChallenge, verifyWalletChallengeSignature } from './walletC
 import { signTicketQr } from './qrPolicy';
 import { authorizeTransactionIntentSubmit, buildTransactionIntentExpiry } from './transactionIntentPolicy';
 import { authorizeSingleEventDeploy } from './deployEventPolicy';
+import { codeForStatus, requestIdMiddleware, sendApiError } from './apiError';
 import { exec } from 'child_process';
 import util from 'util';
 import QRCode from 'qrcode';
@@ -146,6 +147,7 @@ function authMiddleware(req: Request, res: Response, next: NextFunction) {
   }
 }
 
+app.use(requestIdMiddleware);
 app.use(cors());
 app.use(express.json());
 
@@ -1237,23 +1239,23 @@ app.post('/api/transactions/submit', authMiddleware, async (req, res) => {
     const userId = (req as any).userId;
     const { signedXdr, intentId } = req.body;
     if (!signedXdr || !intentId) {
-      res.status(400).json({ error: 'signedXdr e intentId son requeridos' });
+      sendApiError(req, res, 400, 'BAD_REQUEST', 'signedXdr e intentId son requeridos');
       return;
     }
 
     const user = await prisma.users.findUnique({ where: { id: userId }, select: { wallet_address: true } });
     if (!user?.wallet_address) {
-      res.status(400).json({ error: 'Debes vincular una wallet antes de enviar una transacción' });
+      sendApiError(req, res, 400, 'BAD_REQUEST', 'Debes vincular una wallet antes de enviar una transaccion');
       return;
     }
 
     const tx = TransactionBuilder.fromXDR(signedXdr, NETWORK_PASSPHRASE);
     if (tx instanceof FeeBumpTransaction) {
-      res.status(400).json({ error: 'Las transacciones fee-bump no están soportadas en este endpoint' });
+      sendApiError(req, res, 400, 'BAD_REQUEST', 'Las transacciones fee-bump no estan soportadas en este endpoint');
       return;
     }
     if (tx.source !== user.wallet_address) {
-      res.status(403).json({ error: 'La transacción firmada no corresponde a la wallet vinculada al usuario' });
+      sendApiError(req, res, 403, 'FORBIDDEN', 'La transaccion firmada no corresponde a la wallet vinculada al usuario');
       return;
     }
 
@@ -1282,7 +1284,7 @@ app.post('/api/transactions/submit', authMiddleware, async (req, res) => {
           data: { status: 'EXPIRED' },
         });
       }
-      res.status(intentDecision.status).json({ error: intentDecision.error });
+      sendApiError(req, res, intentDecision.status, codeForStatus(intentDecision.status), intentDecision.error);
       return;
     }
 
@@ -1293,7 +1295,7 @@ app.post('/api/transactions/submit', authMiddleware, async (req, res) => {
         where: { id: String(intentId) },
         data: { status: 'FAILED' },
       });
-      res.status(400).json({ error: 'La red rechazó la transacción firmada' });
+      sendApiError(req, res, 400, 'SOROBAN_REJECTED', 'La red rechazo la transaccion firmada');
       return;
     }
 
@@ -1310,7 +1312,7 @@ app.post('/api/transactions/submit', authMiddleware, async (req, res) => {
         where: { id: String(intentId) },
         data: { status: 'FAILED', tx_hash: sendResponse.hash },
       });
-      res.status(400).json({ error: 'Transacción fallida: ' + getResponse.status });
+      sendApiError(req, res, 400, 'SOROBAN_FAILED', `Transaccion fallida: ${getResponse.status}`);
       return;
     }
 
@@ -1323,7 +1325,7 @@ app.post('/api/transactions/submit', authMiddleware, async (req, res) => {
     res.json({ success: true, txHash: sendResponse.hash });
   } catch (error: any) {
     console.error('[SOROBAN] submit error:', error);
-    res.status(500).json({ error: error.message });
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error enviando transaccion');
   }
 });
 
@@ -1332,12 +1334,12 @@ app.post('/api/transactions/submit', authMiddleware, async (req, res) => {
 app.post('/api/transactions/transfer-nft', authMiddleware, async (req, res) => {
   try {
     if (!organizerKeypair) {
-      res.status(503).json({ error: 'Blockchain no configurada' }); return;
+      sendApiError(req, res, 503, 'BLOCKCHAIN_NOT_CONFIGURED', 'Blockchain no configurada'); return;
     }
     const userId = (req as any).userId;
     const { contractAddress, ticketRootId, buyerWallet, txHash, expectedVersion } = req.body;
     if (!contractAddress || ticketRootId === undefined || !buyerWallet || !txHash || expectedVersion === undefined) {
-      res.status(400).json({ error: 'contractAddress, ticketRootId, buyerWallet, txHash y expectedVersion son requeridos' }); return;
+      sendApiError(req, res, 400, 'BAD_REQUEST', 'contractAddress, ticketRootId, buyerWallet, txHash y expectedVersion son requeridos'); return;
     }
 
     const authorization = await authorizeVerifiedNftTransfer(
@@ -1392,7 +1394,7 @@ app.post('/api/transactions/transfer-nft', authMiddleware, async (req, res) => {
       },
     );
     if (!authorization.ok) {
-      res.status(authorization.status).json({ error: authorization.error });
+      sendApiError(req, res, authorization.status, codeForStatus(authorization.status), authorization.error);
       return;
     }
 
@@ -1419,7 +1421,7 @@ app.post('/api/transactions/transfer-nft', authMiddleware, async (req, res) => {
     }
   } catch (error: any) {
     console.error('[NFT] transfer error:', error?.message ?? error);
-    res.status(500).json({ error: error.message ?? 'Error transfiriendo NFT' });
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error transfiriendo NFT');
   }
 });
 
@@ -1568,7 +1570,7 @@ app.post('/api/admin/scan', authMiddleware, async (req, res) => {
     const user = await prisma.users.findUnique({ where: { id: (req as any).userId } });
     const roleDecision = authorizeScannerRole(user?.role);
     if (roleDecision) {
-      res.status(roleDecision.status).json({ error: roleDecision.error });
+      sendApiError(req, res, roleDecision.status, codeForStatus(roleDecision.status), roleDecision.error);
       return;
     }
 
@@ -1577,7 +1579,7 @@ app.post('/api/admin/scan', authMiddleware, async (req, res) => {
     //   { qrToken }   <- signed NFT QR with contractAddress, ticketRootId, version, eventId, exp and nonce.
     const scanRequest = parseScanRequest(req.body, { qrSecret: QR_SIGNING_SECRET });
     if ('ok' in scanRequest) {
-      res.status(scanRequest.status).json({ error: scanRequest.error });
+      sendApiError(req, res, scanRequest.status, codeForStatus(scanRequest.status), scanRequest.error);
       return;
     }
 
@@ -1596,7 +1598,7 @@ app.post('/api/admin/scan', authMiddleware, async (req, res) => {
         select: { id: true } as any,
       });
       if (!event) {
-        res.status(409).json({ error: 'QR no corresponde al evento del contrato' });
+        sendApiError(req, res, 409, 'CONFLICT', 'QR no corresponde al evento del contrato');
         return;
       }
       // Resolve the latest version for this root. Status is checked below so
@@ -1615,7 +1617,7 @@ app.post('/api/admin/scan', authMiddleware, async (req, res) => {
       requestedVersion,
     );
     if (!scanDecision.ok) {
-      res.status(scanDecision.status).json({ error: scanDecision.error });
+      sendApiError(req, res, scanDecision.status, codeForStatus(scanDecision.status), scanDecision.error);
       return;
     }
 
@@ -1629,7 +1631,7 @@ app.post('/api/admin/scan', authMiddleware, async (req, res) => {
     res.json({ success: true, message: 'Boleto validado y marcado como usado' });
   } catch (error: any) {
     console.error('[SCAN] Error:', error);
-    res.status(500).json({ error: error.message });
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error interno del scanner');
   }
 });
 
@@ -1727,7 +1729,7 @@ app.post('/api/admin/events', authMiddleware, async (req, res) => {
 app.post('/api/admin/events/:id/deploy', authMiddleware, async (req, res) => {
   try {
     const user = await prisma.users.findUnique({ where: { id: (req as any).userId } });
-    if (user?.role !== 'ADMIN') { res.status(403).json({ error: 'Acceso denegado' }); return; }
+    if (user?.role !== 'ADMIN') { sendApiError(req, res, 403, 'FORBIDDEN', 'Acceso denegado'); return; }
 
     const eventId = req.params.id as string;
     const event = await prisma.events.findUnique({
@@ -1743,7 +1745,7 @@ app.post('/api/admin/events/:id/deploy', authMiddleware, async (req, res) => {
     });
     const deployDecision = authorizeSingleEventDeploy({ event, soldTicketsCount });
     if (!deployDecision.ok) {
-      res.status(deployDecision.status).json({ error: deployDecision.error });
+      sendApiError(req, res, deployDecision.status, codeForStatus(deployDecision.status), deployDecision.error);
       return;
     }
 
@@ -1767,7 +1769,7 @@ app.post('/api/admin/events/:id/deploy', authMiddleware, async (req, res) => {
     });
   } catch (error: any) {
     console.error('[ADMIN] Deploy event error:', error);
-    res.status(500).json({ error: error.message });
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error desplegando contrato del evento');
   }
 });
 
@@ -1879,7 +1881,7 @@ app.post('/api/wallet/challenge', authMiddleware, async (req, res) => {
   try {
     const walletAddress = String(req.body?.walletAddress ?? '').trim();
     if (!walletAddress) {
-      res.status(400).json({ error: 'walletAddress requerido' });
+      sendApiError(req, res, 400, 'BAD_REQUEST', 'walletAddress requerido');
       return;
     }
 
@@ -1888,7 +1890,7 @@ app.post('/api/wallet/challenge', authMiddleware, async (req, res) => {
       walletAddress,
     });
     if ('ok' in challenge) {
-      res.status(challenge.status).json({ error: challenge.error });
+      sendApiError(req, res, challenge.status, codeForStatus(challenge.status), challenge.error);
       return;
     }
 
@@ -1910,7 +1912,7 @@ app.post('/api/wallet/challenge', authMiddleware, async (req, res) => {
     });
   } catch (error: any) {
     console.error('[AUTH] Wallet challenge error:', error);
-    res.status(500).json({ error: 'Error interno del servidor' });
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error interno del servidor');
   }
 });
 
@@ -1921,7 +1923,7 @@ app.patch('/api/users/me/wallet', authMiddleware, async (req, res) => {
     const challengeId = String(req.body?.challengeId ?? '').trim();
     const signature = String(req.body?.signature ?? '').trim();
     if (!walletAddress || !challengeId || !signature) {
-      res.status(400).json({ error: 'walletAddress, challengeId y signature son requeridos' });
+      sendApiError(req, res, 400, 'BAD_REQUEST', 'walletAddress, challengeId y signature son requeridos');
       return;
     }
 
@@ -1940,7 +1942,7 @@ app.patch('/api/users/me/wallet', authMiddleware, async (req, res) => {
     });
 
     if (!challenge) {
-      res.status(404).json({ error: 'Challenge de wallet no encontrado' });
+      sendApiError(req, res, 404, 'NOT_FOUND', 'Challenge de wallet no encontrado');
       return;
     }
 
@@ -1952,7 +1954,7 @@ app.patch('/api/users/me/wallet', authMiddleware, async (req, res) => {
       consumedAt: challenge.consumed_at,
     });
     if (!verification.ok) {
-      res.status(verification.status).json({ error: verification.error });
+      sendApiError(req, res, verification.status, codeForStatus(verification.status), verification.error);
       return;
     }
 
@@ -1970,11 +1972,11 @@ app.patch('/api/users/me/wallet', authMiddleware, async (req, res) => {
     res.json({ walletAddress: user.wallet_address });
   } catch (error: any) {
     if (error.code === 'P2002') {
-      res.status(409).json({ error: 'Wallet ya vinculada a otra cuenta' });
+      sendApiError(req, res, 409, 'CONFLICT', 'Wallet ya vinculada a otra cuenta');
       return;
     }
     console.error('[AUTH] Link wallet error:', error);
-    res.status(500).json({ error: 'Error interno del servidor' });
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error interno del servidor');
   }
 });
 

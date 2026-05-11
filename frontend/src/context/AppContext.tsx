@@ -165,7 +165,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         const rawMessage = await response.text();
         let message = rawMessage;
         try {
-          const parsed = JSON.parse(rawMessage) as { error?: string; message?: string };
+          const parsed = JSON.parse(rawMessage) as { error?: string; message?: string; code?: string; requestId?: string };
           message = parsed.error ?? parsed.message ?? rawMessage;
         } catch {
           // Keep the plain response body when it is not JSON.
