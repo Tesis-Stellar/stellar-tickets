@@ -27,6 +27,14 @@ test('GET /health returns service status', async () => {
   assert.equal(res.body.service, 'stellar-tickets-backend');
 });
 
+test('CORS allowlist permits configured local frontend origin', async () => {
+  const res = await request(app)
+    .get('/health')
+    .set('Origin', 'http://localhost:5173')
+    .expect(200);
+  assert.equal(res.headers['access-control-allow-origin'], 'http://localhost:5173');
+});
+
 test('POST /api/auth/login validates required credentials', async () => {
   const res = await request(app).post('/api/auth/login').send({ email: 'missing-password@example.com' }).expect(400);
   assert.match(res.body.error, /Email y contraseña/);
@@ -43,6 +51,35 @@ test('POST /api/auth/login rejects invalid credentials', async () => {
 test('GET /api/cart requires authentication', async () => {
   const res = await request(app).get('/api/cart').expect(401);
   assert.equal(res.body.error, 'Token requerido');
+});
+
+test('authenticated routes reject inactive users', async () => {
+  const email = `inactive-${Date.now()}@example.com`;
+  const inactiveUser = await prisma.users.create({
+    data: {
+      first_name: 'Inactive',
+      last_name: 'User',
+      email,
+      password_hash: 'not-used',
+      document_type: 'CC',
+      document_number: `INACTIVE-${Date.now()}`,
+      role: 'CUSTOMER',
+      is_active: false,
+    },
+    select: { id: true },
+  });
+
+  try {
+    const res = await request(app)
+      .get('/api/cart')
+      .set('Authorization', `Bearer ${tokenFor(inactiveUser.id)}`)
+      .expect(403);
+    assert.equal(res.body.code, 'USER_INACTIVE');
+    assert.equal(res.body.message, 'Usuario inactivo');
+    assert.ok(res.body.requestId);
+  } finally {
+    await prisma.users.delete({ where: { id: inactiveUser.id } }).catch(() => undefined);
+  }
 });
 
 test('POST /api/cart/items returns 404 for unknown ticket type', async () => {

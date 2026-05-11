@@ -86,6 +86,8 @@ Si la indexación continua se ejecuta por separado en tu despliegue, debe apunta
 | `DATABASE_URL`      | Sí         | URL de PostgreSQL (incluye `?schema=ticketing` si aplica). |
 | `PORT`              | No         | Puerto HTTP (por defecto `3000`). |
 | `JWT_SECRET`        | Sí en producción* | Firma de tokens JWT. Debe definirse explícitamente y ser fuerte en producción. |
+| `JWT_EXPIRES_IN`    | No         | Duración del JWT (`2h` en producción si no se define, `7d` en desarrollo). |
+| `CORS_ORIGINS`      | Recomendado | Lista separada por comas de orígenes permitidos. En desarrollo se agregan localhost automáticamente; en producción se usa solo esta lista. |
 | `SOROBAN_RPC_URL`   | No         | RPC Soroban (por defecto testnet público). |
 | `ORGANIZER_SECRET`  | No**       | Secret key del organizador para operaciones que construyen/envían transacciones desde el backend. |
 | `ORGANIZER_PUBLIC`  | No         | Clave pública del organizador usada en rutas admin/contratos si no quieres el valor por defecto del código. |

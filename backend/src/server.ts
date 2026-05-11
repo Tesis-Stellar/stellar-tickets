@@ -29,6 +29,7 @@ import { signTicketQr } from './qrPolicy';
 import { authorizeTransactionIntentSubmit, buildTransactionIntentExpiry } from './transactionIntentPolicy';
 import { authorizeSingleEventDeploy } from './deployEventPolicy';
 import { codeForStatus, requestIdMiddleware, sendApiError } from './apiError';
+import { evaluateRateLimit, isCorsOriginAllowed, isJwtSecretStrong, parseCorsOrigins, type RateLimitBucket } from './securityPolicy';
 import { exec } from 'child_process';
 import util from 'util';
 import QRCode from 'qrcode';
@@ -52,13 +53,22 @@ const configuredJwtSecret = process.env.JWT_SECRET;
 if (!configuredJwtSecret && isProduction) {
   throw new Error('Missing required environment variable: JWT_SECRET');
 }
+if (isProduction && !isJwtSecretStrong(configuredJwtSecret)) {
+  throw new Error('JWT_SECRET must be at least 32 characters in production');
+}
 
 const EFFECTIVE_JWT_SECRET = configuredJwtSecret || 'stellar-tickets-dev-secret-change-in-prod';
 if (!configuredJwtSecret) {
   console.warn('[WARN] JWT_SECRET is not set. Using insecure development fallback; do not use this in shared, demo, or production environments.');
 }
-const JWT_EXPIRES_IN = '7d';
+const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || (isProduction ? '2h' : '7d');
 const QR_SIGNING_SECRET = process.env.QR_SIGNING_SECRET || EFFECTIVE_JWT_SECRET;
+const configuredCorsOrigins = parseCorsOrigins(process.env.CORS_ORIGINS);
+const developmentCorsOrigins = ['http://localhost:5173', 'http://localhost:8080', 'http://localhost:3000'];
+const CORS_ORIGINS = Array.from(new Set([
+  ...configuredCorsOrigins,
+  ...(!isProduction ? developmentCorsOrigins : []),
+]));
 
 // Soroban / Stellar config
 const SOROBAN_RPC_URL = process.env.SOROBAN_RPC_URL || 'https://soroban-testnet.stellar.org';
@@ -132,7 +142,7 @@ function toUserDto(user: { id: string; first_name: string; last_name: string; em
 }
 
 // Auth middleware: extracts user from JWT
-function authMiddleware(req: Request, res: Response, next: NextFunction) {
+async function authMiddleware(req: Request, res: Response, next: NextFunction) {
   const header = req.headers.authorization;
   if (!header?.startsWith('Bearer ')) {
     res.status(401).json({ error: 'Token requerido' });
@@ -141,14 +151,57 @@ function authMiddleware(req: Request, res: Response, next: NextFunction) {
   try {
     const payload = jwt.verify(header.slice(7), EFFECTIVE_JWT_SECRET) as { userId: string };
     (req as any).userId = payload.userId;
+    const user = await prisma.users.findUnique({
+      where: { id: payload.userId },
+      select: { is_active: true },
+    });
+    if (user && !user.is_active) {
+      sendApiError(req, res, 403, 'USER_INACTIVE', 'Usuario inactivo');
+      return;
+    }
     next();
   } catch {
     res.status(401).json({ error: 'Token inválido o expirado' });
   }
 }
 
+const rateLimitBuckets = new Map<string, RateLimitBucket>();
+
+function rateLimit(options: { key: string; windowMs: number; max: number }) {
+  return (req: Request, res: Response, next: NextFunction) => {
+    const identity = req.ip || req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown';
+    const bucketKey = `${options.key}:${identity}`;
+    const decision = evaluateRateLimit({
+      bucket: rateLimitBuckets.get(bucketKey),
+      now: Date.now(),
+      windowMs: options.windowMs,
+      max: options.max,
+    });
+    rateLimitBuckets.set(bucketKey, decision.bucket);
+    if (!decision.allowed) {
+      res.setHeader('Retry-After', String(decision.retryAfterSeconds));
+      sendApiError(req, res, 429, 'RATE_LIMITED', 'Demasiadas solicitudes, intenta de nuevo mas tarde');
+      return;
+    }
+    next();
+  };
+}
+
+const authRateLimit = rateLimit({ key: 'auth', windowMs: 60_000, max: 20 });
+const scannerRateLimit = rateLimit({ key: 'scanner', windowMs: 60_000, max: 60 });
+const transactionRateLimit = rateLimit({ key: 'transactions', windowMs: 60_000, max: 30 });
+const walletRateLimit = rateLimit({ key: 'wallet', windowMs: 60_000, max: 20 });
+
 app.use(requestIdMiddleware);
-app.use(cors());
+app.use(cors({
+  origin(origin, callback) {
+    if (isCorsOriginAllowed(origin, CORS_ORIGINS)) {
+      callback(null, true);
+      return;
+    }
+    callback(new Error('CORS origin not allowed'));
+  },
+}));
 app.use(express.json());
 
 // ── In-memory cache (avoids repeated Supabase round-trips ~150ms each) ──
@@ -1234,7 +1287,7 @@ app.post('/api/transactions/build-buy-xdr', authMiddleware, async (req, res) => 
 });
 
 // POST /api/transactions/submit — Submit Freighter-signed XDR to Soroban
-app.post('/api/transactions/submit', authMiddleware, async (req, res) => {
+app.post('/api/transactions/submit', transactionRateLimit, authMiddleware, async (req, res) => {
   try {
     const userId = (req as any).userId;
     const { signedXdr, intentId } = req.body;
@@ -1331,7 +1384,7 @@ app.post('/api/transactions/submit', authMiddleware, async (req, res) => {
 
 // POST /api/transactions/transfer-nft — transferencia del collectible NFT
 // solo despues de una reventa confirmada por el indexer/onchain_events.
-app.post('/api/transactions/transfer-nft', authMiddleware, async (req, res) => {
+app.post('/api/transactions/transfer-nft', transactionRateLimit, authMiddleware, async (req, res) => {
   try {
     if (!organizerKeypair) {
       sendApiError(req, res, 503, 'BLOCKCHAIN_NOT_CONFIGURED', 'Blockchain no configurada'); return;
@@ -1513,7 +1566,7 @@ app.get('/api/nft/qr/:nftContractAddress/:tokenIdRaw', async (req, res) => {
 
 // POST /api/transactions/submit-classic — Submit a Freighter-signed CLASSIC tx
 // (e.g. CHANGE_TRUST for the collectible) to Horizon, not Soroban RPC.
-app.post('/api/transactions/submit-classic', authMiddleware, async (req, res) => {
+app.post('/api/transactions/submit-classic', transactionRateLimit, authMiddleware, async (req, res) => {
   try {
     const userId = (req as any).userId;
     const { signedXdr } = req.body;
@@ -1565,7 +1618,7 @@ app.get('/api/admin/venues', authMiddleware, async (req, res) => {
 });
 
 // POST /api/admin/scan — Redeem a ticket
-app.post('/api/admin/scan', authMiddleware, async (req, res) => {
+app.post('/api/admin/scan', scannerRateLimit, authMiddleware, async (req, res) => {
   try {
     const user = await prisma.users.findUnique({ where: { id: (req as any).userId } });
     const roleDecision = authorizeScannerRole(user?.role);
@@ -1774,7 +1827,7 @@ app.post('/api/admin/events/:id/deploy', authMiddleware, async (req, res) => {
 });
 
 // --- AUTH ENDPOINTS ---
-app.post('/api/auth/login', async (req, res) => {
+app.post('/api/auth/login', authRateLimit, async (req, res) => {
   try {
     const { email, password } = req.body;
     if (!email || !password) {
@@ -1805,7 +1858,7 @@ app.post('/api/auth/login', async (req, res) => {
   }
 });
 
-app.post('/api/auth/register', async (req, res) => {
+app.post('/api/auth/register', authRateLimit, async (req, res) => {
   try {
     const { firstName, lastName, email, password, documentType, documentNumber, phone } = req.body;
     if (!firstName || !email || !password || !documentNumber) {
@@ -1877,7 +1930,7 @@ app.patch('/api/users/me', authMiddleware, async (req, res) => {
 });
 
 // POST /api/wallet/challenge — issue a short-lived message to prove wallet ownership
-app.post('/api/wallet/challenge', authMiddleware, async (req, res) => {
+app.post('/api/wallet/challenge', walletRateLimit, authMiddleware, async (req, res) => {
   try {
     const walletAddress = String(req.body?.walletAddress ?? '').trim();
     if (!walletAddress) {
@@ -1917,7 +1970,7 @@ app.post('/api/wallet/challenge', authMiddleware, async (req, res) => {
 });
 
 // PATCH /api/users/me/wallet — link Freighter wallet to user account after signature proof
-app.patch('/api/users/me/wallet', authMiddleware, async (req, res) => {
+app.patch('/api/users/me/wallet', walletRateLimit, authMiddleware, async (req, res) => {
   try {
     const walletAddress = String(req.body?.walletAddress ?? '').trim();
     const challengeId = String(req.body?.challengeId ?? '').trim();
