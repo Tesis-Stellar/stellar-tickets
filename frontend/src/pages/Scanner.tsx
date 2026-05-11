@@ -31,7 +31,7 @@ export const ScannerPage = () => {
 
       // Signed format: { qrToken }
       // Legacy format (old collectible QR): { contractAddress, ticketRootId } is rejected by backend.
-      // Legacy format (in-app QR): { ticketId, code? }
+      // Legacy fixture format ({ ticketId, code?}) requires explicit backend opt-in.
       let body: Record<string, unknown>;
       let label: string;
       if (payload.qrToken) {

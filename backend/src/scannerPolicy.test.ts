@@ -17,13 +17,26 @@ test('rejects invalid scan payloads', () => {
   assert.deepEqual(parseScanRequest({}), {
     ok: false,
     status: 400,
-    error: 'Se requiere ticketId o qrToken firmado',
+    error: 'Se requiere qrToken firmado',
   });
 
   assert.deepEqual(parseScanRequest({ contractAddress: 'CABC', ticketRootId: 'abc' }), {
     ok: false,
     status: 400,
     error: 'QR firmado requerido',
+  });
+});
+
+test('rejects legacy ticketId scans unless explicitly enabled', () => {
+  assert.deepEqual(parseScanRequest({ ticketId: 'ticket-1' }), {
+    ok: false,
+    status: 400,
+    error: 'QR firmado requerido; ticketId legacy deshabilitado',
+  });
+
+  assert.deepEqual(parseScanRequest({ ticketId: 'ticket-1' }, { allowLegacyTicketId: true }), {
+    kind: 'ticketId',
+    ticketId: 'ticket-1',
   });
 });
 

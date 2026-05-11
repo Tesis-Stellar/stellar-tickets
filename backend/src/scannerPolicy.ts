@@ -23,8 +23,11 @@ export function authorizeScannerRole(role: string | null | undefined): ScanPolic
   return { ok: false, status: 403, error: 'Acceso denegado' };
 }
 
-export function parseScanRequest(body: Record<string, unknown>, options?: { qrSecret?: string }): ScanRequest | ScanPolicyError {
+export function parseScanRequest(body: Record<string, unknown>, options?: { qrSecret?: string; allowLegacyTicketId?: boolean }): ScanRequest | ScanPolicyError {
   if (typeof body.ticketId === 'string' && body.ticketId.trim()) {
+    if (!options?.allowLegacyTicketId) {
+      return { ok: false, status: 400, error: 'QR firmado requerido; ticketId legacy deshabilitado' };
+    }
     return { kind: 'ticketId', ticketId: body.ticketId.trim() };
   }
 
@@ -51,7 +54,7 @@ export function parseScanRequest(body: Record<string, unknown>, options?: { qrSe
     return { ok: false, status: 400, error: 'QR firmado requerido' };
   }
 
-  return { ok: false, status: 400, error: 'Se requiere ticketId o qrToken firmado' };
+  return { ok: false, status: 400, error: 'Se requiere qrToken firmado' };
 }
 
 export function evaluateScanTicket(ticket: ScanTicketSnapshot | null, requestedVersion?: number): ScanPolicyResult {

@@ -64,6 +64,7 @@ if (!configuredJwtSecret) {
 }
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || (isProduction ? '2h' : '7d');
 const QR_SIGNING_SECRET = process.env.QR_SIGNING_SECRET || EFFECTIVE_JWT_SECRET;
+const ALLOW_LEGACY_TICKET_ID_SCAN = process.env.ALLOW_LEGACY_TICKET_ID_SCAN === 'true';
 const configuredCorsOrigins = parseCorsOrigins(process.env.CORS_ORIGINS);
 const developmentCorsOrigins = ['http://localhost:5173', 'http://localhost:8080', 'http://localhost:3000'];
 const CORS_ORIGINS = Array.from(new Set([
@@ -1664,10 +1665,12 @@ app.post('/api/admin/scan', scannerRateLimit, authMiddleware, async (req, res) =
       return;
     }
 
-    // Accept either:
-    //   { ticketId }   <- legacy QR (DB UUID, version-bound)
-    //   { qrToken }   <- signed NFT QR with contractAddress, ticketRootId, version, eventId, exp and nonce.
-    const scanRequest = parseScanRequest(req.body, { qrSecret: QR_SIGNING_SECRET });
+    // Production scanner accepts signed QR tokens. Legacy ticketId scanning is
+    // available only when explicitly enabled for demo/dev fixtures.
+    const scanRequest = parseScanRequest(req.body, {
+      qrSecret: QR_SIGNING_SECRET,
+      allowLegacyTicketId: ALLOW_LEGACY_TICKET_ID_SCAN,
+    });
     if ('ok' in scanRequest) {
       sendApiError(req, res, scanRequest.status, codeForStatus(scanRequest.status), scanRequest.error);
       return;
