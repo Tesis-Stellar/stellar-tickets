@@ -22,6 +22,7 @@ import { rpc as SorobanRpc } from '@stellar/stellar-sdk';
 import { runIndexer } from './indexer';
 import { authorizeVerifiedNftTransfer } from './nftTransferPolicy';
 import { authorizeScannerRole, evaluateScanTicket, parseScanRequest } from './scannerPolicy';
+import { buildCheckinPayloadSummary, summarizeScanRequest, type CheckinResult } from './checkinPolicy';
 import { buildSimulatedOrderNumber, normalizeIdempotencyKey } from './checkoutPolicy';
 import { deriveChainEventId } from './secureTicketPolicy';
 import { createWalletChallenge, verifyWalletChallengeSignature } from './walletChallengePolicy';
@@ -218,6 +219,25 @@ function invalidateCache(prefix?: string) {
   for (const key of cache.keys()) { if (key.startsWith(prefix)) cache.delete(key); }
 }
 
+async function recordCheckin(input: {
+  verifierUserId: string;
+  ticketId?: string | null;
+  result: CheckinResult;
+  reason?: string;
+  payload?: Record<string, unknown>;
+}) {
+  return prisma.checkins.create({
+    data: {
+      verifier_user_id: input.verifierUserId,
+      ticket_id: input.ticketId ?? null,
+      result: input.result,
+      source: 'db',
+      reason: input.reason ?? null,
+      payload: input.payload as any,
+    },
+  });
+}
+
 // ── Stellar TOML + QR collectible images ────────────────────────────────────
 //    Wallets (Freighter, Lobstr) fetch /.well-known/stellar.toml from the
 //    issuer's home_domain to render NFT metadata. Each ticket's `image` field
@@ -337,7 +357,7 @@ app.get('/api/tickets/qr/:assetCode.png', async (req, res) => {
     }
     const live = await prisma.tickets.findFirst({
       where: {
-        contract_address: ticket.contract_address,
+        contract_address: String(ticket.contract_address),
         ticket_root_id: (ticket as any).ticket_root_id,
         status: 'ACTIVE',
       },
@@ -349,7 +369,7 @@ app.get('/api/tickets/qr/:assetCode.png', async (req, res) => {
 
     if (!qrCache.has(cacheKey)) {
       const buf = await buildTicketQrPng(buildSignedTicketQrPayload({
-        contractAddress: ticket.contract_address,
+        contractAddress: String(ticket.contract_address),
         ticketRootId: (ticket as any).ticket_root_id,
         version,
         eventId,
@@ -1664,6 +1684,8 @@ app.post('/api/admin/scan', scannerRateLimit, authMiddleware, async (req, res) =
       sendApiError(req, res, roleDecision.status, codeForStatus(roleDecision.status), roleDecision.error);
       return;
     }
+    const verifierUserId = (req as any).userId as string;
+    let checkinPayload = buildCheckinPayloadSummary(req.body);
 
     // Production scanner accepts signed QR tokens. Legacy ticketId scanning is
     // available only when explicitly enabled for demo/dev fixtures.
@@ -1681,8 +1703,10 @@ app.post('/api/admin/scan', scannerRateLimit, authMiddleware, async (req, res) =
 
     if (scanRequest.kind === 'ticketId') {
       ticket = await prisma.tickets.findUnique({ where: { id: scanRequest.ticketId } });
+      checkinPayload = summarizeScanRequest({ kind: 'ticketId', ticketId: scanRequest.ticketId });
     } else {
       requestedVersion = scanRequest.version;
+      checkinPayload = summarizeScanRequest(scanRequest);
       const event = await prisma.events.findFirst({
         where: {
           id: scanRequest.eventId,
@@ -1691,6 +1715,12 @@ app.post('/api/admin/scan', scannerRateLimit, authMiddleware, async (req, res) =
         select: { id: true } as any,
       });
       if (!event) {
+        await recordCheckin({
+          verifierUserId,
+          result: 'DENIED',
+          reason: 'QR no corresponde al evento del contrato',
+          payload: checkinPayload,
+        }).catch((auditError) => console.error('[SCAN] Checkin audit error:', auditError));
         sendApiError(req, res, 409, 'CONFLICT', 'QR no corresponde al evento del contrato');
         return;
       }
@@ -1710,16 +1740,34 @@ app.post('/api/admin/scan', scannerRateLimit, authMiddleware, async (req, res) =
       requestedVersion,
     );
     if (!scanDecision.ok) {
+      await recordCheckin({
+        verifierUserId,
+        ticketId: ticket?.id ?? null,
+        result: 'DENIED',
+        reason: scanDecision.error,
+        payload: checkinPayload,
+      }).catch((auditError) => console.error('[SCAN] Checkin audit error:', auditError));
       sendApiError(req, res, scanDecision.status, codeForStatus(scanDecision.status), scanDecision.error);
       return;
     }
 
     // Gate scan is DB-only for thesis demo speed. Soroban redemption is handled
     // only when the indexer receives a boleto_redimido event from an on-chain flow.
-    await prisma.tickets.update({
-       where: { id: scanDecision.ticketId },
-       data: { status: 'USED', used_at: new Date(), is_for_sale: false }
-    });
+    await prisma.$transaction([
+      prisma.tickets.update({
+        where: { id: scanDecision.ticketId },
+        data: { status: 'USED', used_at: new Date(), is_for_sale: false },
+      }),
+      prisma.checkins.create({
+        data: {
+          verifier_user_id: verifierUserId,
+          ticket_id: scanDecision.ticketId,
+          result: 'ALLOWED',
+          source: 'db',
+          payload: checkinPayload,
+        },
+      }),
+    ]);
 
     res.json({ success: true, message: 'Boleto validado y marcado como usado' });
   } catch (error: any) {

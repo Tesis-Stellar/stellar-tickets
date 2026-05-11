@@ -124,26 +124,27 @@ model venues {
 }
 
 model users {
-  id              String        @id(map: "pk_users") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  first_name      String
-  last_name       String
-  email           String        @db.Citext
-  password_hash   String
-  wallet_address  String?       @unique
-  document_type   document_type
-  document_number String
-  phone           String?
-  role            user_role     @default(CUSTOMER)
-  is_active       Boolean       @default(true)
-  last_login_at   DateTime?     @db.Timestamptz(6)
-  created_at      DateTime      @default(now()) @db.Timestamptz(6)
-  updated_at      DateTime      @default(now()) @db.Timestamptz(6)
-  deleted_at      DateTime?     @db.Timestamptz(6)
-  carts           carts[]
-  orders          orders[]
-  tickets         tickets[]
-  wallet_challenges wallet_challenges[]
+  id                  String                @id(map: "pk_users") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  first_name          String
+  last_name           String
+  email               String                @db.Citext
+  password_hash       String
+  wallet_address      String?               @unique
+  document_type       document_type
+  document_number     String
+  phone               String?
+  role                user_role             @default(CUSTOMER)
+  is_active           Boolean               @default(true)
+  last_login_at       DateTime?             @db.Timestamptz(6)
+  created_at          DateTime              @default(now()) @db.Timestamptz(6)
+  updated_at          DateTime              @default(now()) @db.Timestamptz(6)
+  deleted_at          DateTime?             @db.Timestamptz(6)
+  carts               carts[]
+  orders              orders[]
+  tickets             tickets[]
+  wallet_challenges   wallet_challenges[]
   transaction_intents transaction_intents[]
+  checkins            checkins[]
 
   @@schema("ticketing")
 }
@@ -168,27 +169,46 @@ model tickets {
   id               String        @id(map: "pk_tickets") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   contract_address String?
   order_item_id    String?       @db.Uuid
-  owner_user_id String?       @db.Uuid
-  owner_wallet  String?
-  ticket_code   String?       @unique(map: "uq_tickets_ticket_code")
-  ticket_root_id Int?
-  version       Int?
-  is_for_sale   Boolean       @default(false)
-  resale_price  BigInt?
-  asset_code    String?       @unique(map: "tickets_asset_code_key")
-  nft_token_id  Int?
-  qr_payload    String?
-  status        ticket_status @default(ACTIVE)
-  issued_at     DateTime      @default(now()) @db.Timestamptz(6)
-  used_at       DateTime?     @db.Timestamptz(6)
-  cancelled_at  DateTime?     @db.Timestamptz(6)
-  created_at    DateTime      @default(now()) @db.Timestamptz(6)
-  updated_at    DateTime      @default(now()) @db.Timestamptz(6)
-  order_items   order_items?  @relation(fields: [order_item_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_tickets_order_item")
-  users         users?        @relation(fields: [owner_user_id], references: [id], onUpdate: NoAction, map: "fk_tickets_owner_user")
+  owner_user_id    String?       @db.Uuid
+  owner_wallet     String?
+  ticket_code      String?       @unique(map: "uq_tickets_ticket_code")
+  ticket_root_id   Int?
+  version          Int?
+  is_for_sale      Boolean       @default(false)
+  resale_price     BigInt?
+  asset_code       String?       @unique(map: "tickets_asset_code_key")
+  nft_token_id     Int?
+  qr_payload       String?
+  status           ticket_status @default(ACTIVE)
+  issued_at        DateTime      @default(now()) @db.Timestamptz(6)
+  used_at          DateTime?     @db.Timestamptz(6)
+  cancelled_at     DateTime?     @db.Timestamptz(6)
+  created_at       DateTime      @default(now()) @db.Timestamptz(6)
+  updated_at       DateTime      @default(now()) @db.Timestamptz(6)
+  order_items      order_items?  @relation(fields: [order_item_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_tickets_order_item")
+  users            users?        @relation(fields: [owner_user_id], references: [id], onUpdate: NoAction, map: "fk_tickets_owner_user")
+  checkins         checkins[]
 
   @@unique([contract_address, ticket_root_id, version])
   @@index([owner_user_id, status], map: "idx_tickets_owner_status")
+  @@schema("ticketing")
+}
+
+model checkins {
+  id               String   @id(map: "pk_checkins") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  verifier_user_id String   @db.Uuid
+  ticket_id        String?  @db.Uuid
+  result           String
+  source           String   @default("db")
+  reason           String?
+  payload          Json?    @db.JsonB
+  created_at       DateTime @default(now()) @db.Timestamptz(6)
+  users            users    @relation(fields: [verifier_user_id], references: [id], onDelete: Restrict, onUpdate: NoAction, map: "fk_checkins_verifier_user")
+  tickets          tickets? @relation(fields: [ticket_id], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_checkins_ticket")
+
+  @@index([verifier_user_id, created_at(sort: Desc)], map: "idx_checkins_verifier_created_at")
+  @@index([ticket_id, created_at(sort: Desc)], map: "idx_checkins_ticket_created_at")
+  @@index([result, created_at(sort: Desc)], map: "idx_checkins_result_created_at")
   @@schema("ticketing")
 }
 
@@ -474,10 +494,10 @@ enum venue_type {
 }
 
 model indexer_state {
-  id            Int      @id @default(1)
-  last_ledger   Int      @default(0)
-  updated_at    DateTime @default(now()) @db.Timestamptz(6)
-  
+  id          Int      @id @default(1)
+  last_ledger Int      @default(0)
+  updated_at  DateTime @default(now()) @db.Timestamptz(6)
+
   @@schema("ticketing")
 }
 
@@ -503,7 +523,7 @@ model onchain_events {
 model transaction_intents {
   id               String    @id(map: "pk_transaction_intents") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   user_id          String    @db.Uuid
-  wallet_address  String
+  wallet_address   String
   operation        String
   contract_address String
   ticket_root_id   Int
