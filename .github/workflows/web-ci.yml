@@ -10,6 +10,20 @@ jobs:
   backend:
     name: Backend build and unit tests
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: stellar_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d stellar_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     defaults:
       run:
         working-directory: ./backend
@@ -17,6 +31,7 @@ jobs:
       VERCEL: "1"
       RUN_INDEXER: "false"
       JWT_SECRET: "stellar-tickets-ci-secret-change-in-prod"
+      DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/stellar_ci"
     steps:
       - uses: actions/checkout@v4
 
@@ -33,21 +48,14 @@ jobs:
       - name: Generate Prisma client
         run: npx prisma generate
 
+      - name: Apply database migrations
+        run: npx prisma migrate deploy
+
       - name: Build backend
         run: npm run build
 
       - name: Run backend unit tests
-        run: >
-          node --import tsx --test
-          src/apiError.test.ts
-          src/checkinPolicy.test.ts
-          src/checkoutPolicy.test.ts
-          src/deployEventPolicy.test.ts
-          src/qrPolicy.test.ts
-          src/scannerPolicy.test.ts
-          src/securityPolicy.test.ts
-          src/seatHoldPolicy.test.ts
-          src/transactionIntentPolicy.test.ts
+        run: npm test
 
   frontend:
     name: Frontend tests and build

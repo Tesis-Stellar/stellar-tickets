@@ -16,6 +16,35 @@ function tokenFor(userId: string) {
   return jwt.sign({ userId }, jwtSecret);
 }
 
+test.before(async () => {
+  await prisma.users.upsert({
+    where: { email: 'ci-supertest-admin@stellar-tickets.local' },
+    create: {
+      first_name: 'CI',
+      last_name: 'Admin',
+      email: 'ci-supertest-admin@stellar-tickets.local',
+      password_hash: 'unused',
+      document_type: 'CC',
+      document_number: 'CI-ADMIN-1',
+      role: 'ADMIN',
+    },
+    update: { role: 'ADMIN', is_active: true },
+  });
+  await prisma.users.upsert({
+    where: { email: 'ci-supertest-customer@stellar-tickets.local' },
+    create: {
+      first_name: 'CI',
+      last_name: 'Customer',
+      email: 'ci-supertest-customer@stellar-tickets.local',
+      password_hash: 'unused',
+      document_type: 'CC',
+      document_number: 'CI-CUSTOMER-1',
+      role: 'CUSTOMER',
+    },
+    update: { is_active: true },
+  });
+});
+
 test.after(async () => {
   await prisma.$disconnect();
   await closeAppResources();

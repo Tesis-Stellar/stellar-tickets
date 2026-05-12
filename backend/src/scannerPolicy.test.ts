@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { authorizeScannerRole, evaluateScanTicket, parseScanRequest } from './scannerPolicy';
-import { signTicketQr } from './qrPolicy';
+import { QR_TOKEN_TTL_SECONDS, signTicketQr } from './qrPolicy';
 
 test('authorizes ADMIN and STAFF but rejects regular customers', () => {
   assert.equal(authorizeScannerRole('ADMIN'), null);
@@ -41,6 +41,7 @@ test('rejects legacy ticketId scans unless explicitly enabled', () => {
 });
 
 test('accepts signed QR tokens and extracts ticket identity', () => {
+  const now = new Date();
   const token = signTicketQr({
     secret: 'scanner-secret',
     contractAddress: 'CABC',
@@ -48,8 +49,9 @@ test('accepts signed QR tokens and extracts ticket identity', () => {
     version: 2,
     eventId: 'event-1',
     nonce: 'nonce-1',
-    now: new Date('2026-05-11T00:00:00.000Z'),
+    now,
   });
+  const expectedExp = Math.floor(now.getTime() / 1000) + QR_TOKEN_TTL_SECONDS;
 
   assert.deepEqual(parseScanRequest({ qrToken: token }, { qrSecret: 'scanner-secret' }), {
     kind: 'contractTicket',
@@ -58,7 +60,7 @@ test('accepts signed QR tokens and extracts ticket identity', () => {
     version: 2,
     eventId: 'event-1',
     nonce: 'nonce-1',
-    exp: 1778544000,
+    exp: expectedExp,
   });
 });
 
