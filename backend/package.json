@@ -13,6 +13,7 @@
     "prisma:migrate": "prisma migrate dev",
     "prisma:deploy": "prisma migrate deploy",
     "prisma:seed": "prisma db seed",
+    "reconcile:onchain-db": "tsx scripts/reconcile-onchain-db.ts",
     "env:test": "bash scripts/switch-env.sh test",
     "env:prod": "bash scripts/switch-env.sh prod"
   },
