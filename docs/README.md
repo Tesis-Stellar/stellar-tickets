@@ -29,8 +29,11 @@ Documentación de arquitectura, modelo de datos, eventos y referencias técnicas
 Documentación operativa del proyecto.
 - `operations/DEVELOPMENT_WORKFLOW.md`
 - `operations/ENVIRONMENTS.md`
+- `operations/RUNTIME_DEPLOYMENT.md`
 - `operations/TESTNET_DEPLOYMENTS.md`
 - `operations/WALLETS_ROLES_TESTNET.md`
+- `operations/SECRETS_AND_CUSTODY.md`
+- `operations/FRONTEND_LINT_BASELINE.md`
 
 ### `setup/`
 Guías de preparación y actualización del entorno.
@@ -64,7 +67,9 @@ Este archivo se mantiene temporalmente en la raíz de `docs/` hasta decidir si r
 4. `audits/FRONTEND_AUDIT.md`
 5. `operations/DEVELOPMENT_WORKFLOW.md`
 6. `operations/ENVIRONMENTS.md`
-7. `setup/DOCKER_CLI_WORKFLOW.md`
+7. `operations/RUNTIME_DEPLOYMENT.md`
+8. `operations/SECRETS_AND_CUSTODY.md`
+9. `setup/DOCKER_CLI_WORKFLOW.md`
 
 ## Nota
 

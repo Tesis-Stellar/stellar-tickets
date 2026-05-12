@@ -17,7 +17,7 @@ Definir como se separan los ambientes del proyecto para probar cambios sin afect
 Ambiente para probar y romper cosas antes de promover cambios.
 
 - Rama fuente: `develop`
-- Backend: Railway `backend-staging`
+- Backend: Railway `backend-staging` como proceso long-lived
 - Frontend: Vercel `frontend-staging`
 - Base de datos: `db-staging`
 - Wallets: cuentas Stellar testnet dedicadas a staging
@@ -45,7 +45,7 @@ VITE_API_BASE_URL=https://<backend-staging-url>
 Ambiente estable para presentar el proyecto.
 
 - Rama fuente: `main`
-- Backend: Railway `backend-demo`
+- Backend: Railway `backend-demo` como proceso long-lived
 - Frontend: Vercel `frontend-demo`
 - Base de datos: `db-demo`
 - Wallets: cuentas Stellar testnet dedicadas a demo
@@ -90,6 +90,8 @@ Build Command: npm install && npm run build
 Start Command: npm start
 ```
 
+El backend debe correr en un runtime persistente si se espera indexacion continua. Serverless/Vercel para backend queda como configuracion heredada o alternativa limitada, no como runtime principal de la demo.
+
 Frontend Vercel:
 
 ```text
@@ -113,6 +115,7 @@ Antes de promover a `main`, validar:
 - Mis entradas funciona.
 - Flujos blockchain se prueban con wallets staging.
 - Scanner se prueba contra datos staging.
+- `npm run reconcile:onchain-db` no reporta errores de sincronizacion.
 
 ## Reglas De Cuidado
 
@@ -121,3 +124,4 @@ Antes de promover a `main`, validar:
 - No guardar secrets en el repositorio.
 - No promover a `main` si staging no paso smoke test.
 - Documentar direcciones de contratos demo en `docs/operations/TESTNET_DEPLOYMENTS.md`.
+- Documentar limitaciones de serverless e indexer en `docs/operations/RUNTIME_DEPLOYMENT.md`.
