@@ -534,13 +534,67 @@ const eventIncludes = {
   event_ticket_types: { where: { is_active: true } },
 };
 
-// GET /api/events - List published events
+const EVENT_LIST_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function buildPublishedEventsWhere(search: string, category: string, city: string): Prisma.eventsWhereInput {
+  const where: Prisma.eventsWhereInput = { status: 'PUBLISHED' };
+  if (category) {
+    where.event_categories = { display_name: { equals: category, mode: 'insensitive' } };
+  }
+  if (city) {
+    where.venues = { cities: { city_name: { equals: city, mode: 'insensitive' } } };
+  }
+  if (search) {
+    const or: Prisma.eventsWhereInput[] = [
+      { title: { contains: search, mode: 'insensitive' } },
+      { description: { contains: search, mode: 'insensitive' } },
+    ];
+    if (EVENT_LIST_UUID_RE.test(search)) {
+      or.unshift({ id: search });
+    }
+    where.AND = [{ OR: or }];
+  }
+  return where;
+}
+
+// GET /api/events - List published events (optional query: search, category, city, sort)
 app.get('/api/events', async (req, res) => {
   try {
-    const events = await cached('events:all', 60_000, () =>
-      prisma.events.findMany({ where: { status: 'PUBLISHED' }, include: eventIncludes, orderBy: { starts_at: 'asc' } })
+    const search = String(req.query.search ?? '').trim();
+    const category = String(req.query.category ?? '').trim();
+    const city = String(req.query.city ?? '').trim();
+    const sort = String(req.query.sort ?? '').trim();
+    const hasFilters = Boolean(search || category || city || sort);
+
+    if (!hasFilters) {
+      const events = await cached('events:all', 60_000, () =>
+        prisma.events.findMany({ where: { status: 'PUBLISHED' }, include: eventIncludes, orderBy: { starts_at: 'asc' } })
+      );
+      res.json(events.map(toEventDto));
+      return;
+    }
+
+    const cacheKey = `events:filter:${encodeURIComponent(search)}:${encodeURIComponent(category)}:${encodeURIComponent(city)}:${encodeURIComponent(sort)}`;
+    const rows = await cached(cacheKey, 30_000, () =>
+      prisma.events.findMany({
+        where: buildPublishedEventsWhere(search, category, city),
+        include: eventIncludes,
+        orderBy: { starts_at: 'asc' },
+      })
     );
-    res.json(events.map(toEventDto));
+
+    let dtoList = rows.map(toEventDto);
+    if (sort === 'price_asc' || sort === 'price_desc') {
+      const dir = sort === 'price_asc' ? 1 : -1;
+      dtoList = [...dtoList].sort((a, b) => {
+        const pa = Number((a as { minPrice?: number }).minPrice ?? 0);
+        const pb = Number((b as { minPrice?: number }).minPrice ?? 0);
+        if (pa !== pb) return (pa - pb) * dir;
+        return String(a.title ?? '').localeCompare(String(b.title ?? ''), 'es');
+      });
+    }
+
+    res.json(dtoList);
   } catch (error: any) {
     console.error(error);
     res.status(500).json({ error: error.message });
