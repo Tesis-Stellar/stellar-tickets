@@ -4,6 +4,7 @@ import { Header } from "@/components/layout/Header";
 import { Scanner, IDetectedBarcode } from "@yudiel/react-qr-scanner";
 import { CheckCircle2, XCircle, Loader2, ShieldCheck, Camera } from "lucide-react";
 import { useAppContext } from "@/context/AppContext";
+import { parseScannerPayload } from "@/lib/scannerPayload";
 
 export const ScannerPage = () => {
   const { user, authStatus, apiFetch } = useAppContext();
@@ -27,30 +28,7 @@ export const ScannerPage = () => {
 
     try {
       setLoading(true);
-      // Attempt to parse JSON
-      const payload = JSON.parse(value);
-
-      // Signed format: { qrToken }
-      // Legacy format (old collectible QR): { contractAddress, ticketRootId } is rejected by backend.
-      // Legacy fixture format ({ ticketId, code?}) requires explicit backend opt-in.
-      let body: Record<string, unknown>;
-      let label: string;
-      if (payload.qrToken) {
-        body = { qrToken: payload.qrToken };
-        label = "QR firmado";
-      } else if (payload.contractAddress && payload.ticketRootId != null) {
-        body = {
-          contractAddress: payload.contractAddress,
-          ticketRootId: payload.ticketRootId,
-          ...(payload.version != null ? { version: payload.version } : {}),
-        };
-        label = `${payload.contractAddress.slice(0, 6)}…/#${payload.ticketRootId}${payload.version != null ? `v${payload.version}` : ''}`;
-      } else if (payload.ticketId) {
-        body = { ticketId: payload.ticketId };
-        label = payload.code || payload.ticketId.slice(0, 8);
-      } else {
-        throw new Error("QR No Reconocido");
-      }
+      const { body, label } = parseScannerPayload(value);
 
       const res = await apiFetch<any>("/api/admin/scan", {
         method: "POST",
