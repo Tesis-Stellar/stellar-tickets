@@ -14,9 +14,11 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { useToast } from "@/hooks/use-toast";
 
 export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
   const { secureTicketOnChain, listTicketForSale, cancelResaleListing, walletAddress } = useAppContext();
+  const { toast } = useToast();
   const xlmCopPrice = useXlmPrice();
   const [isMinting, setIsMinting] = useState(false);
   const [isMinted, setIsMinted] = useState(ticket.isSecuredOnChain ?? false);
@@ -43,7 +45,11 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
 
   const claimTicket = async () => {
     if (!walletAddress) {
-      alert("Debes conectar tu wallet de Freighter antes de asegurar el boleto en blockchain. Haz clic en \"Conectar Wallet\" en la parte superior de la página.");
+      toast({
+        title: "Conecta tu wallet",
+        description: "Necesitas Freighter conectado desde el header antes de asegurar el boleto en blockchain.",
+        variant: "destructive",
+      });
       return;
     }
     try {
@@ -58,11 +64,19 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
           setNftDialogOpen(true);
         }
       } else {
-        alert(`Error: ${result.error}`);
+        toast({
+          title: "No se pudo asegurar el boleto",
+          description: result.error ?? "Intenta nuevamente en unos segundos.",
+          variant: "destructive",
+        });
       }
     } catch (e) {
       console.error(e);
-      alert("Error al asegurar en blockchain");
+      toast({
+        title: "No se pudo asegurar el boleto",
+        description: "Ocurrió un error al registrar el boleto en blockchain.",
+        variant: "destructive",
+      });
     } finally {
       setIsMinting(false);
     }
@@ -70,11 +84,19 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
 
   const openResaleDialog = () => {
     if (!walletAddress) {
-      alert("Debes conectar tu wallet de Freighter antes de poner el boleto en reventa. Haz clic en \"Conectar Wallet\" en la parte superior de la página.");
+      toast({
+        title: "Conecta tu wallet",
+        description: "Necesitas Freighter conectado desde el header antes de publicar una reventa.",
+        variant: "destructive",
+      });
       return;
     }
     if (!xlmCopPrice) {
-      alert("No se pudo obtener la cotización XLM/COP. Intenta de nuevo en unos segundos.");
+      toast({
+        title: "Cotización no disponible",
+        description: "No pudimos obtener XLM/COP. Intenta de nuevo en unos segundos.",
+        variant: "destructive",
+      });
       return;
     }
     setResalePriceInput("");
@@ -93,11 +115,19 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
         setIsListed(true);
         setTxHash(result.txHash ?? txHash);
       } else {
-        alert(`Error: ${result.error}`);
+        toast({
+          title: "No se pudo publicar la reventa",
+          description: result.error ?? "La operación no fue confirmada.",
+          variant: "destructive",
+        });
       }
     } catch (e) {
       console.error(e);
-      alert("Error al listar en blockchain");
+      toast({
+        title: "No se pudo publicar la reventa",
+        description: "Ocurrió un error al listar el boleto en blockchain.",
+        variant: "destructive",
+      });
     } finally {
       setIsListing(false);
     }
@@ -162,11 +192,19 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
                           setIsListed(false);
                           setTxHash(result.txHash ?? txHash);
                         } else {
-                          alert(`Error: ${result.error}`);
+                          toast({
+                            title: "No se pudo cancelar la reventa",
+                            description: result.error ?? "La operación no fue confirmada.",
+                            variant: "destructive",
+                          });
                         }
                       } catch (e) {
                         console.error(e);
-                        alert("Error al cancelar reventa");
+                        toast({
+                          title: "No se pudo cancelar la reventa",
+                          description: "Ocurrió un error al retirar el boleto del mercado.",
+                          variant: "destructive",
+                        });
                       } finally {
                         setIsCancelling(false);
                       }

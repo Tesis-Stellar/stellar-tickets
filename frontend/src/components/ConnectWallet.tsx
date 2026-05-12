@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { Wallet } from "lucide-react";
 import { useAppContext } from "@/context/AppContext";
 import { useXlmPrice, formatCOP } from "@/hooks/useXlmPrice";
+import { useToast } from "@/hooks/use-toast";
 
 // Freighter v6 returns objects, not primitives. Helper to safely call its API.
 const freighterApi = () => import("@stellar/freighter-api");
@@ -14,6 +15,7 @@ const isSafariBrowser = () =>
 
 export const ConnectWallet = () => {
   const { walletAddress, setWalletAddress, linkWallet, isLoggedIn, balanceVersion } = useAppContext();
+  const { toast } = useToast();
   const address = walletAddress;
   const [balance, setBalance] = useState<string | null>(null);
   const [loading, setLoading] = useState(!walletAddress);
@@ -38,7 +40,11 @@ export const ConnectWallet = () => {
     } catch (err: any) {
       const msg = err.message ?? "";
       if (msg.includes("409") || msg.includes("ya vinculada")) {
-        alert("Esta billetera ya está vinculada a otra cuenta. Cambia de cuenta en Freighter o usa otra billetera.");
+        toast({
+          title: "Wallet ya vinculada",
+          description: "Esta billetera pertenece a otra cuenta. Cambia de cuenta en Freighter o usa otra wallet.",
+          variant: "destructive",
+        });
         return false;
       }
       console.error("linkWallet error:", err);
@@ -89,19 +95,31 @@ export const ConnectWallet = () => {
 
   const connectWallet = async () => {
     if (!isLoggedIn) {
-      alert("Inicia sesión primero para vincular tu billetera.");
+      toast({
+        title: "Inicia sesión primero",
+        description: "Necesitas una cuenta activa para vincular Freighter.",
+        variant: "destructive",
+      });
       return;
     }
     try {
       if (isSafariBrowser() && !isFreighterInjected()) {
-        alert("No detecté Freighter en Safari. Para esta demo usa Chrome o Brave con la extensión Freighter instalada y desbloqueada.");
+        toast({
+          title: "Freighter no detectado",
+          description: "Para esta demo usa Chrome o Brave con la extensión instalada y desbloqueada.",
+          variant: "destructive",
+        });
         window.open("https://freighter.app", "_blank");
         return;
       }
       const api = await freighterApi();
       const accessResult = await api.requestAccess();
       if ((accessResult as any)?.error) {
-        alert((accessResult as any).error.message ?? "Freighter no permitió conectar la billetera.");
+        toast({
+          title: "Freighter rechazó la conexión",
+          description: (accessResult as any).error.message ?? "La extensión no permitió conectar la billetera.",
+          variant: "destructive",
+        });
         return;
       }
       const pk = (accessResult as any)?.address ?? (typeof accessResult === "string" ? accessResult : "");
@@ -111,11 +129,19 @@ export const ConnectWallet = () => {
           setWalletAddress(pk);
         }
       } else {
-        alert("Freighter no devolvió una dirección. Desbloquea la extensión, permite el sitio y vuelve a intentar.");
+        toast({
+          title: "Wallet no disponible",
+          description: "Desbloquea Freighter, permite el sitio y vuelve a intentar.",
+          variant: "destructive",
+        });
       }
     } catch (error) {
       console.error("Error connecting wallet:", error);
-      alert("No fue posible conectar Freighter. Verifica que la extensión esté instalada, desbloqueada y con permisos para localhost; luego recarga la página.");
+      toast({
+        title: "No fue posible conectar Freighter",
+        description: "Verifica que la extensión esté instalada, desbloqueada y con permisos para localhost.",
+        variant: "destructive",
+      });
     }
   };
 

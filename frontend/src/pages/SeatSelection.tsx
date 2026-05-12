@@ -7,6 +7,7 @@ import { useAppContext } from "@/context/AppContext";
 import { ChevronLeft, ShoppingCart, Loader2 } from "lucide-react";
 import { getEventBySlug, getEventById, type EventData } from "@/data/events";
 import { getOfficialPurchasePath, shouldRedirectPurchaseMode } from "@/lib/purchaseRoute";
+import { useToast } from "@/hooks/use-toast";
 
 interface SeatsApiResponse {
   venueType: VenueType;
@@ -33,6 +34,7 @@ const SeatSelection = () => {
   const navigate = useNavigate();
   const location = useLocation();
   const { addToCart, apiFetch, isLoggedIn } = useAppContext();
+  const { toast } = useToast();
   const [event, setEvent] = useState<EventData | null>(null);
   const [seatsResponse, setSeatsResponse] = useState<SeatsApiResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -121,7 +123,11 @@ const SeatSelection = () => {
         navigate("/carrito");
       } catch (e: any) {
         // Seats may have been taken by another user between selection and add.
-        alert(e?.message ?? "No fue posible reservar los asientos. Recarga la página y vuelve a intentar.");
+        toast({
+          title: "No se pudieron reservar los asientos",
+          description: e?.message ?? "Recarga la disponibilidad y vuelve a intentar.",
+          variant: "destructive",
+        });
         // Refresh seat availability
         try {
           const data = await apiFetch<SeatsApiResponse>(`/api/events/${event.id}/seats`);

@@ -8,6 +8,7 @@ import { EventCard } from "@/components/ui/EventCard";
 import { useAppContext, type ResaleFlowStatus } from "@/context/AppContext";
 import { useXlmPrice, formatCOP } from "@/hooks/useXlmPrice";
 import { getOfficialPurchasePath } from "@/lib/purchaseRoute";
+import { useToast } from "@/hooks/use-toast";
 
 const EventDetail = () => {
   const { id: slug } = useParams<{ id: string }>();
@@ -20,6 +21,7 @@ const EventDetail = () => {
   const [cancellingId, setCancellingId] = useState<string | null>(null);
   const [flowStatusByTicketId, setFlowStatusByTicketId] = useState<Record<string, ResaleFlowStatus>>({});
   const { buyResaleTicket, cancelResaleListing, linkWallet, walletAddress } = useAppContext();
+  const { toast } = useToast();
   const xlmCop = useXlmPrice();
 
   useEffect(() => {
@@ -186,14 +188,25 @@ const EventDetail = () => {
                               setTicketFlowStatus(lt.id, "building_xdr");
                               const result = await cancelResaleListing(lt.id, { onStatus: (status) => setTicketFlowStatus(lt.id, status) });
                               if (result.success) {
-                                alert("Reventa confirmada como cancelada. Tu boleto fue retirado del mercado.");
+                                toast({
+                                  title: "Reventa cancelada",
+                                  description: "Tu boleto fue retirado del mercado P2P.",
+                                });
                                 setLiveTickets((prev) => prev.filter((t) => t.id !== lt.id));
                               } else {
-                                alert("Error: " + result.error);
+                                toast({
+                                  title: "No se pudo cancelar la reventa",
+                                  description: result.error ?? "La operación no fue confirmada.",
+                                  variant: "destructive",
+                                });
                               }
-                            } catch (e: any) {
+                            } catch (e: unknown) {
                               console.error("[CANCEL] Error:", e);
-                              alert("Error: " + e.message);
+                              toast({
+                                title: "No se pudo cancelar la reventa",
+                                description: e instanceof Error ? e.message : "Ocurrió un error retirando el boleto del mercado.",
+                                variant: "destructive",
+                              });
                             } finally {
                               setCancellingId(null);
                             }
@@ -208,7 +221,14 @@ const EventDetail = () => {
                           disabled={buyingId === lt.id}
                           onClick={async () => {
                             try {
-                              if (!walletAddress) return alert("Conecta tu billetera Freighter desde el botón del header primero.");
+                              if (!walletAddress) {
+                                toast({
+                                  title: "Conecta tu wallet",
+                                  description: "Necesitas Freighter conectado desde el header para comprar una reventa.",
+                                  variant: "destructive",
+                                });
+                                return;
+                              }
                               const pk = walletAddress;
                               setBuyingId(lt.id);
                               setTicketFlowStatus(lt.id, "building_xdr");
@@ -217,14 +237,25 @@ const EventDetail = () => {
                                 onStatus: (status) => setTicketFlowStatus(lt.id, status),
                               });
                               if (buyResult.success) {
-                                alert("Compra confirmada. Tu boleto ya fue reconciliado por el backend.\nTx: " + buyResult.txHash?.slice(0, 12) + "...");
+                                toast({
+                                  title: "Compra confirmada",
+                                  description: `Tu boleto fue reconciliado por el backend${buyResult.txHash ? ` · Tx ${buyResult.txHash.slice(0, 12)}...` : ""}.`,
+                                });
                                 setLiveTickets((prev) => prev.filter((t) => t.id !== lt.id));
                               } else {
-                                alert("Error: " + buyResult.error);
+                                toast({
+                                  title: "No se pudo comprar la reventa",
+                                  description: buyResult.error ?? "La operación no fue confirmada.",
+                                  variant: "destructive",
+                                });
                               }
-                            } catch (e: any) {
+                            } catch (e: unknown) {
                               console.error("[BUY] Error:", e);
-                              alert("Error: " + e.message);
+                              toast({
+                                title: "No se pudo comprar la reventa",
+                                description: e instanceof Error ? e.message : "Ocurrió un error durante la compra P2P.",
+                                variant: "destructive",
+                              });
                             } finally {
                               setBuyingId(null);
                             }
