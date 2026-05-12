@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { bannerData } from "@/data/events";
 
@@ -31,9 +32,9 @@ export const BannerCarousel = () => {
         <p className="text-primary-foreground/80 text-sm md:text-lg font-medium mb-4 md:mb-6">
           {banner.subtitle}
         </p>
-        <button className="w-fit px-6 md:px-8 py-2.5 md:py-3 bg-accent hover:bg-st-yellow-hover text-accent-foreground font-black rounded-lg transition-all text-sm md:text-base shadow-lg">
+        <Link to="/eventos" className="w-fit px-6 md:px-8 py-2.5 md:py-3 bg-accent hover:bg-st-yellow-hover text-accent-foreground font-black rounded-lg transition-all text-sm md:text-base shadow-lg">
           {banner.cta}
-        </button>
+        </Link>
       </div>
 
       {/* Nav arrows */}

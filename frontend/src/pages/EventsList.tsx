@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useParams, useSearchParams } from "react-router-dom";
 import { Header } from "@/components/layout/Header";
 import { Footer } from "@/components/layout/Footer";
 import { FilterPanel } from "@/components/ui/FilterPanel";
@@ -13,13 +13,21 @@ const categoryMap: Record<string, string> = {
 
 const EventsList = () => {
   const { category } = useParams<{ category?: string }>();
+  const [searchParams] = useSearchParams();
   const presetCategory = category ? categoryMap[category] ?? "" : "";
 
-  const [query, setQuery] = useState("");
-  const [cat, setCat] = useState(presetCategory);
-  const [city, setCity] = useState("");
-  const [sort, setSort] = useState("");
+  const [query, setQuery] = useState(searchParams.get("q") ?? "");
+  const [cat, setCat] = useState(searchParams.get("category") ?? presetCategory);
+  const [city, setCity] = useState(searchParams.get("city") ?? "");
+  const [sort, setSort] = useState(searchParams.get("sort") ?? "");
   const [results, setResults] = useState<EventData[]>([]);
+
+  useEffect(() => {
+    setQuery(searchParams.get("q") ?? "");
+    setCat(searchParams.get("category") ?? presetCategory);
+    setCity(searchParams.get("city") ?? "");
+    setSort(searchParams.get("sort") ?? "");
+  }, [presetCategory, searchParams]);
 
   useEffect(() => {
     void (async () => {

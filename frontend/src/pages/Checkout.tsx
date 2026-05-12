@@ -142,7 +142,9 @@ const Checkout = () => {
                   )}
                   <label className={`flex items-start gap-2 mt-4 ${errors.terms ? "text-destructive" : ""}`}>
                     <input type="checkbox" checked={form.terms} onChange={(e) => setForm((p) => ({ ...p, terms: e.target.checked }))} className="accent-primary mt-1" />
-                    <span className="text-xs text-muted-foreground">Acepto los <a href="#" className="text-primary hover:underline">términos y condiciones</a> y la <a href="#" className="text-primary hover:underline">política de privacidad</a>.</span>
+                    <span className="text-xs text-muted-foreground">
+                      Acepto los <span className="text-primary font-medium">términos y condiciones</span> y la <span className="text-primary font-medium">política de privacidad</span> de la demo.
+                    </span>
                   </label>
                   {errors.terms && <p className="text-xs text-destructive">{errors.terms}</p>}
                 </>

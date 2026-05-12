@@ -1,6 +1,22 @@
+import { FormEvent, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { Search, MapPin, CalendarDays, LayoutGrid } from "lucide-react";
 
 export const HeroSearch = () => {
+  const navigate = useNavigate();
+  const [query, setQuery] = useState("");
+  const [city, setCity] = useState("");
+  const [category, setCategory] = useState("");
+
+  const handleSubmit = (event: FormEvent) => {
+    event.preventDefault();
+    const params = new URLSearchParams();
+    if (query.trim()) params.set("q", query.trim());
+    if (city) params.set("city", city);
+    if (category) params.set("category", category);
+    navigate(`/eventos${params.toString() ? `?${params.toString()}` : ""}`);
+  };
+
   return (
     <section className="relative bg-primary pt-14 pb-20 md:pt-20 md:pb-28 px-4 overflow-hidden">
       {/* Background shapes */}
@@ -19,13 +35,15 @@ export const HeroSearch = () => {
       </div>
 
       {/* Search bar */}
-      <div className="relative z-20 max-w-5xl mx-auto">
+      <form onSubmit={handleSubmit} className="relative z-20 max-w-5xl mx-auto">
         <div className="bg-card rounded-2xl shadow-2xl p-2 flex flex-col md:flex-row items-stretch gap-0 border border-primary-foreground/10">
           {/* Search input */}
           <div className="flex-grow flex items-center px-4 border-b md:border-b-0 md:border-r border-border py-3">
             <Search className="w-5 h-5 text-muted-foreground mr-3 shrink-0" />
             <input
               type="text"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
               placeholder="Busca por artista, evento o lugar..."
               className="w-full bg-transparent focus:outline-none text-foreground font-medium placeholder:text-muted-foreground text-sm md:text-base"
             />
@@ -35,28 +53,28 @@ export const HeroSearch = () => {
           <div className="flex flex-col sm:flex-row">
             <div className="flex-1 md:w-44 px-4 py-3 border-b sm:border-b-0 sm:border-r border-border flex items-center gap-2">
               <MapPin className="w-4 h-4 text-muted-foreground shrink-0" />
-              <select className="w-full bg-transparent focus:outline-none text-sm font-bold text-foreground appearance-none cursor-pointer">
-                <option>Todas las ciudades</option>
-                <option>Bogotá</option>
-                <option>Medellín</option>
-                <option>Cali</option>
-                <option>Barranquilla</option>
+              <select value={city} onChange={(event) => setCity(event.target.value)} className="w-full bg-transparent focus:outline-none text-sm font-bold text-foreground appearance-none cursor-pointer">
+                <option value="">Todas las ciudades</option>
+                <option value="Bogotá">Bogotá</option>
+                <option value="Medellín">Medellín</option>
+                <option value="Cali">Cali</option>
+                <option value="Barranquilla">Barranquilla</option>
               </select>
             </div>
             <div className="flex-1 md:w-44 px-4 py-3 border-b sm:border-b-0 sm:border-r border-border flex items-center gap-2">
               <LayoutGrid className="w-4 h-4 text-muted-foreground shrink-0" />
-              <select className="w-full bg-transparent focus:outline-none text-sm font-bold text-foreground appearance-none cursor-pointer">
-                <option>Categoría</option>
-                <option>Conciertos</option>
-                <option>Teatro</option>
-                <option>Deportes</option>
-                <option>Festivales</option>
+              <select value={category} onChange={(event) => setCategory(event.target.value)} className="w-full bg-transparent focus:outline-none text-sm font-bold text-foreground appearance-none cursor-pointer">
+                <option value="">Categoría</option>
+                <option value="Conciertos">Conciertos</option>
+                <option value="Teatro">Teatro</option>
+                <option value="Deportes">Deportes</option>
+                <option value="Festivales">Festivales</option>
               </select>
             </div>
             <div className="flex-1 md:w-44 px-4 py-3 flex items-center gap-2">
               <CalendarDays className="w-4 h-4 text-muted-foreground shrink-0" />
-              <select className="w-full bg-transparent focus:outline-none text-sm font-bold text-foreground appearance-none cursor-pointer">
-                <option>Cualquier fecha</option>
+              <select disabled className="w-full bg-transparent focus:outline-none text-sm font-bold text-muted-foreground appearance-none cursor-not-allowed" title="Filtro no incluido en el demo">
+                <option>Fecha: demo</option>
                 <option>Este fin de semana</option>
                 <option>Próximos 7 días</option>
                 <option>Próximos 30 días</option>
@@ -65,11 +83,11 @@ export const HeroSearch = () => {
           </div>
 
           {/* Search button */}
-          <button className="w-full md:w-auto px-8 md:px-10 py-3.5 md:py-4 bg-accent hover:bg-st-yellow-hover text-accent-foreground font-black rounded-xl transition-all shadow-[0_4px_0_hsl(var(--st-yellow-shadow))] active:shadow-none active:translate-y-[2px] text-sm md:text-base uppercase tracking-wide">
+          <button type="submit" className="w-full md:w-auto px-8 md:px-10 py-3.5 md:py-4 bg-accent hover:bg-st-yellow-hover text-accent-foreground font-black rounded-xl transition-all shadow-[0_4px_0_hsl(var(--st-yellow-shadow))] active:shadow-none active:translate-y-[2px] text-sm md:text-base uppercase tracking-wide">
             Buscar
           </button>
         </div>
-      </div>
+      </form>
     </section>
   );
 };
