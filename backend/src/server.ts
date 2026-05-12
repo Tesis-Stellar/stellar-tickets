@@ -24,7 +24,7 @@ import { authorizeVerifiedNftTransfer } from './nftTransferPolicy';
 import { authorizeScannerRole, evaluateScanTicket, parseScanRequest } from './scannerPolicy';
 import { buildCheckinPayloadSummary, summarizeScanRequest, type CheckinResult } from './checkinPolicy';
 import { buildSimulatedOrderNumber, normalizeIdempotencyKey } from './checkoutPolicy';
-import { deriveChainEventId } from './secureTicketPolicy';
+import { deriveChainEventId, parseSorobanU32ReturnValue } from './secureTicketPolicy';
 import { createWalletChallenge, verifyWalletChallengeSignature } from './walletChallengePolicy';
 import { signTicketQr } from './qrPolicy';
 import { authorizeTransactionIntentCurrentState, authorizeTransactionIntentSubmit, buildTransactionIntentExpiry } from './transactionIntentPolicy';
@@ -993,17 +993,38 @@ app.post('/api/transactions/secure-ticket', authMiddleware, async (req, res) => 
       return;
     }
 
-    // Extract ticket_root_id from return value
+    // Extract ticket_root_id from return value. Root id 0 is valid in the
+    // contract, so never use 0 as a fallback when parsing fails.
     const returnValue = (getResponse as any).returnValue;
-    let ticketRootId = 0;
+    let ticketRootId: number | null = null;
     if (returnValue) {
       try {
-        // Result<u32, ErrorContrato> — unwrap the Ok variant
-        const val = returnValue.value?.();
-        ticketRootId = typeof val === 'number' ? val : Number(val);
+        ticketRootId = parseSorobanU32ReturnValue(scValToNative(returnValue));
       } catch {
-        console.warn('[SOROBAN] Could not parse return value, using 0');
+        ticketRootId = null;
       }
+    }
+    if (ticketRootId === null) {
+      ticketRootId = parseSorobanU32ReturnValue(returnValue);
+    }
+    if (ticketRootId === null) {
+      console.error('[SOROBAN] Could not parse crear_boleto_para return value:', returnValue?.toString?.() ?? returnValue);
+      sendApiError(req, res, 502, 'SOROBAN_BAD_RESPONSE', 'No fue posible leer el identificador on-chain del boleto');
+      return;
+    }
+
+    const existingOnChainTicket = await prisma.tickets.findFirst({
+      where: {
+        contract_address: contractAddress,
+        ticket_root_id: ticketRootId,
+        version: 0,
+      },
+      select: { id: true },
+    });
+    if (existingOnChainTicket && existingOnChainTicket.id !== ticketId) {
+      console.error(`[SOROBAN] Duplicate on-chain ticket identity contract=${contractAddress} root=${ticketRootId} version=0 current=${ticketId} existing=${existingOnChainTicket.id}`);
+      sendApiError(req, res, 409, 'CONFLICT', 'La identidad on-chain del boleto ya está asociada a otro ticket');
+      return;
     }
 
     // Mint el NFT en el ticket_nft_contract del evento (Phase 4.5).
