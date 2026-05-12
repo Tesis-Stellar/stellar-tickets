@@ -138,7 +138,7 @@ function authMiddleware(req: Request, res: Response, next: NextFunction) {
 }
 
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '8mb' }));
 
 // ── In-memory cache (avoids repeated Supabase round-trips ~150ms each) ──
 const cache = new Map<string, { data: any; expires: number }>();
@@ -350,6 +350,7 @@ function toEventDto(event: any) {
   const category = event.event_categories?.code ?? '';
   const images = EVENT_IMAGES[slug];
   const fallback = CATEGORY_IMAGES[category] || 'https://placehold.co/800x500?text=Evento';
+  const uploaded = event.cover_image_url ?? null;
   return {
     id: event.id,
     slug,
@@ -366,8 +367,8 @@ function toEventDto(event: any) {
     minPrice: minPrice,
     isFeatured: false,
     contract_address: event.contract_address,
-    posterImage: images?.poster ?? fallback,
-    bannerImage: images?.banner ?? fallback,
+    posterImage: uploaded ?? images?.poster ?? fallback,
+    bannerImage: uploaded ?? images?.banner ?? fallback,
   };
 }
 
@@ -1380,7 +1381,14 @@ app.post('/api/admin/scan', authMiddleware, async (req, res) => {
     if (ticketId) {
       ticket = await prisma.tickets.findUnique({ where: { id: ticketId } });
     } else if (contractAddress && ticketRootId != null) {
-      // Resolve the live (highest-version) ACTIVE ticket for this root.
+      // version is mandatory: a QR without it could be a pre-Phase-4.6 screenshot
+      // from a previous holder that would otherwise resolve to the current ACTIVE ticket.
+      if (version == null) {
+        res.status(400).json({
+          error: 'QR antiguo sin versión. Pide al asistente que regenere el QR desde la app.',
+        });
+        return;
+      }
       ticket = await prisma.tickets.findFirst({
         where: {
           contract_address: String(contractAddress),
@@ -1389,10 +1397,7 @@ app.post('/api/admin/scan', authMiddleware, async (req, res) => {
         },
         orderBy: { version: 'desc' },
       });
-      // If the QR carries a version, it MUST match the live one.
-      // This prevents a previous holder (post-resale) from redeeming a stale
-      // QR they cached/screenshotted before transferring the NFT.
-      if (ticket && version != null && Number(version) !== (ticket as any).version) {
+      if (ticket && Number(version) !== (ticket as any).version) {
         res.status(409).json({
           error: 'QR vencido: este boleto fue revendido. El nuevo dueño tiene el QR válido.',
         });
@@ -1474,8 +1479,8 @@ app.post('/api/admin/events', authMiddleware, async (req, res) => {
     const user = await prisma.users.findUnique({ where: { id: (req as any).userId } });
     if (user?.role !== 'ADMIN') { res.status(403).json({ error: 'Acceso denegado' }); return; }
 
-    const { title, slug, category_id, date, venue_id, sections } = req.body;
-    
+    const { title, slug, category_id, date, venue_id, sections, cover_image_url } = req.body;
+
     // Hardcode organizer for MVP
     const organizer = await prisma.organizers.findFirst();
     const firstCat = await prisma.event_categories.findFirst();
@@ -1490,6 +1495,7 @@ app.post('/api/admin/events', authMiddleware, async (req, res) => {
         ends_at: new Date(new Date(date).getTime() + 4 * 60 * 60 * 1000), // +4 horas
         organizer_id: organizer!.id,
         venue_id: venue_id,
+        cover_image_url: typeof cover_image_url === 'string' && cover_image_url.length > 0 ? cover_image_url : null,
       }
     });
 
