@@ -1,3 +1,8 @@
+/**
+ * Offline reconciliation between PostgreSQL `tickets` rows and processed rows in
+ * `onchain_events` (indexer projection). It does not call Soroban RPC or verify
+ * live contract storage; do not describe the report as full on-chain reconciliation.
+ */
 export type ReconciliationTicket = {
   id: string;
   contract_address: string | null;

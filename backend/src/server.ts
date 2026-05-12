@@ -2172,6 +2172,7 @@ function isCheckoutSeatSaleDatabaseConflict(error: any) {
   return message.includes('division by zero');
 }
 
+/** Atomically marks HELD inventory as SOLD; if the number of updated rows != expectedCount, forces division-by-zero so the statement fails and the surrounding transaction rolls back. */
 function markHeldSeatInventoryAsSoldOrFail(inventoryIds: string[], expectedCount: number, now: Date) {
   const inventoryIdSql = inventoryIds.map((id) => Prisma.sql`${id}::uuid`);
   return prisma.$executeRaw`

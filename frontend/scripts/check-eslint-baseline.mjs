@@ -39,7 +39,8 @@ console.log(
       current,
       allowed,
       passed,
-      note: "Este comando controla que la deuda ESLint no aumente; npm run lint sigue mostrando el detalle completo.",
+      note:
+        "Este comando controla que la deuda ESLint no aumente (totales y archivos con hallazgos); no fija distribución por regla ni por archivo: la deuda puede moverse entre archivos si el conteo global no sube. npm run lint sigue mostrando el detalle completo.",
     },
     null,
     2,
