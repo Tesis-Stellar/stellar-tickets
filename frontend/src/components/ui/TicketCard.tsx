@@ -1,4 +1,4 @@
-import { QrCode, MapPin, Calendar, ShieldCheck, Lock, ExternalLink, Tag } from "lucide-react";
+import { QrCode, MapPin, Calendar, ShieldCheck, Lock, ExternalLink, Tag, AlertTriangle } from "lucide-react";
 import { QRCodeCanvas } from "qrcode.react";
 import type { PurchasedTicket } from "@/context/AppContext";
 import { useAppContext } from "@/context/AppContext";
@@ -310,6 +310,16 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
             <div className="flex justify-between text-xs text-muted-foreground">
               <span>Cotización actual:</span>
               <span>{xlmCopPrice ? `1 XLM ≈ ${formatCOP(xlmCopPrice)}` : "—"}</span>
+            </div>
+          </div>
+
+          <div className="rounded-lg border border-amber-300 bg-amber-50 dark:bg-amber-950/30 p-3 flex gap-2 text-xs text-amber-900 dark:text-amber-200">
+            <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+            <div>
+              <p className="font-semibold mb-1">Importante sobre tu QR</p>
+              <p>
+                Si tienes el QR de este boleto guardado (capturas, descargas o el coleccionable en tu wallet), dejará de ser válido en el momento en que se concrete la reventa. El nuevo dueño recibirá un QR nuevo y el tuyo será rechazado en puerta.
+              </p>
             </div>
           </div>
         </div>

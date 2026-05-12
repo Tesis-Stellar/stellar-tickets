@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { Header } from "@/components/layout/Header";
 import { Footer } from "@/components/layout/Footer";
 import { useAppContext } from "@/context/AppContext";
-import { ShieldCheck, Plus, RefreshCw, Rocket, Building, MapPin, Users, Ticket, ExternalLink } from "lucide-react";
+import { ShieldCheck, Plus, RefreshCw, Rocket, Building, MapPin, Users, Ticket, ExternalLink, Image as ImageIcon, X } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 
 interface AdminEvent {
@@ -49,6 +49,8 @@ const AdminDashboard = () => {
   const [selectedVenueId, setSelectedVenueId] = useState<string>("");
   const [activeSections, setActiveSections] = useState<Record<string, boolean>>({});
   const [sectionConfig, setSectionConfig] = useState<Record<string, { price: number; capacity: number }>>({});
+  const [coverImage, setCoverImage] = useState<string | null>(null);
+  const [coverImageName, setCoverImageName] = useState<string>("");
   
   const { toast } = useToast();
 
@@ -108,6 +110,30 @@ const AdminDashboard = () => {
     }));
   };
 
+  const handleCoverImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      toast({ title: "Archivo inválido", description: "Selecciona una imagen (PNG, JPG, WEBP).", variant: "destructive" });
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      toast({ title: "Imagen muy grande", description: "Máximo 5 MB. Comprime la imagen e intenta de nuevo.", variant: "destructive" });
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      setCoverImage(typeof reader.result === "string" ? reader.result : null);
+      setCoverImageName(file.name);
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const clearCoverImage = () => {
+    setCoverImage(null);
+    setCoverImageName("");
+  };
+
   // Compute metrics
   const selectedVenue = venues.find(v => v.id === selectedVenueId);
   const totalVenueCapacity = selectedVenue ? selectedVenue.sections.reduce((sum, s) => sum + s.capacity, 0) : 0;
@@ -141,7 +167,8 @@ const AdminDashboard = () => {
       slug: formData.get("slug"),
       date: formData.get("date"),
       venue_id: selectedVenue.id,
-      sections: enabledSections
+      sections: enabledSections,
+      cover_image_url: coverImage,
     };
 
     try {
@@ -153,6 +180,7 @@ const AdminDashboard = () => {
       loadData();
       (e.target as HTMLFormElement).reset();
       setSelectedVenueId("");
+      clearCoverImage();
     } catch (err: any) {
       toast({ title: "Error al crear", description: err.message, variant: "destructive" });
     }
@@ -209,6 +237,41 @@ const AdminDashboard = () => {
                     <label className="text-xs font-bold text-muted-foreground uppercase">Fecha / Hora</label>
                     <input required type="datetime-local" name="date" className="w-full bg-background border border-border p-2.5 rounded-lg text-sm mt-1 focus:ring-2 focus:ring-primary/20 outline-none"/>
                   </div>
+                </div>
+
+                {/* COVER IMAGE UPLOAD */}
+                <div>
+                  <label className="text-xs font-bold text-muted-foreground uppercase flex items-center gap-1">
+                    <ImageIcon className="w-3 h-3" /> Imagen del Evento
+                  </label>
+                  {coverImage ? (
+                    <div className="mt-1 relative rounded-lg overflow-hidden border border-border bg-background">
+                      <img src={coverImage} alt="Preview" className="w-full h-40 object-cover" />
+                      <button
+                        type="button"
+                        onClick={clearCoverImage}
+                        className="absolute top-2 right-2 bg-background/90 hover:bg-destructive hover:text-destructive-foreground border border-border rounded-full p-1.5 shadow-md transition-colors"
+                        aria-label="Quitar imagen"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                      <div className="px-3 py-2 text-[10px] font-mono text-muted-foreground truncate border-t border-border">
+                        {coverImageName}
+                      </div>
+                    </div>
+                  ) : (
+                    <label className="mt-1 flex flex-col items-center justify-center gap-1.5 w-full h-28 bg-background border-2 border-dashed border-border hover:border-primary/40 rounded-lg cursor-pointer transition-colors text-muted-foreground hover:text-foreground">
+                      <ImageIcon className="w-6 h-6" />
+                      <span className="text-xs font-medium">Subir imagen (PNG, JPG, WEBP)</span>
+                      <span className="text-[10px] opacity-70">Máx. 5 MB · Opcional</span>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        onChange={handleCoverImageChange}
+                        className="hidden"
+                      />
+                    </label>
+                  )}
                 </div>
 
                 {/* VENUE SELECTION */}
@@ -365,12 +428,19 @@ const AdminDashboard = () => {
               </h2>
               
               <div className="mb-8 p-5 bg-amber-500/10 border border-amber-500/20 rounded-xl relative overflow-hidden">
-                <div className="absolute top-0 right-0 p-4 opacity-10"><Building className="w-24 h-24" /></div>
-                <h3 className="text-sm font-bold text-amber-500 uppercase flex items-center gap-1.5"><Rocket className="w-4 h-4"/> Supremo: Cuenta Maestra Organizadora</h3>
-                <p className="text-xs text-muted-foreground mt-1 mb-3">Tu billetera administradora en Stellar. Despliega y delega permisos a todas las fábricas y eventos creados de forma descentralizada.</p>
-                <div className="font-mono bg-background p-3 rounded-md text-sm border border-border flex items-center justify-between">
+                <div className="absolute top-0 right-0 p-4 opacity-10 pointer-events-none"><Building className="w-24 h-24" /></div>
+                <h3 className="text-sm font-bold text-amber-500 uppercase flex items-center gap-1.5 relative"><Rocket className="w-4 h-4"/> Supremo: Cuenta Maestra Organizadora</h3>
+                <p className="text-xs text-muted-foreground mt-1 mb-3 relative">Tu billetera administradora en Stellar. Despliega y delega permisos a todas las fábricas y eventos creados de forma descentralizada.</p>
+                <div className="relative font-mono bg-background p-3 rounded-md text-sm border border-border flex items-center justify-between z-10">
                   <span className="truncate mr-4 text-foreground/80">{contractsData.factoryContractId}</span>
-                  <a target="_blank" rel="noreferrer" href={`https://stellar.expert/explorer/testnet/account/${contractsData.factoryContractId}`} className="text-[10px] text-blue-500 font-bold hover:underline flex items-center gap-1 shrink-0 bg-blue-500/10 px-2 py-1 rounded">Stellar Expert <ExternalLink className="w-3 h-3"/></a>
+                  <a
+                    target="_blank"
+                    rel="noreferrer"
+                    href={`https://stellar.expert/explorer/testnet/${contractsData.factoryContractId.startsWith('C') ? 'contract' : 'account'}/${contractsData.factoryContractId}`}
+                    className="text-[10px] text-blue-500 font-bold hover:underline flex items-center gap-1 shrink-0 bg-blue-500/10 px-2 py-1 rounded cursor-pointer"
+                  >
+                    Stellar Expert <ExternalLink className="w-3 h-3"/>
+                  </a>
                 </div>
               </div>
 

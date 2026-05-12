@@ -75,6 +75,7 @@ model events {
   sales_end_at         DateTime?              @db.Timestamptz(6)
   has_assigned_seating Boolean                @default(false)
   max_tickets_per_user Int                    @default(6) @db.SmallInt
+  cover_image_url      String?
   status               event_status           @default(DRAFT)
   created_at           DateTime               @default(now()) @db.Timestamptz(6)
   updated_at           DateTime               @default(now()) @db.Timestamptz(6)
