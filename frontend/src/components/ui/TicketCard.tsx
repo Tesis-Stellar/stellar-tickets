@@ -220,7 +220,7 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
                 disabled={isListing}
                 className={`inline-flex items-center gap-1 px-3 py-1 text-xs font-black rounded-lg transition-colors shadow-md shadow-blue-900/20 w-fit ${isListing ? "bg-muted text-muted-foreground" : "bg-blue-600 hover:bg-blue-700 text-white"}`}
               >
-                {isListing ? "Listando en Soroban..." : "Revender NFT"}
+                {isListing ? "Listando en Soroban..." : "Vender boleta"}
               </button>
             )}
           </div>
