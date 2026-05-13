@@ -29,6 +29,14 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
   const [nftDialogOpen, setNftDialogOpen] = useState(false);
   const [justMintedNftAddress, setJustMintedNftAddress] = useState<string | null>(null);
   const [secureDialogOpen, setSecureDialogOpen] = useState(false);
+  // Si el usuario eligió "wallet" en el modal de asegurar, persistimos esa
+  // intención en localStorage para que el botón "Ver NFT en Freighter" siga
+  // disponible tras recargar. Si eligió "resale" o aún no decide, el botón
+  // queda oculto — el QR vive solo en TuTicket.
+  const showNftKey = `nft-reveal:${ticket.id}`;
+  const [showNftButton, setShowNftButton] = useState<boolean>(() => {
+    try { return localStorage.getItem(showNftKey) === '1'; } catch { return false; }
+  });
 
   const parsedPriceCOP = Number(resalePriceInput.replace(/[^\d]/g, ""));
   const previewXLM = xlmCopPrice && parsedPriceCOP > 0 ? parsedPriceCOP / xlmCopPrice : 0;
@@ -54,9 +62,16 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
         setIsMinted(true);
         setTxHash(result.txHash ?? null);
         const nftAddr = result.nftContractAddress ?? null;
-        if (nftAddr && intent === "wallet") {
-          setJustMintedNftAddress(nftAddr);
-          setNftDialogOpen(true);
+        if (intent === "wallet") {
+          try { localStorage.setItem(showNftKey, '1'); } catch {}
+          setShowNftButton(true);
+          if (nftAddr) {
+            setJustMintedNftAddress(nftAddr);
+            setNftDialogOpen(true);
+          }
+        } else {
+          try { localStorage.setItem(showNftKey, '0'); } catch {}
+          setShowNftButton(false);
         }
       } else {
         alert(`Error: ${result.error}`);
@@ -187,7 +202,7 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
                   <ExternalLink className="w-3 h-3" /> Ver en Stellar Explorer
                 </a>
               )}
-              {ticket.nftContractAddress && (
+              {ticket.nftContractAddress && showNftButton && (
                 <button
                   onClick={() => {
                     setJustMintedNftAddress(ticket.nftContractAddress ?? null);
