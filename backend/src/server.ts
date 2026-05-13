@@ -1201,15 +1201,13 @@ app.post('/api/transactions/submit', authMiddleware, async (req, res) => {
 });
 
 // POST /api/transactions/transfer-nft — Tras una reventa P2P (comprar_boleto OK),
-// el organizer (admin del NFT contract) hace BURN + MINT en lugar de
-// admin_transfer. Razón: admin_transfer dejaba al vendedor "agregar" el NFT
-// a su Freighter post-reventa y, como el endpoint público de la imagen del
-// QR resuelve al dueño actual en DB, el QR servido salía con la wallet del
-// comprador → el scanner aceptaba como válido (bug Phase 4.6). Con
-// burn+mint, owner_of(token_id) devuelve TokenNoEncontrado momentáneamente
-// y luego al comprador — Freighter del vendedor se entera y retira el
-// coleccionable de su listado, y un nuevo "Add Collectible" desde el
-// vendedor falla (no es dueño). El token_id se preserva (mismo ticket_root_id).
+// el organizer (admin del NFT contract) hace BURN del nft_token_id viejo y
+// MINT con un nft_token_id NUEVO al comprador. La asignación de un token_id
+// distinto es crítica: la URL del snapshot QR del seller (token viejo) sigue
+// sirviendo su imagen vieja inmutable — scanner la rechaza por version/wallet
+// mismatch. El buyer hace "Add Collectible" con el nuevo token_id, Freighter
+// fetchea SU snapshot fresco — scanner acepta. Ambas Freighters validan
+// correctamente y el problema del endpoint dinámico desaparece.
 app.post('/api/transactions/transfer-nft', authMiddleware, async (req, res) => {
   try {
     if (!organizerKeypair) {
@@ -1230,55 +1228,148 @@ app.post('/api/transactions/transfer-nft', authMiddleware, async (req, res) => {
       return;
     }
 
-    const tokenIdU32 = Number(ticketRootId);
-    const buyerAddrScVal = new Address(String(buyerWallet)).toScVal();
-    const tokenIdScVal = nativeToScVal(tokenIdU32, { type: 'u32' });
-    const adminScVal = new Address(organizerKeypair.publicKey()).toScVal();
-    const tokenUri = `${PUBLIC_BASE_URL}/api/nft/metadata/${nftContractAddress}/${tokenIdU32}`;
-    const tokenUriScVal = nativeToScVal(tokenUri, { type: 'string' });
+    const rootIdNum = Number(ticketRootId);
 
-    // Idempotencia: si por algún reintento el token ya fue burned+minted al
-    // buyer, el burn fallará con TokenNoEncontrado y el mint con TokenYaExiste.
-    // Toleramos ambos por separado.
+    // 1. Find the seller's CANCELLED row (just cancelled by indexer) → has the
+    //    old nft_token_id we need to burn. Fallback: ticket_root_id (for the
+    //    first resale, pre-Phase-4.6 behavior where nft_token_id == root_id).
+    const oldRow = await prisma.tickets.findFirst({
+      where: {
+        contract_address: String(contractAddress),
+        ticket_root_id: rootIdNum,
+        status: 'CANCELLED',
+      } as any,
+      orderBy: { version: 'desc' },
+      select: { nft_token_id: true } as any,
+    });
+    const oldNftTokenId = ((oldRow as any)?.nft_token_id as number | null) ?? rootIdNum;
+
+    // 2. Find the buyer's new ACTIVE row (created by indexer with version+1).
+    //    Frontend waits 7s before calling us, so this should exist.
+    const newRow = await prisma.tickets.findFirst({
+      where: {
+        contract_address: String(contractAddress),
+        ticket_root_id: rootIdNum,
+        status: 'ACTIVE',
+      } as any,
+      orderBy: { version: 'desc' },
+      select: { id: true, nft_token_id: true } as any,
+    });
+    if (!newRow) {
+      res.status(409).json({ error: 'El indexer aún no procesa la reventa. Espera unos segundos e intenta de nuevo.' });
+      return;
+    }
+
+    // Idempotency: if the buyer's row already has a new nft_token_id assigned,
+    // burn+mint already ran on a previous attempt.
+    const existingNewTokenId = (newRow as any).nft_token_id as number | null;
+    if (existingNewTokenId != null && existingNewTokenId !== oldNftTokenId) {
+      res.json({
+        success: true,
+        alreadyTransferred: true,
+        nftTokenId: existingNewTokenId,
+        nftContractAddress,
+      });
+      return;
+    }
+
+    // 3. Allocate a fresh nft_token_id. Take MAX across all tickets in this
+    //    event and add 1. Guarantees no collision with previous mints in the
+    //    same NFT contract.
+    const maxAgg = await prisma.tickets.aggregate({
+      where: { contract_address: String(contractAddress) } as any,
+      _max: { nft_token_id: true } as any,
+    });
+    const maxId = ((maxAgg as any)._max?.nft_token_id as number | null) ?? 0;
+    const newNftTokenId = Math.max(maxId, rootIdNum) + 1;
+
+    const adminScVal = new Address(organizerKeypair.publicKey()).toScVal();
+    const buyerAddrScVal = new Address(String(buyerWallet)).toScVal();
+
+    // 4. Burn old token_id. TokenNoEncontrado = already burned, tolerate.
     let burnTxHash: string | null = null;
     try {
       const burnRes = await invokeSoroban(
         organizerKeypair,
         nftContractAddress,
         'burn',
-        [adminScVal, tokenIdScVal],
+        [adminScVal, nativeToScVal(oldNftTokenId, { type: 'u32' })],
       );
       burnTxHash = (burnRes as any).txHash ?? null;
-      console.log(`[NFT] burned token=${tokenIdU32} on ${nftContractAddress.slice(0, 8)}…`);
+      console.log(`[NFT] burned token=${oldNftTokenId} on ${nftContractAddress.slice(0, 8)}…`);
     } catch (e: any) {
       const msg = String(e?.message ?? '');
       if (msg.includes('TokenNoEncontrado') || msg.includes('#4')) {
-        console.log(`[NFT] burn skipped (token=${tokenIdU32} already gone)`);
+        console.log(`[NFT] burn skipped (token=${oldNftTokenId} already gone)`);
       } else {
         throw e;
       }
     }
 
+    // 5. Mint new token_id to buyer with token_uri pointing at its own snapshot.
+    const tokenUri = `${PUBLIC_BASE_URL}/api/nft/metadata/${nftContractAddress}/${newNftTokenId}`;
     let mintTxHash: string | null = null;
     try {
       const mintRes = await invokeSoroban(
         organizerKeypair,
         nftContractAddress,
         'mint',
-        [buyerAddrScVal, tokenIdScVal, tokenUriScVal],
+        [
+          buyerAddrScVal,
+          nativeToScVal(newNftTokenId, { type: 'u32' }),
+          nativeToScVal(tokenUri, { type: 'string' }),
+        ],
       );
       mintTxHash = (mintRes as any).txHash ?? null;
-      console.log(`[NFT] minted token=${tokenIdU32} → ${String(buyerWallet).slice(0, 8)}…`);
+      console.log(`[NFT] minted token=${newNftTokenId} → ${String(buyerWallet).slice(0, 8)}…`);
     } catch (e: any) {
       const msg = String(e?.message ?? '');
       if (msg.includes('TokenYaExiste') || msg.includes('#3')) {
-        res.json({ success: true, alreadyTransferred: true });
+        // Collision on token_id. Bump and retry once.
+        const bumped = newNftTokenId + 1;
+        const tokenUri2 = `${PUBLIC_BASE_URL}/api/nft/metadata/${nftContractAddress}/${bumped}`;
+        const retry = await invokeSoroban(
+          organizerKeypair,
+          nftContractAddress,
+          'mint',
+          [
+            buyerAddrScVal,
+            nativeToScVal(bumped, { type: 'u32' }),
+            nativeToScVal(tokenUri2, { type: 'string' }),
+          ],
+        );
+        mintTxHash = (retry as any).txHash ?? null;
+        await prisma.tickets.update({
+          where: { id: (newRow as any).id },
+          data: { nft_token_id: bumped } as any,
+        });
+        res.json({
+          success: true,
+          burnTxHash,
+          mintTxHash,
+          txHash: mintTxHash,
+          nftTokenId: bumped,
+          nftContractAddress,
+        });
         return;
       }
       throw e;
     }
 
-    res.json({ success: true, burnTxHash, mintTxHash, txHash: mintTxHash });
+    // 6. Persist new nft_token_id on the buyer's ACTIVE row.
+    await prisma.tickets.update({
+      where: { id: (newRow as any).id },
+      data: { nft_token_id: newNftTokenId } as any,
+    });
+
+    res.json({
+      success: true,
+      burnTxHash,
+      mintTxHash,
+      txHash: mintTxHash,
+      nftTokenId: newNftTokenId,
+      nftContractAddress,
+    });
   } catch (error: any) {
     console.error('[NFT] transfer (burn+mint) error:', error?.message ?? error);
     res.status(500).json({ error: error.message ?? 'Error transfiriendo NFT' });
@@ -1322,14 +1413,17 @@ app.get('/api/nft/metadata/:nftContractAddress/:tokenId', async (req, res) => {
   }
 });
 
-// GET /api/nft/qr/:contractAddress/:tokenId.png — PNG con el QR codificando
-// {contractAddress (event_contract), ticketRootId} para validación en puerta.
-// Es la imagen que el JSON de metadata referencia.
+// GET /api/nft/qr/:contractAddress/:tokenId.png — PNG estático por nft_token_id.
+//
+// Cada nft_token_id es único e inmutable: asignado al momento de mint (compra
+// inicial o reventa P2P). El snapshot del QR se genera UNA SOLA VEZ con los
+// valores (ticket_root_id, version, owner_wallet) de la fila de tickets que
+// posee ese nft_token_id, y se cachea forever. Como cada reventa burn-mintea
+// un token_id NUEVO, la URL del seller (token_id viejo) sigue sirviendo SU
+// snapshot viejo — scanner lo rechaza porque version/wallet no matchean la
+// fila ACTIVE actual. La URL del buyer (token_id nuevo) sirve SU snapshot
+// fresco — scanner acepta.
 app.get('/api/nft/qr/:nftContractAddress/:tokenIdRaw', async (req, res) => {
-  // Endpoint público referenciado por el metadata del NFT (Freighter
-  // Collectibles). Devuelve el QR escaneable de la versión vigente. El
-  // scanner valida version contra la ACTIVE on-chain → un QR cacheado de
-  // un dueño anterior es rechazado tras la reventa.
   try {
     const { nftContractAddress, tokenIdRaw } = req.params;
     const tokenId = Number(tokenIdRaw.replace(/\.png$/i, ''));
@@ -1337,37 +1431,44 @@ app.get('/api/nft/qr/:nftContractAddress/:tokenIdRaw', async (req, res) => {
       res.status(400).type('text/plain').send('Invalid tokenId');
       return;
     }
-    const event = await prisma.events.findFirst({
-      where: { nft_contract_address: nftContractAddress } as any,
-      select: { contract_address: true } as any,
-    });
-    const eventContract = (event as any)?.contract_address as string | null | undefined;
-    if (!eventContract) {
-      res.status(404).type('text/plain').send('Not found');
-      return;
-    }
-    const live = await prisma.tickets.findFirst({
-      where: {
-        contract_address: eventContract,
-        ticket_root_id: tokenId,
-        status: 'ACTIVE',
-      },
-      orderBy: { version: 'desc' },
-      select: { version: true, owner_wallet: true } as any,
-    });
-    const version = (live as any)?.version ?? 1;
-    const ownerWallet = (live as any)?.owner_wallet ?? null;
-    const cacheKey = `nft:${nftContractAddress}:${tokenId}:v${version}:w${ownerWallet ?? '-'}`;
+    const cacheKey = `nft:${nftContractAddress}:${tokenId}`;
     if (!qrCache.has(cacheKey)) {
+      const event = await prisma.events.findFirst({
+        where: { nft_contract_address: nftContractAddress } as any,
+        select: { contract_address: true } as any,
+      });
+      const eventContract = (event as any)?.contract_address as string | null | undefined;
+      if (!eventContract) {
+        res.status(404).type('text/plain').send('Not found');
+        return;
+      }
+      // Query by nft_token_id (unique per mint). Returns ACTIVE or CANCELLED
+      // row, whichever owns this token_id — we want the snapshot of THIS mint,
+      // not of the current active version. After resale the OLD row is
+      // CANCELLED but its nft_token_id stays — so seller's QR keeps showing
+      // the OLD owner/version which the scanner rejects.
+      const ticket = await prisma.tickets.findFirst({
+        where: {
+          contract_address: eventContract,
+          nft_token_id: tokenId,
+        } as any,
+        select: { ticket_root_id: true, version: true, owner_wallet: true } as any,
+      });
+      if (!ticket) {
+        res.status(404).type('text/plain').send('Token not found');
+        return;
+      }
       const buf = await buildTicketQrPng({
         contractAddress: eventContract,
-        ticketRootId: tokenId,
-        version,
-        ownerWallet,
+        ticketRootId: (ticket as any).ticket_root_id,
+        version: (ticket as any).version,
+        ownerWallet: (ticket as any).owner_wallet,
       });
       qrCache.set(cacheKey, buf);
     }
-    res.setHeader('Cache-Control', 'public, max-age=30, must-revalidate');
+    // Strong cache: snapshot is immutable per token_id (token_id is burned on
+    // resale, never reused). Freighter can cache aggressively without risk.
+    res.setHeader('Cache-Control', 'public, max-age=86400, immutable');
     res.setHeader('Content-Type', 'image/png');
     res.send(qrCache.get(cacheKey)!);
   } catch (err: any) {
