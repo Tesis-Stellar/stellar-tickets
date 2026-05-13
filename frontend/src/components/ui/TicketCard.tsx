@@ -279,7 +279,7 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
           <ol className="text-xs text-muted-foreground list-decimal pl-4 space-y-1">
             <li>Abre Freighter → pestaña <b>Collectibles</b></li>
             <li>"Add Collectible" → pega la dirección de arriba</li>
-            <li>Token ID: <span className="font-mono">{ticket.ticketRootId ?? "—"}</span></li>
+            <li>Token ID: <span className="font-mono">{ticket.nftTokenId ?? ticket.ticketRootId ?? "—"}</span></li>
           </ol>
         </div>
         <DialogFooter className="gap-2 sm:gap-0">
