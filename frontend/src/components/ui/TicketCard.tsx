@@ -28,15 +28,23 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
   const [resalePriceInput, setResalePriceInput] = useState("");
   const [nftDialogOpen, setNftDialogOpen] = useState(false);
   const [justMintedNftAddress, setJustMintedNftAddress] = useState<string | null>(null);
+  const [secureDialogOpen, setSecureDialogOpen] = useState(false);
+  const [secureAck, setSecureAck] = useState(false);
 
   const parsedPriceCOP = Number(resalePriceInput.replace(/[^\d]/g, ""));
   const previewXLM = xlmCopPrice && parsedPriceCOP > 0 ? parsedPriceCOP / xlmCopPrice : 0;
 
-  const claimTicket = async () => {
+  const openSecureDialog = () => {
     if (!walletAddress) {
       alert("Debes conectar tu wallet de Freighter antes de asegurar el boleto en blockchain. Haz clic en \"Conectar Wallet\" en la parte superior de la página.");
       return;
     }
+    setSecureAck(false);
+    setSecureDialogOpen(true);
+  };
+
+  const confirmSecureTicket = async () => {
+    setSecureDialogOpen(false);
     try {
       setIsMinting(true);
       const result = await secureTicketOnChain(ticket.id);
@@ -201,7 +209,7 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
           </div>
         ) : (
           <button
-            onClick={claimTicket}
+            onClick={openSecureDialog}
             disabled={isMinting}
             className={`inline-flex items-center gap-1.5 px-4 py-2 mt-2 text-xs font-black rounded-lg transition-all ${isMinting ? "bg-muted text-muted-foreground" : "bg-purple-600 hover:bg-purple-700 text-white shadow-md shadow-purple-900/20"}`}
           >
@@ -210,31 +218,118 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
           </button>
         )}
       </div>
-      {/* Real QR — once secured on-chain, this matches the QR baked into the
-          Freighter Collectible (encodes contractAddress + ticketRootId). */}
-      <div className="flex flex-col items-center justify-center sm:border-l sm:border-border sm:pl-4 min-w-[120px]">
-        <div className="p-2 bg-white rounded-lg shadow-sm">
-          <QRCodeCanvas
-            value={JSON.stringify(
-              ticket.contractAddress && ticket.ticketRootId != null
-                ? {
-                    contractAddress: ticket.contractAddress,
-                    ticketRootId: ticket.ticketRootId,
-                    version: ticket.version ?? 1,
-                  }
-                : { ticketId: ticket.id, code: ticket.ticketCode || ticket.id }
-            )}
-            size={80}
-            level={"H"}
-            bgColor={"#ffffff"}
-            fgColor={"#000000"}
-          />
-        </div>
-        <span className="text-[10px] text-muted-foreground font-bold mt-2 uppercase tracking-tight">
-          {isMinted ? "EN TU WALLET" : ticket.ticketCode?.slice(0, 10) || "QR-CODE"}
-        </span>
+      {/* QR de entrada — solo se muestra cuando el dueño actual tiene
+          control real del boleto: asegurado en blockchain Y no publicado en
+          reventa. Si está sin asegurar, mostramos un disclaimer; si está
+          listado para reventa, mostramos que el QR queda suspendido hasta
+          que se cancele o se concrete la venta. Esto evita que un vendedor
+          escanee un QR cacheado tras revender. */}
+      <div className="flex flex-col items-center justify-center sm:border-l sm:border-border sm:pl-4 min-w-[140px] max-w-[180px]">
+        {isMinted && !isListed ? (
+          <>
+            <div className="p-2 bg-white rounded-lg shadow-sm">
+              <QRCodeCanvas
+                value={JSON.stringify({
+                  contractAddress: ticket.contractAddress,
+                  ticketRootId: ticket.ticketRootId,
+                  version: ticket.version ?? 1,
+                })}
+                size={80}
+                level={"H"}
+                bgColor={"#ffffff"}
+                fgColor={"#000000"}
+              />
+            </div>
+            <span className="text-[10px] text-muted-foreground font-bold mt-2 uppercase tracking-tight text-center">
+              QR Válido
+            </span>
+          </>
+        ) : isMinted && isListed ? (
+          <div className="flex flex-col items-center text-center gap-1.5 px-2">
+            <div className="w-16 h-16 rounded-lg bg-amber-500/10 border border-amber-500/30 flex items-center justify-center">
+              <Tag className="w-7 h-7 text-amber-500" />
+            </div>
+            <span className="text-[10px] text-amber-600 dark:text-amber-400 font-black uppercase tracking-tight">
+              QR Suspendido
+            </span>
+            <span className="text-[10px] text-muted-foreground leading-tight">
+              Boleta publicada en reventa P2P. Cancela la reventa para recuperar tu QR.
+            </span>
+          </div>
+        ) : (
+          <div className="flex flex-col items-center text-center gap-1.5 px-2">
+            <div className="w-16 h-16 rounded-lg bg-muted border border-border flex items-center justify-center">
+              <QrCode className="w-7 h-7 text-muted-foreground" />
+            </div>
+            <span className="text-[10px] text-muted-foreground font-black uppercase tracking-tight">
+              QR no disponible
+            </span>
+            <span className="text-[10px] text-muted-foreground leading-tight">
+              Asegura tu boleta en blockchain para liberar tu QR de entrada.
+            </span>
+          </div>
+        )}
       </div>
     </div>
+
+    <Dialog open={secureDialogOpen} onOpenChange={setSecureDialogOpen}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Asegurar boleta en blockchain</DialogTitle>
+          <DialogDescription>
+            Al asegurar tu boleta recibirás el <b>QR de entrada</b> que representa tu acceso al evento. A partir de ese momento, ese QR es tu boleta.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-3 py-2 text-sm">
+          <div className="rounded-lg border border-amber-300 bg-amber-50 dark:bg-amber-950/30 p-3 flex gap-2 text-xs text-amber-900 dark:text-amber-200">
+            <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+            <div className="space-y-1">
+              <p className="font-semibold">Es una responsabilidad grande</p>
+              <p>
+                Cualquiera que tenga una foto o captura de tu QR puede entrar al evento en tu lugar. Si compartes el QR, regalas tu boleta.
+              </p>
+            </div>
+          </div>
+
+          <div className="rounded-lg bg-muted/50 p-3 text-xs text-muted-foreground">
+            <p className="font-semibold text-foreground mb-1">Te recomendamos asegurar tu boleta solo si:</p>
+            <ul className="list-disc pl-4 space-y-0.5">
+              <li>Quieres revenderla en el marketplace P2P.</li>
+              <li>Se la vas a regalar o transferir a alguien.</li>
+            </ul>
+            <p className="mt-2">
+              Si no, espera al evento: el QR se libera sin riesgo cuando lo necesites.
+            </p>
+          </div>
+
+          <label className="flex items-start gap-2 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              className="mt-0.5"
+              checked={secureAck}
+              onChange={(e) => setSecureAck(e.target.checked)}
+            />
+            <span className="text-xs text-muted-foreground">
+              Entiendo que el QR representa mi boleta y que compartirlo equivale a regalar mi entrada.
+            </span>
+          </label>
+        </div>
+
+        <DialogFooter className="gap-2 sm:gap-0">
+          <Button variant="outline" onClick={() => setSecureDialogOpen(false)}>
+            Cancelar
+          </Button>
+          <Button
+            onClick={confirmSecureTicket}
+            disabled={!secureAck}
+            className="bg-purple-600 hover:bg-purple-700 text-white"
+          >
+            Asegurar en Blockchain
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
 
     <Dialog open={nftDialogOpen} onOpenChange={setNftDialogOpen}>
       <DialogContent className="sm:max-w-md">
