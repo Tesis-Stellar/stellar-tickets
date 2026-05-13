@@ -29,7 +29,6 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
   const [nftDialogOpen, setNftDialogOpen] = useState(false);
   const [justMintedNftAddress, setJustMintedNftAddress] = useState<string | null>(null);
   const [secureDialogOpen, setSecureDialogOpen] = useState(false);
-  const [secureAck, setSecureAck] = useState(false);
 
   const parsedPriceCOP = Number(resalePriceInput.replace(/[^\d]/g, ""));
   const previewXLM = xlmCopPrice && parsedPriceCOP > 0 ? parsedPriceCOP / xlmCopPrice : 0;
@@ -39,11 +38,14 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
       alert("Debes conectar tu wallet de Freighter antes de asegurar el boleto en blockchain. Haz clic en \"Conectar Wallet\" en la parte superior de la página.");
       return;
     }
-    setSecureAck(false);
     setSecureDialogOpen(true);
   };
 
-  const confirmSecureTicket = async () => {
+  // intent: "resale" = no muestra NFT en Freighter del usuario (QR queda solo
+  // en TuTicket — minimiza el riesgo de compartir capturas).
+  // intent: "wallet" = muestra el modal con instrucciones para añadir el
+  // coleccionable a Freighter — pensado para compartir/regalar.
+  const confirmSecureTicket = async (intent: "resale" | "wallet") => {
     setSecureDialogOpen(false);
     try {
       setIsMinting(true);
@@ -52,7 +54,7 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
         setIsMinted(true);
         setTxHash(result.txHash ?? null);
         const nftAddr = result.nftContractAddress ?? null;
-        if (nftAddr) {
+        if (nftAddr && intent === "wallet") {
           setJustMintedNftAddress(nftAddr);
           setNftDialogOpen(true);
         }
@@ -273,59 +275,59 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
     </div>
 
     <Dialog open={secureDialogOpen} onOpenChange={setSecureDialogOpen}>
-      <DialogContent className="sm:max-w-md">
+      <DialogContent className="sm:max-w-lg">
         <DialogHeader>
-          <DialogTitle>Asegurar boleta en blockchain</DialogTitle>
+          <DialogTitle>¿Para qué quieres asegurar tu boleta?</DialogTitle>
           <DialogDescription>
-            Al asegurar tu boleta recibirás el <b>QR de entrada</b> que representa tu acceso al evento. A partir de ese momento, ese QR es tu boleta.
+            Asegurar tu boleta en blockchain te permite revenderla o regalarla. Elige cómo planeas usarla — ajustamos lo que va a tu wallet.
           </DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-3 py-2 text-sm">
-          <div className="rounded-lg border border-amber-300 bg-amber-50 dark:bg-amber-950/30 p-3 flex gap-2 text-xs text-amber-900 dark:text-amber-200">
-            <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
-            <div className="space-y-1">
-              <p className="font-semibold">Es una responsabilidad grande</p>
-              <p>
-                Cualquiera que tenga una foto o captura de tu QR puede entrar al evento en tu lugar. Si compartes el QR, regalas tu boleta.
-              </p>
+        <div className="space-y-3 py-2">
+          {/* Opción 1 — Revender */}
+          <button
+            type="button"
+            onClick={() => confirmSecureTicket("resale")}
+            className="w-full text-left rounded-lg border border-blue-500/40 bg-blue-50 dark:bg-blue-950/20 hover:bg-blue-100 dark:hover:bg-blue-950/40 p-4 transition-colors"
+          >
+            <div className="flex items-start gap-3">
+              <Tag className="w-5 h-5 text-blue-600 dark:text-blue-400 shrink-0 mt-0.5" />
+              <div className="space-y-1">
+                <p className="font-bold text-sm text-foreground">Quiero revenderla en P2P</p>
+                <p className="text-xs text-muted-foreground">
+                  Tu boleta queda lista para publicar en el marketplace. <b>No</b> se mostrará como coleccionable en tu Freighter — así tu QR no queda en tu wallet y nadie puede sacarle captura desde ahí.
+                </p>
+              </div>
             </div>
-          </div>
+          </button>
 
-          <div className="rounded-lg bg-muted/50 p-3 text-xs text-muted-foreground">
-            <p className="font-semibold text-foreground mb-1">Te recomendamos asegurar tu boleta solo si:</p>
-            <ul className="list-disc pl-4 space-y-0.5">
-              <li>Quieres revenderla en el marketplace P2P.</li>
-              <li>Se la vas a regalar o transferir a alguien.</li>
-            </ul>
-            <p className="mt-2">
-              Si no, espera al evento: el QR se libera sin riesgo cuando lo necesites.
-            </p>
-          </div>
-
-          <label className="flex items-start gap-2 cursor-pointer select-none">
-            <input
-              type="checkbox"
-              className="mt-0.5"
-              checked={secureAck}
-              onChange={(e) => setSecureAck(e.target.checked)}
-            />
-            <span className="text-xs text-muted-foreground">
-              Entiendo que el QR representa mi boleta y que compartirlo equivale a regalar mi entrada.
-            </span>
-          </label>
+          {/* Opción 2 — Compartir/Regalar */}
+          <button
+            type="button"
+            onClick={() => confirmSecureTicket("wallet")}
+            className="w-full text-left rounded-lg border border-purple-500/40 bg-purple-50 dark:bg-purple-950/20 hover:bg-purple-100 dark:hover:bg-purple-950/40 p-4 transition-colors"
+          >
+            <div className="flex items-start gap-3">
+              <ShieldCheck className="w-5 h-5 text-purple-600 dark:text-purple-400 shrink-0 mt-0.5" />
+              <div className="space-y-2">
+                <p className="font-bold text-sm text-foreground">Quiero compartirla o regalarla (mostrar en Freighter)</p>
+                <p className="text-xs text-muted-foreground">
+                  Tu boleta aparecerá como <b>coleccionable</b> en tu Freighter. En puerta el personal escanea el QR directamente desde tu wallet.
+                </p>
+                <div className="rounded-md border border-amber-300 bg-amber-50 dark:bg-amber-950/30 p-2 flex gap-2 text-[11px] text-amber-900 dark:text-amber-200">
+                  <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                  <p>
+                    <b>Es una responsabilidad grande:</b> cualquiera con una foto o captura de tu QR puede entrar al evento en tu lugar. Si compartes el QR, regalas tu boleta.
+                  </p>
+                </div>
+              </div>
+            </div>
+          </button>
         </div>
 
-        <DialogFooter className="gap-2 sm:gap-0">
+        <DialogFooter>
           <Button variant="outline" onClick={() => setSecureDialogOpen(false)}>
             Cancelar
-          </Button>
-          <Button
-            onClick={confirmSecureTicket}
-            disabled={!secureAck}
-            className="bg-purple-600 hover:bg-purple-700 text-white"
-          >
-            Asegurar en Blockchain
           </Button>
         </DialogFooter>
       </DialogContent>
