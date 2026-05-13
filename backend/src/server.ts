@@ -883,7 +883,26 @@ app.post('/api/transactions/secure-ticket', authMiddleware, async (req, res) => 
       console.warn(`[NFT] event ${event.id} has no nft_contract_address — skipping NFT mint`);
     }
 
-    // Update DB with on-chain data (idempotent)
+    // Update DB with on-chain data (idempotent).
+    // Race: el indexer puede haber creado una fila huérfana con
+    // (contract_address, ticket_root_id, version=0) antes de que llegáramos aquí
+    // (poll cada 5s, mientras el mint NFT tarda varios segundos). Si existe y no
+    // es el mismo ticket, la borramos para liberar el unique constraint —
+    // preservamos el ticket Web2 original con sus order_item_id, event, etc.
+    const orphan = await prisma.tickets.findFirst({
+      where: {
+        contract_address: contractAddress,
+        ticket_root_id: ticketRootId,
+        version: 0,
+        NOT: { id: ticketId },
+      },
+      select: { id: true },
+    });
+    if (orphan) {
+      console.log(`[SOROBAN] Removing indexer orphan ticket ${orphan.id} (collision on ${contractAddress.slice(0,8)}/root=${ticketRootId})`);
+      await prisma.tickets.delete({ where: { id: orphan.id } });
+    }
+
     await prisma.tickets.update({
       where: { id: ticketId },
       data: {
