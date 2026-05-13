@@ -181,48 +181,41 @@ async function buildTicketQrPng(payload: object): Promise<Buffer> {
   });
 }
 
+// El QR escaneable vive solo dentro de la app del dueño actual del ticket.
+// Esta imagen es la que aparece en Freighter / wallets como visual del
+// coleccionable: codifica un payload deliberadamente NO-ticket para que, si
+// alguien intenta escanearla en puerta, el endpoint /api/admin/scan la
+// rechace por falta de campos requeridos.
+let placeholderPngCache: Buffer | null = null;
+async function buildPlaceholderQrPng(): Promise<Buffer> {
+  if (placeholderPngCache) return placeholderPngCache;
+  placeholderPngCache = await QRCode.toBuffer(
+    JSON.stringify({
+      placeholder: true,
+      msg: 'Tu QR de entrada solo es válido desde la app TuTicket del dueño actual del boleto.',
+      url: `${PUBLIC_BASE_URL}/mi-cuenta/entradas`,
+    }),
+    {
+      errorCorrectionLevel: 'M',
+      type: 'png',
+      width: 512,
+      margin: 2,
+      color: { dark: '#000000', light: '#FFFFFF' },
+    },
+  );
+  return placeholderPngCache;
+}
+
 // GET /api/tickets/qr/:assetCode.png — public PNG referenced by stellar.toml.
 // QR encodes { contractAddress, ticketRootId } so the door scanner can resolve
 // the live ticket version regardless of resale history.
-app.get('/api/tickets/qr/:assetCode.png', async (req, res) => {
+app.get('/api/tickets/qr/:assetCode.png', async (_req, res) => {
+  // Endpoint público referenciado por stellar.toml (Freighter Classic).
+  // Devuelve siempre un placeholder no-escaneable como ticket. El QR real
+  // se genera client-side dentro de la app del dueño actual.
   try {
-    const assetCode = req.params.assetCode.replace(/\.png$/i, '');
-    if (!/^T[0-9A-F]{1,11}$/.test(assetCode)) {
-      res.status(400).type('text/plain').send('Invalid asset code');
-      return;
-    }
-
-    const ticket = await prisma.tickets.findFirst({
-      where: { asset_code: assetCode, contract_address: { not: null } },
-      select: { contract_address: true, ticket_root_id: true } as any,
-    });
-    if (!ticket?.contract_address || (ticket as any).ticket_root_id == null) {
-      res.status(404).type('text/plain').send('Ticket not found');
-      return;
-    }
-    const live = await prisma.tickets.findFirst({
-      where: {
-        contract_address: ticket.contract_address,
-        ticket_root_id: (ticket as any).ticket_root_id,
-        status: 'ACTIVE',
-      },
-      orderBy: { version: 'desc' },
-      select: { version: true } as any,
-    });
-    const version = (live as any)?.version ?? 1;
-    const cacheKey = `${assetCode}:v${version}`;
-
-    if (!qrCache.has(cacheKey)) {
-      const buf = await buildTicketQrPng({
-        contractAddress: ticket.contract_address,
-        ticketRootId: (ticket as any).ticket_root_id,
-        version,
-      });
-      qrCache.set(cacheKey, buf);
-    }
-
-    const png = qrCache.get(cacheKey)!;
-    res.setHeader('Cache-Control', 'public, max-age=60, must-revalidate');
+    const png = await buildPlaceholderQrPng();
+    res.setHeader('Cache-Control', 'public, max-age=300, must-revalidate');
     res.setHeader('Content-Type', 'image/png');
     res.send(png);
   } catch (err: any) {
@@ -1285,45 +1278,16 @@ app.get('/api/nft/metadata/:nftContractAddress/:tokenId', async (req, res) => {
 // GET /api/nft/qr/:contractAddress/:tokenId.png — PNG con el QR codificando
 // {contractAddress (event_contract), ticketRootId} para validación en puerta.
 // Es la imagen que el JSON de metadata referencia.
-app.get('/api/nft/qr/:nftContractAddress/:tokenIdRaw', async (req, res) => {
+app.get('/api/nft/qr/:nftContractAddress/:tokenIdRaw', async (_req, res) => {
+  // Endpoint público referenciado por el metadata del NFT (Freighter
+  // Collectibles). Devuelve siempre un placeholder no-escaneable como ticket.
+  // El QR real se genera client-side dentro de la app del dueño actual,
+  // evitando que un screenshot/cache pueda redimir el boleto tras una reventa.
   try {
-    const { nftContractAddress, tokenIdRaw } = req.params;
-    const tokenId = Number(tokenIdRaw.replace(/\.png$/i, ''));
-    if (!Number.isFinite(tokenId) || tokenId < 0) {
-      res.status(400).type('text/plain').send('Invalid tokenId');
-      return;
-    }
-    const event = await prisma.events.findFirst({
-      where: { nft_contract_address: nftContractAddress } as any,
-      select: { contract_address: true } as any,
-    });
-    const eventContract = (event as any)?.contract_address as string | null | undefined;
-    if (!eventContract) {
-      res.status(404).type('text/plain').send('Not found');
-      return;
-    }
-    const live = await prisma.tickets.findFirst({
-      where: {
-        contract_address: eventContract,
-        ticket_root_id: tokenId,
-        status: 'ACTIVE',
-      },
-      orderBy: { version: 'desc' },
-      select: { version: true } as any,
-    });
-    const version = (live as any)?.version ?? 1;
-    const cacheKey = `nft:${nftContractAddress}:${tokenId}:v${version}`;
-    if (!qrCache.has(cacheKey)) {
-      const buf = await buildTicketQrPng({
-        contractAddress: eventContract,
-        ticketRootId: tokenId,
-        version,
-      });
-      qrCache.set(cacheKey, buf);
-    }
-    res.setHeader('Cache-Control', 'public, max-age=60, must-revalidate');
+    const png = await buildPlaceholderQrPng();
+    res.setHeader('Cache-Control', 'public, max-age=300, must-revalidate');
     res.setHeader('Content-Type', 'image/png');
-    res.send(qrCache.get(cacheKey)!);
+    res.send(png);
   } catch (err: any) {
     console.error('[NFT qr] error:', err?.message);
     res.status(500).type('text/plain').send('Error generating QR');
@@ -1434,6 +1398,13 @@ app.post('/api/admin/scan', authMiddleware, async (req, res) => {
 
     if (ticket.status !== 'ACTIVE') {
       res.status(400).json({ error: `Boleto inhabilitado: ${ticket.status}` });
+      return;
+    }
+
+    if ((ticket as any).is_for_sale === true) {
+      res.status(409).json({
+        error: 'Boleto publicado en reventa P2P. El QR no es válido hasta que se concrete o se cancele la reventa.',
+      });
       return;
     }
 

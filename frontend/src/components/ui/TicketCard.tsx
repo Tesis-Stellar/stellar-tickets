@@ -210,29 +210,57 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
           </button>
         )}
       </div>
-      {/* Real QR — once secured on-chain, this matches the QR baked into the
-          Freighter Collectible (encodes contractAddress + ticketRootId). */}
-      <div className="flex flex-col items-center justify-center sm:border-l sm:border-border sm:pl-4 min-w-[120px]">
-        <div className="p-2 bg-white rounded-lg shadow-sm">
-          <QRCodeCanvas
-            value={JSON.stringify(
-              ticket.contractAddress && ticket.ticketRootId != null
-                ? {
-                    contractAddress: ticket.contractAddress,
-                    ticketRootId: ticket.ticketRootId,
-                    version: ticket.version ?? 1,
-                  }
-                : { ticketId: ticket.id, code: ticket.ticketCode || ticket.id }
-            )}
-            size={80}
-            level={"H"}
-            bgColor={"#ffffff"}
-            fgColor={"#000000"}
-          />
-        </div>
-        <span className="text-[10px] text-muted-foreground font-bold mt-2 uppercase tracking-tight">
-          {isMinted ? "EN TU WALLET" : ticket.ticketCode?.slice(0, 10) || "QR-CODE"}
-        </span>
+      {/* QR de entrada — solo se muestra cuando el dueño actual tiene
+          control real del boleto: asegurado en blockchain Y no publicado en
+          reventa. Si está sin asegurar, mostramos un disclaimer; si está
+          listado para reventa, mostramos que el QR queda suspendido hasta
+          que se cancele o se concrete la venta. Esto evita que un vendedor
+          escanee un QR cacheado tras revender. */}
+      <div className="flex flex-col items-center justify-center sm:border-l sm:border-border sm:pl-4 min-w-[140px] max-w-[180px]">
+        {isMinted && !isListed ? (
+          <>
+            <div className="p-2 bg-white rounded-lg shadow-sm">
+              <QRCodeCanvas
+                value={JSON.stringify({
+                  contractAddress: ticket.contractAddress,
+                  ticketRootId: ticket.ticketRootId,
+                  version: ticket.version ?? 1,
+                })}
+                size={80}
+                level={"H"}
+                bgColor={"#ffffff"}
+                fgColor={"#000000"}
+              />
+            </div>
+            <span className="text-[10px] text-muted-foreground font-bold mt-2 uppercase tracking-tight text-center">
+              QR Válido
+            </span>
+          </>
+        ) : isMinted && isListed ? (
+          <div className="flex flex-col items-center text-center gap-1.5 px-2">
+            <div className="w-16 h-16 rounded-lg bg-amber-500/10 border border-amber-500/30 flex items-center justify-center">
+              <Tag className="w-7 h-7 text-amber-500" />
+            </div>
+            <span className="text-[10px] text-amber-600 dark:text-amber-400 font-black uppercase tracking-tight">
+              QR Suspendido
+            </span>
+            <span className="text-[10px] text-muted-foreground leading-tight">
+              Boleta publicada en reventa P2P. Cancela la reventa para recuperar tu QR.
+            </span>
+          </div>
+        ) : (
+          <div className="flex flex-col items-center text-center gap-1.5 px-2">
+            <div className="w-16 h-16 rounded-lg bg-muted border border-border flex items-center justify-center">
+              <QrCode className="w-7 h-7 text-muted-foreground" />
+            </div>
+            <span className="text-[10px] text-muted-foreground font-black uppercase tracking-tight">
+              QR no disponible
+            </span>
+            <span className="text-[10px] text-muted-foreground leading-tight">
+              Asegura tu boleta en blockchain para liberar tu QR de entrada.
+            </span>
+          </div>
+        )}
       </div>
     </div>
 
