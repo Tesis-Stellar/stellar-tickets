@@ -3,7 +3,7 @@ import { useParams, Link, useNavigate } from "react-router-dom";
 import { Header } from "@/components/layout/Header";
 import { Footer } from "@/components/layout/Footer";
 import { getEventBySlug, getEventTicketTypes, getRelatedEvents, type EventData, type LiveTicket } from "@/data/events";
-import { MapPin, Calendar, Clock, ChevronLeft, User, Info, ShieldCheck, Lock, Loader2, AlertTriangle, ExternalLink, CheckCircle2 } from "lucide-react";
+import { MapPin, Calendar, Clock, ChevronLeft, User, Info, ShieldCheck, Lock, Loader2, ExternalLink, CheckCircle2 } from "lucide-react";
 import { EventCard } from "@/components/ui/EventCard";
 import { useAppContext } from "@/context/AppContext";
 import { useXlmPrice, formatCOP } from "@/hooks/useXlmPrice";
@@ -26,15 +26,11 @@ const EventDetail = () => {
   const [liveTickets, setLiveTickets] = useState<LiveTicket[]>([]);
   const [buyingId, setBuyingId] = useState<string | null>(null);
   const [cancellingId, setCancellingId] = useState<string | null>(null);
-  const [confirmBuy, setConfirmBuy] = useState<LiveTicket | null>(null);
-  const [buyAck, setBuyAck] = useState(false);
   const [successDialog, setSuccessDialog] = useState<{ kind: "buy" | "cancel"; txHash?: string } | null>(null);
   const { buyResaleTicket, cancelResaleListing, linkWallet, walletAddress } = useAppContext();
   const xlmCop = useXlmPrice();
 
   const doBuy = async (lt: LiveTicket) => {
-    setConfirmBuy(null);
-    setBuyAck(false);
     try {
       if (!walletAddress) {
         alert("Conecta tu billetera Freighter desde el botón del header primero.");
@@ -234,8 +230,7 @@ const EventDetail = () => {
                               alert("Conecta tu billetera Freighter desde el botón del header primero.");
                               return;
                             }
-                            setBuyAck(false);
-                            setConfirmBuy(lt);
+                            void doBuy(lt);
                           }}
                           className="bg-purple-600 hover:bg-purple-700 text-white text-xs font-bold px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1 shadow-md shadow-purple-900/20 disabled:opacity-50"
                         >
@@ -261,66 +256,6 @@ const EventDetail = () => {
         )}
       </main>
       <Footer />
-
-      {/* Confirm buy — disclaimer sobre el QR antes de firmar */}
-      <Dialog open={!!confirmBuy} onOpenChange={(o) => !o && setConfirmBuy(null)}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>Comprar boleta en reventa P2P</DialogTitle>
-            <DialogDescription>
-              Estás a punto de comprar el <b>Boleto #{confirmBuy?.ticketRootId}</b> directamente al vendedor. La transacción es atómica en Soroban: si firmas, recibes el NFT y el vendedor recibe el pago.
-            </DialogDescription>
-          </DialogHeader>
-
-          <div className="space-y-3 py-2 text-sm">
-            {confirmBuy?.resalePrice != null && (
-              <div className="rounded-lg bg-muted/50 p-3 text-xs">
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Precio:</span>
-                  <span className="font-mono font-bold">{(confirmBuy.resalePrice / 10_000_000).toFixed(4)} XLM</span>
-                </div>
-                {xlmCop && (
-                  <div className="flex justify-between text-muted-foreground">
-                    <span>Equivalente:</span>
-                    <span>{formatCOP((confirmBuy.resalePrice / 10_000_000) * xlmCop)}</span>
-                  </div>
-                )}
-              </div>
-            )}
-
-            <div className="rounded-lg border border-amber-300 bg-amber-50 dark:bg-amber-950/30 p-3 flex gap-2 text-xs text-amber-900 dark:text-amber-200">
-              <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
-              <div className="space-y-1">
-                <p className="font-semibold">Tu QR es tu boleta</p>
-                <p>
-                  Tras la compra recibirás un <b>QR de entrada</b> que representa tu acceso al evento. Cualquiera con una foto o captura de ese QR puede entrar en tu lugar. Si lo compartes, regalas tu boleta.
-                </p>
-                <p>
-                  Encontrarás tu QR en <b>Mis Entradas</b>. Si activas la opción de Freighter, también podrás escanearlo desde tu wallet en puerta.
-                </p>
-              </div>
-            </div>
-
-            <label className="flex items-start gap-2 cursor-pointer select-none">
-              <input type="checkbox" className="mt-0.5" checked={buyAck} onChange={(e) => setBuyAck(e.target.checked)} />
-              <span className="text-xs text-muted-foreground">
-                Entiendo que el QR representa mi boleta y que compartirlo equivale a regalar mi entrada.
-              </span>
-            </label>
-          </div>
-
-          <DialogFooter className="gap-2 sm:gap-0">
-            <Button variant="outline" onClick={() => setConfirmBuy(null)}>Cancelar</Button>
-            <Button
-              disabled={!buyAck}
-              onClick={() => confirmBuy && doBuy(confirmBuy)}
-              className="bg-purple-600 hover:bg-purple-700 text-white"
-            >
-              Confirmar y firmar
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
 
       {/* Success post-buy / post-cancel */}
       <Dialog open={!!successDialog} onOpenChange={(o) => !o && setSuccessDialog(null)}>

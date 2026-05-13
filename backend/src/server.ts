@@ -203,6 +203,9 @@ app.get('/api/tickets/qr/:assetCode.png', async (req, res) => {
       res.status(404).type('text/plain').send('Ticket not found');
       return;
     }
+    // Resolve owner_wallet on the fly: scanner validates wallet_qr == owner_db.
+    // On resale the new version has a fresh owner_wallet, so a Freighter-cached
+    // image (with the previous owner baked in) will be rejected at the door.
     const live = await prisma.tickets.findFirst({
       where: {
         contract_address: ticket.contract_address,
@@ -210,19 +213,21 @@ app.get('/api/tickets/qr/:assetCode.png', async (req, res) => {
         status: 'ACTIVE',
       },
       orderBy: { version: 'desc' },
-      select: { version: true } as any,
+      select: { version: true, owner_wallet: true } as any,
     });
     const version = (live as any)?.version ?? 1;
-    const cacheKey = `${assetCode}:v${version}`;
+    const ownerWallet = (live as any)?.owner_wallet ?? null;
+    const cacheKey = `${assetCode}:v${version}:w${ownerWallet ?? '-'}`;
     if (!qrCache.has(cacheKey)) {
       const buf = await buildTicketQrPng({
         contractAddress: ticket.contract_address,
         ticketRootId: (ticket as any).ticket_root_id,
         version,
+        ownerWallet,
       });
       qrCache.set(cacheKey, buf);
     }
-    res.setHeader('Cache-Control', 'public, max-age=60, must-revalidate');
+    res.setHeader('Cache-Control', 'public, max-age=30, must-revalidate');
     res.setHeader('Content-Type', 'image/png');
     res.send(qrCache.get(cacheKey)!);
   } catch (err: any) {
@@ -1313,19 +1318,21 @@ app.get('/api/nft/qr/:nftContractAddress/:tokenIdRaw', async (req, res) => {
         status: 'ACTIVE',
       },
       orderBy: { version: 'desc' },
-      select: { version: true } as any,
+      select: { version: true, owner_wallet: true } as any,
     });
     const version = (live as any)?.version ?? 1;
-    const cacheKey = `nft:${nftContractAddress}:${tokenId}:v${version}`;
+    const ownerWallet = (live as any)?.owner_wallet ?? null;
+    const cacheKey = `nft:${nftContractAddress}:${tokenId}:v${version}:w${ownerWallet ?? '-'}`;
     if (!qrCache.has(cacheKey)) {
       const buf = await buildTicketQrPng({
         contractAddress: eventContract,
         ticketRootId: tokenId,
         version,
+        ownerWallet,
       });
       qrCache.set(cacheKey, buf);
     }
-    res.setHeader('Cache-Control', 'public, max-age=60, must-revalidate');
+    res.setHeader('Cache-Control', 'public, max-age=30, must-revalidate');
     res.setHeader('Content-Type', 'image/png');
     res.send(qrCache.get(cacheKey)!);
   } catch (err: any) {
@@ -1397,7 +1404,7 @@ app.post('/api/admin/scan', authMiddleware, async (req, res) => {
     //   { ticketId }                          ← legacy QR (DB UUID, version-bound)
     //   { contractAddress, ticketRootId }     ← new QR baked into Freighter NFT
     //                                            (stable across resale versions)
-    const { ticketId, contractAddress, ticketRootId, version } = req.body;
+    const { ticketId, contractAddress, ticketRootId, version, ownerWallet } = req.body;
 
     let ticket = null as Awaited<ReturnType<typeof prisma.tickets.findUnique>> | null;
 
@@ -1425,6 +1432,19 @@ app.post('/api/admin/scan', authMiddleware, async (req, res) => {
           error: 'QR vencido: este boleto fue revendido. El nuevo dueño tiene el QR válido.',
         });
         return;
+      }
+      // Wallet-bound validation: if the QR embeds an ownerWallet, it must match
+      // the DB's current owner_wallet for the active version. A Freighter image
+      // cached from before a resale will carry the previous owner's wallet and
+      // be rejected here even if the version check passed (race window).
+      if (ticket && ownerWallet) {
+        const dbOwner = (ticket as any).owner_wallet;
+        if (dbOwner && String(ownerWallet) !== String(dbOwner)) {
+          res.status(409).json({
+            error: 'QR vencido: el dueño on-chain de este boleto cambió. El nuevo dueño tiene el QR válido.',
+          });
+          return;
+        }
       }
     } else {
       res.status(400).json({ error: 'Se requiere ticketId o (contractAddress + ticketRootId)' });
