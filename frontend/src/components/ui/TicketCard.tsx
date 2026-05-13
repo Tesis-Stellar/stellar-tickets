@@ -1,4 +1,4 @@
-import { QrCode, MapPin, Calendar, ShieldCheck, Lock, ExternalLink, Tag, AlertTriangle } from "lucide-react";
+import { QrCode, MapPin, Calendar, ShieldCheck, Lock, ExternalLink, Tag } from "lucide-react";
 import { QRCodeCanvas } from "qrcode.react";
 import type { PurchasedTicket } from "@/context/AppContext";
 import { useAppContext } from "@/context/AppContext";
@@ -28,50 +28,24 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
   const [resalePriceInput, setResalePriceInput] = useState("");
   const [nftDialogOpen, setNftDialogOpen] = useState(false);
   const [justMintedNftAddress, setJustMintedNftAddress] = useState<string | null>(null);
-  const [secureDialogOpen, setSecureDialogOpen] = useState(false);
-  // Si el usuario eligió "wallet" en el modal de asegurar, persistimos esa
-  // intención en localStorage para que el botón "Ver NFT en Freighter" siga
-  // disponible tras recargar. Si eligió "resale" o aún no decide, el botón
-  // queda oculto — el QR vive solo en TuTicket.
-  const showNftKey = `nft-reveal:${ticket.id}`;
-  const [showNftButton, setShowNftButton] = useState<boolean>(() => {
-    try { return localStorage.getItem(showNftKey) === '1'; } catch { return false; }
-  });
 
   const parsedPriceCOP = Number(resalePriceInput.replace(/[^\d]/g, ""));
   const previewXLM = xlmCopPrice && parsedPriceCOP > 0 ? parsedPriceCOP / xlmCopPrice : 0;
 
-  const openSecureDialog = () => {
+  const claimTicket = async () => {
     if (!walletAddress) {
       alert("Debes conectar tu wallet de Freighter antes de asegurar el boleto en blockchain. Haz clic en \"Conectar Wallet\" en la parte superior de la página.");
       return;
     }
-    setSecureDialogOpen(true);
-  };
-
-  // intent: "resale" = no muestra NFT en Freighter del usuario (QR queda solo
-  // en TuTicket — minimiza el riesgo de compartir capturas).
-  // intent: "wallet" = muestra el modal con instrucciones para añadir el
-  // coleccionable a Freighter — pensado para compartir/regalar.
-  const confirmSecureTicket = async (intent: "resale" | "wallet") => {
-    setSecureDialogOpen(false);
     try {
       setIsMinting(true);
       const result = await secureTicketOnChain(ticket.id);
       if (result.success) {
         setIsMinted(true);
         setTxHash(result.txHash ?? null);
-        const nftAddr = result.nftContractAddress ?? null;
-        if (intent === "wallet") {
-          try { localStorage.setItem(showNftKey, '1'); } catch {}
-          setShowNftButton(true);
-          if (nftAddr) {
-            setJustMintedNftAddress(nftAddr);
-            setNftDialogOpen(true);
-          }
-        } else {
-          try { localStorage.setItem(showNftKey, '0'); } catch {}
-          setShowNftButton(false);
+        if (result.nftContractAddress) {
+          setJustMintedNftAddress(result.nftContractAddress);
+          setNftDialogOpen(true);
         }
       } else {
         alert(`Error: ${result.error}`);
@@ -202,7 +176,7 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
                   <ExternalLink className="w-3 h-3" /> Ver en Stellar Explorer
                 </a>
               )}
-              {ticket.nftContractAddress && showNftButton && (
+              {ticket.nftContractAddress && (
                 <button
                   onClick={() => {
                     setJustMintedNftAddress(ticket.nftContractAddress ?? null);
@@ -226,7 +200,7 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
           </div>
         ) : (
           <button
-            onClick={openSecureDialog}
+            onClick={claimTicket}
             disabled={isMinting}
             className={`inline-flex items-center gap-1.5 px-4 py-2 mt-2 text-xs font-black rounded-lg transition-all ${isMinting ? "bg-muted text-muted-foreground" : "bg-purple-600 hover:bg-purple-700 text-white shadow-md shadow-purple-900/20"}`}
           >
@@ -235,12 +209,11 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
           </button>
         )}
       </div>
-      {/* QR de entrada — solo se muestra cuando el dueño actual tiene
-          control real del boleto: asegurado en blockchain Y no publicado en
-          reventa. Si está sin asegurar, mostramos un disclaimer; si está
-          listado para reventa, mostramos que el QR queda suspendido hasta
-          que se cancele o se concrete la venta. Esto evita que un vendedor
-          escanee un QR cacheado tras revender. */}
+      {/* QR de entrada — incluye ownerWallet para que el scanner valide contra
+          el dueño on-chain actual. Si el ticket fue revendido, la wallet del
+          QR cacheado por Freighter ya no coincide con el dueño en DB y el
+          scanner lo rechaza. Mientras el ticket está listado en reventa,
+          ocultamos el QR para evitar confusión visual. */}
       <div className="flex flex-col items-center justify-center sm:border-l sm:border-border sm:pl-4 min-w-[140px] max-w-[180px]">
         {isMinted && !isListed ? (
           <>
@@ -250,6 +223,7 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
                   contractAddress: ticket.contractAddress,
                   ticketRootId: ticket.ticketRootId,
                   version: ticket.version ?? 1,
+                  ownerWallet: ticket.ownerWallet ?? walletAddress ?? null,
                 })}
                 size={80}
                 level={"H"}
@@ -288,65 +262,6 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
         )}
       </div>
     </div>
-
-    <Dialog open={secureDialogOpen} onOpenChange={setSecureDialogOpen}>
-      <DialogContent className="sm:max-w-lg">
-        <DialogHeader>
-          <DialogTitle>¿Para qué quieres asegurar tu boleta?</DialogTitle>
-          <DialogDescription>
-            Asegurar tu boleta en blockchain te permite revenderla o regalarla. Elige cómo planeas usarla — ajustamos lo que va a tu wallet.
-          </DialogDescription>
-        </DialogHeader>
-
-        <div className="space-y-3 py-2">
-          {/* Opción 1 — Revender */}
-          <button
-            type="button"
-            onClick={() => confirmSecureTicket("resale")}
-            className="w-full text-left rounded-lg border border-blue-500/40 bg-blue-50 dark:bg-blue-950/20 hover:bg-blue-100 dark:hover:bg-blue-950/40 p-4 transition-colors"
-          >
-            <div className="flex items-start gap-3">
-              <Tag className="w-5 h-5 text-blue-600 dark:text-blue-400 shrink-0 mt-0.5" />
-              <div className="space-y-1">
-                <p className="font-bold text-sm text-foreground">Quiero revenderla en P2P</p>
-                <p className="text-xs text-muted-foreground">
-                  Tu boleta queda lista para publicar en el marketplace. <b>No</b> se mostrará como coleccionable en tu Freighter — así tu QR no queda en tu wallet y nadie puede sacarle captura desde ahí.
-                </p>
-              </div>
-            </div>
-          </button>
-
-          {/* Opción 2 — Compartir/Regalar */}
-          <button
-            type="button"
-            onClick={() => confirmSecureTicket("wallet")}
-            className="w-full text-left rounded-lg border border-purple-500/40 bg-purple-50 dark:bg-purple-950/20 hover:bg-purple-100 dark:hover:bg-purple-950/40 p-4 transition-colors"
-          >
-            <div className="flex items-start gap-3">
-              <ShieldCheck className="w-5 h-5 text-purple-600 dark:text-purple-400 shrink-0 mt-0.5" />
-              <div className="space-y-2">
-                <p className="font-bold text-sm text-foreground">Quiero compartirla o regalarla (mostrar en Freighter)</p>
-                <p className="text-xs text-muted-foreground">
-                  Tu boleta aparecerá como <b>coleccionable</b> en tu Freighter. En puerta el personal escanea el QR directamente desde tu wallet.
-                </p>
-                <div className="rounded-md border border-amber-300 bg-amber-50 dark:bg-amber-950/30 p-2 flex gap-2 text-[11px] text-amber-900 dark:text-amber-200">
-                  <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
-                  <p>
-                    <b>Es una responsabilidad grande:</b> cualquiera con una foto o captura de tu QR puede entrar al evento en tu lugar. Si compartes el QR, regalas tu boleta.
-                  </p>
-                </div>
-              </div>
-            </div>
-          </button>
-        </div>
-
-        <DialogFooter>
-          <Button variant="outline" onClick={() => setSecureDialogOpen(false)}>
-            Cancelar
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
 
     <Dialog open={nftDialogOpen} onOpenChange={setNftDialogOpen}>
       <DialogContent className="sm:max-w-md">
@@ -422,16 +337,6 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
             <div className="flex justify-between text-xs text-muted-foreground">
               <span>Cotización actual:</span>
               <span>{xlmCopPrice ? `1 XLM ≈ ${formatCOP(xlmCopPrice)}` : "—"}</span>
-            </div>
-          </div>
-
-          <div className="rounded-lg border border-amber-300 bg-amber-50 dark:bg-amber-950/30 p-3 flex gap-2 text-xs text-amber-900 dark:text-amber-200">
-            <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
-            <div>
-              <p className="font-semibold mb-1">Importante sobre tu QR</p>
-              <p>
-                Si tienes el QR de este boleto guardado (capturas, descargas o el coleccionable en tu wallet), dejará de ser válido en el momento en que se concrete la reventa. El nuevo dueño recibirá un QR nuevo y el tuyo será rechazado en puerta.
-              </p>
             </div>
           </div>
         </div>
