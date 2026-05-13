@@ -1201,8 +1201,15 @@ app.post('/api/transactions/submit', authMiddleware, async (req, res) => {
 });
 
 // POST /api/transactions/transfer-nft — Tras una reventa P2P (comprar_boleto OK),
-// el organizer (admin del NFT contract) llama admin_transfer(token_id, buyer)
-// para mover el NFT del vendedor al comprador. Sin firma del vendedor.
+// el organizer (admin del NFT contract) hace BURN + MINT en lugar de
+// admin_transfer. Razón: admin_transfer dejaba al vendedor "agregar" el NFT
+// a su Freighter post-reventa y, como el endpoint público de la imagen del
+// QR resuelve al dueño actual en DB, el QR servido salía con la wallet del
+// comprador → el scanner aceptaba como válido (bug Phase 4.6). Con
+// burn+mint, owner_of(token_id) devuelve TokenNoEncontrado momentáneamente
+// y luego al comprador — Freighter del vendedor se entera y retira el
+// coleccionable de su listado, y un nuevo "Add Collectible" desde el
+// vendedor falla (no es dueño). El token_id se preserva (mismo ticket_root_id).
 app.post('/api/transactions/transfer-nft', authMiddleware, async (req, res) => {
   try {
     if (!organizerKeypair) {
@@ -1223,29 +1230,57 @@ app.post('/api/transactions/transfer-nft', authMiddleware, async (req, res) => {
       return;
     }
 
+    const tokenIdU32 = Number(ticketRootId);
+    const buyerAddrScVal = new Address(String(buyerWallet)).toScVal();
+    const tokenIdScVal = nativeToScVal(tokenIdU32, { type: 'u32' });
+    const adminScVal = new Address(organizerKeypair.publicKey()).toScVal();
+    const tokenUri = `${PUBLIC_BASE_URL}/api/nft/metadata/${nftContractAddress}/${tokenIdU32}`;
+    const tokenUriScVal = nativeToScVal(tokenUri, { type: 'string' });
+
+    // Idempotencia: si por algún reintento el token ya fue burned+minted al
+    // buyer, el burn fallará con TokenNoEncontrado y el mint con TokenYaExiste.
+    // Toleramos ambos por separado.
+    let burnTxHash: string | null = null;
     try {
-      const result = await invokeSoroban(
+      const burnRes = await invokeSoroban(
         organizerKeypair,
         nftContractAddress,
-        'admin_transfer',
-        [
-          nativeToScVal(Number(ticketRootId), { type: 'u32' }),
-          new Address(String(buyerWallet)).toScVal(),
-        ],
+        'burn',
+        [adminScVal, tokenIdScVal],
       );
-      console.log(`[NFT] admin_transfer token=${ticketRootId} → ${String(buyerWallet).slice(0,8)}…`);
-      res.json({ success: true, txHash: (result as any).txHash ?? null });
+      burnTxHash = (burnRes as any).txHash ?? null;
+      console.log(`[NFT] burned token=${tokenIdU32} on ${nftContractAddress.slice(0, 8)}…`);
     } catch (e: any) {
-      // Mensaje TransferenciaInvalida (=6) cuando from==to → idempotente
       const msg = String(e?.message ?? '');
-      if (msg.includes('TransferenciaInvalida') || msg.includes('#6')) {
+      if (msg.includes('TokenNoEncontrado') || msg.includes('#4')) {
+        console.log(`[NFT] burn skipped (token=${tokenIdU32} already gone)`);
+      } else {
+        throw e;
+      }
+    }
+
+    let mintTxHash: string | null = null;
+    try {
+      const mintRes = await invokeSoroban(
+        organizerKeypair,
+        nftContractAddress,
+        'mint',
+        [buyerAddrScVal, tokenIdScVal, tokenUriScVal],
+      );
+      mintTxHash = (mintRes as any).txHash ?? null;
+      console.log(`[NFT] minted token=${tokenIdU32} → ${String(buyerWallet).slice(0, 8)}…`);
+    } catch (e: any) {
+      const msg = String(e?.message ?? '');
+      if (msg.includes('TokenYaExiste') || msg.includes('#3')) {
         res.json({ success: true, alreadyTransferred: true });
         return;
       }
       throw e;
     }
+
+    res.json({ success: true, burnTxHash, mintTxHash, txHash: mintTxHash });
   } catch (error: any) {
-    console.error('[NFT] transfer error:', error?.message ?? error);
+    console.error('[NFT] transfer (burn+mint) error:', error?.message ?? error);
     res.status(500).json({ error: error.message ?? 'Error transfiriendo NFT' });
   }
 });
