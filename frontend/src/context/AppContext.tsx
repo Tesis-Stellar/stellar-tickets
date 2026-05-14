@@ -734,18 +734,34 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         //    (admin_transfer en el ticket_nft_contract; sin firma del vendedor).
         setBalanceVersion((v) => v + 1);
         void (async () => {
-          await new Promise((r) => setTimeout(r, 7000));
-          try {
-            await apiFetch("/api/transactions/transfer-nft", {
-              method: "POST",
-              body: JSON.stringify({
-                contractAddress,
-                ticketRootId,
-                buyerWallet: buyerPublicKey,
-              }),
-            });
-          } catch (e: any) {
-            console.warn("[nft] transfer failed:", e?.message);
+          // Espera inicial al indexer (poll 5s). Si en el primer intento aún no
+          // procesó boleto_revendido, /transfer-nft devuelve 409 y reintentamos.
+          const delays = [7000, 5000, 5000];
+          let transferred = false;
+          for (const ms of delays) {
+            await new Promise((r) => setTimeout(r, ms));
+            try {
+              await apiFetch("/api/transactions/transfer-nft", {
+                method: "POST",
+                body: JSON.stringify({
+                  contractAddress,
+                  ticketRootId,
+                  buyerWallet: buyerPublicKey,
+                }),
+              });
+              transferred = true;
+              break;
+            } catch (e: any) {
+              const msg = String(e?.message ?? "");
+              // 409 = indexer aún no procesó. Cualquier otro error: no insistimos.
+              if (!msg.includes("indexer aún no procesa")) {
+                console.warn("[nft] transfer failed:", msg);
+                break;
+              }
+            }
+          }
+          if (!transferred) {
+            console.warn("[nft] transfer no completó tras 3 intentos");
           }
           await refreshTickets().catch(() => {});
           await refreshSoldTickets().catch(() => {});
