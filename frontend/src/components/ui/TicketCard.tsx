@@ -32,6 +32,17 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
   const parsedPriceCOP = Number(resalePriceInput.replace(/[^\d]/g, ""));
   const previewXLM = xlmCopPrice && parsedPriceCOP > 0 ? parsedPriceCOP / xlmCopPrice : 0;
 
+  // Comisiones del event_contract en reventa (ver inicializar): organizador 5%, plataforma 3%.
+  const ORGANIZER_FEE_PCT = 5;
+  const PLATFORM_FEE_PCT = 3;
+  const SELLER_PCT = 100 - ORGANIZER_FEE_PCT - PLATFORM_FEE_PCT;
+  const organizerFeeCOP = (parsedPriceCOP * ORGANIZER_FEE_PCT) / 100;
+  const platformFeeCOP = (parsedPriceCOP * PLATFORM_FEE_PCT) / 100;
+  const sellerNetCOP = parsedPriceCOP - organizerFeeCOP - platformFeeCOP;
+  const organizerFeeXLM = (previewXLM * ORGANIZER_FEE_PCT) / 100;
+  const platformFeeXLM = (previewXLM * PLATFORM_FEE_PCT) / 100;
+  const sellerNetXLM = previewXLM - organizerFeeXLM - platformFeeXLM;
+
   const claimTicket = async () => {
     if (!walletAddress) {
       alert("Debes conectar tu wallet de Freighter antes de asegurar el boleto en blockchain. Haz clic en \"Conectar Wallet\" en la parte superior de la página.");
@@ -338,6 +349,61 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
               <span>Cotización actual:</span>
               <span>{xlmCopPrice ? `1 XLM ≈ ${formatCOP(xlmCopPrice)}` : "—"}</span>
             </div>
+          </div>
+
+          {/* Desglose de comisiones (event_contract: 5% org + 3% plat). */}
+          <div className="rounded-lg border border-border p-3 space-y-2 text-sm">
+            <p className="text-xs font-bold uppercase tracking-wide text-muted-foreground">
+              Desglose de comisiones
+            </p>
+
+            <div className="space-y-1">
+              <div className="flex justify-between items-baseline">
+                <span className="text-muted-foreground">
+                  Organizador <span className="text-xs">({ORGANIZER_FEE_PCT}%)</span>
+                </span>
+                <div className="text-right">
+                  <span className="font-mono font-semibold text-foreground">
+                    {parsedPriceCOP > 0 ? formatCOP(organizerFeeCOP) : "—"}
+                  </span>
+                  <span className="block text-[10px] text-muted-foreground font-mono">
+                    {organizerFeeXLM > 0 ? `${organizerFeeXLM.toFixed(4)} XLM` : ""}
+                  </span>
+                </div>
+              </div>
+
+              <div className="flex justify-between items-baseline">
+                <span className="text-muted-foreground">
+                  Plataforma <span className="text-xs">({PLATFORM_FEE_PCT}%)</span>
+                </span>
+                <div className="text-right">
+                  <span className="font-mono font-semibold text-foreground">
+                    {parsedPriceCOP > 0 ? formatCOP(platformFeeCOP) : "—"}
+                  </span>
+                  <span className="block text-[10px] text-muted-foreground font-mono">
+                    {platformFeeXLM > 0 ? `${platformFeeXLM.toFixed(4)} XLM` : ""}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <div className="border-t border-border pt-2 flex justify-between items-baseline">
+              <span className="font-bold text-foreground">
+                Recibirás <span className="text-xs font-normal text-muted-foreground">({SELLER_PCT}%)</span>
+              </span>
+              <div className="text-right">
+                <span className="font-mono font-bold text-green-600">
+                  {parsedPriceCOP > 0 ? formatCOP(sellerNetCOP) : "—"}
+                </span>
+                <span className="block text-[10px] text-green-700 font-mono">
+                  {sellerNetXLM > 0 ? `${sellerNetXLM.toFixed(4)} XLM` : ""}
+                </span>
+              </div>
+            </div>
+
+            <p className="text-[10px] text-muted-foreground pt-1">
+              Comisiones liquidadas on-chain en la red Stellar. La tarifa de transacción la paga el comprador (~0.00001 XLM, despreciable).
+            </p>
           </div>
         </div>
 
