@@ -2332,7 +2332,7 @@ app.get('/api/tickets', authMiddleware, async (req, res) => {
             },
             event_seat_inventory: {
               include: {
-                seats: true,
+                seats: { include: { venue_sections: true } },
                 event_ticket_types: {
                   include: { events: { include: eventIncludes } },
                 },
@@ -2344,9 +2344,35 @@ app.get('/api/tickets', authMiddleware, async (req, res) => {
       orderBy: { created_at: 'desc' },
     });
 
-    res.json(tickets.map((t) => {
+    // Para tickets adquiridos via reventa (version>0), consulta el resale_price
+    // de la versión anterior (la fila CANCELLED del vendedor).
+    const p2pLookups = await Promise.all(
+      tickets.map(async (t) => {
+        if (
+          typeof t.version === 'number' &&
+          t.version > 0 &&
+          t.contract_address &&
+          t.ticket_root_id != null
+        ) {
+          const prev = await prisma.tickets.findFirst({
+            where: {
+              contract_address: t.contract_address,
+              ticket_root_id: t.ticket_root_id,
+              version: t.version - 1,
+            },
+            select: { resale_price: true },
+          });
+          return prev?.resale_price ? Number(prev.resale_price) : null;
+        }
+        return null;
+      })
+    );
+
+    res.json(tickets.map((t, idx) => {
       const tt = t.order_items?.event_ticket_types ?? t.order_items?.event_seat_inventory?.event_ticket_types;
       const evt = tt?.events;
+      const seat = t.order_items?.event_seat_inventory?.seats;
+      const acquiredViaResale = typeof t.version === 'number' && t.version > 0;
       return {
         id: t.id,
         ticketCode: t.ticket_code,
@@ -2359,6 +2385,8 @@ app.get('/api/tickets', authMiddleware, async (req, res) => {
           serviceFee: Number(tt.service_fee_amount),
         } : undefined,
         event: evt ? toEventDto(evt) : undefined,
+        seatLabel: seat?.seat_label ?? null,
+        sectionName: seat?.venue_sections?.section_name ?? null,
         // Web3 fields
         isSecuredOnChain: Boolean(t.contract_address),
         isForSale: t.is_for_sale ?? false,
@@ -2366,7 +2394,12 @@ app.get('/api/tickets', authMiddleware, async (req, res) => {
         ticketRootId: t.ticket_root_id,
         version: t.version,
         ownerWallet: t.owner_wallet,
-        resalePrice: t.resale_price ? Number(t.resale_price) : null,
+        // Para tickets propios: lo listado actualmente. Para P2P comprados:
+        // lo pagado al vendedor (versión previa CANCELLED).
+        resalePrice: acquiredViaResale
+          ? p2pLookups[idx]
+          : t.resale_price ? Number(t.resale_price) : null,
+        acquiredViaResale,
         nftContractAddress: (evt as any)?.nft_contract_address ?? null,
         nftTokenId: (t as any).nft_token_id ?? null,
       };
