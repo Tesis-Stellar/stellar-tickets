@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { Navigate } from "react-router-dom";
 import { Header } from "@/components/layout/Header";
 import { Footer } from "@/components/layout/Footer";
@@ -7,8 +8,18 @@ import { useXlmPrice, formatCOP, stroopsToXLM } from "@/hooks/useXlmPrice";
 import { ArrowRightLeft } from "lucide-react";
 
 const MySalesP2P = () => {
-  const { isLoggedIn, soldTickets } = useAppContext();
+  const { isLoggedIn, soldTickets, refreshSoldTickets, refreshTickets } = useAppContext();
   const xlmCop = useXlmPrice();
+  useEffect(() => {
+    if (!isLoggedIn) return;
+    refreshSoldTickets().catch(() => {});
+    refreshTickets().catch(() => {});
+    const id = setInterval(() => {
+      refreshSoldTickets().catch(() => {});
+      refreshTickets().catch(() => {});
+    }, 8000);
+    return () => clearInterval(id);
+  }, [isLoggedIn, refreshSoldTickets, refreshTickets]);
   if (!isLoggedIn) return <Navigate to="/login" replace />;
 
   const totalXLM = soldTickets.reduce((sum, t) => sum + t.resalePrice, 0) / 10_000_000;

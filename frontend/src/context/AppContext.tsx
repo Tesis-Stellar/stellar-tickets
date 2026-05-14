@@ -96,6 +96,7 @@ interface AppState {
   buyResaleTicket: (contractAddress: string, ticketRootId: number, buyerPublicKey: string) => Promise<{ success: boolean; txHash?: string; error?: string }>;
   linkWallet: (walletAddress: string) => Promise<void>;
   refreshTickets: () => Promise<void>;
+  refreshSoldTickets: () => Promise<void>;
   walletAddress: string | null;
   setWalletAddress: (address: string | null) => void;
   lastOrder: OrderData | null;
@@ -668,6 +669,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         setPurchasedTickets((prev) =>
           prev.map((t) => (t.id === ticketId ? { ...t, isForSale: true, resalePrice: priceStroops } : t))
         );
+        setBalanceVersion((v) => v + 1);
         return { success: true, txHash: result.txHash };
       } catch (error: any) {
         return { success: false, error: error.message || "Error listando ticket" };
@@ -696,6 +698,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         setPurchasedTickets((prev) =>
           prev.map((t) => (t.id === ticketId ? { ...t, isForSale: false, resalePrice: undefined } : t))
         );
+        setBalanceVersion((v) => v + 1);
         return { success: true, txHash: result.txHash };
       } catch (error: any) {
         return { success: false, error: error.message || "Error cancelando listado" };
@@ -730,13 +733,20 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
           body: JSON.stringify({ signedXdr }),
         });
 
-        // 3. Tras ~7s (indexer aplica boleto_revendido), transferir el NFT
-        //    (admin_transfer en el ticket_nft_contract; sin firma del vendedor).
+        // 3. Refresh inmediato del saldo (Horizon refleja la tx en 3-5s) y un
+        //    refresh temprano de tickets a los 3s para que la boleta aparezca
+        //    en "Mis Entradas" sin esperar al transfer-nft. El transfer-nft
+        //    corre en background con polling más ajustado.
         setBalanceVersion((v) => v + 1);
         void (async () => {
-          // Espera inicial al indexer (poll 5s). Si en el primer intento aún no
-          // procesó boleto_revendido, /transfer-nft devuelve 409 y reintentamos.
-          const delays = [7000, 5000, 5000];
+          await new Promise((r) => setTimeout(r, 3000));
+          await refreshTickets().catch(() => {});
+          await refreshSoldTickets().catch(() => {});
+          setBalanceVersion((v) => v + 1);
+        })();
+        void (async () => {
+          // Empezamos antes (3s) y reintentamos cada 2s. Total ≤ 11s en peor caso.
+          const delays = [3000, 2000, 2000, 2000];
           let transferred = false;
           for (const ms of delays) {
             await new Promise((r) => setTimeout(r, ms));
@@ -753,7 +763,6 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
               break;
             } catch (e: any) {
               const msg = String(e?.message ?? "");
-              // 409 = indexer aún no procesó. Cualquier otro error: no insistimos.
               if (!msg.includes("indexer aún no procesa")) {
                 console.warn("[nft] transfer failed:", msg);
                 break;
@@ -761,8 +770,9 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
             }
           }
           if (!transferred) {
-            console.warn("[nft] transfer no completó tras 3 intentos");
+            console.warn("[nft] transfer no completó tras 4 intentos");
           }
+          // Segundo refresh: ahora con nftTokenId del comprador y saldo final.
           await refreshTickets().catch(() => {});
           await refreshSoldTickets().catch(() => {});
           setBalanceVersion((v) => v + 1);
@@ -811,6 +821,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         buyResaleTicket,
         linkWallet,
         refreshTickets,
+        refreshSoldTickets,
         walletAddress,
         setWalletAddress,
         lastOrder,
