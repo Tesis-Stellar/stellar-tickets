@@ -866,23 +866,49 @@ app.post('/api/transactions/secure-ticket', authMiddleware, async (req, res) => 
     let nftMintTxHash: string | null = null;
     let nftTokenId: number | null = null;
     if (nftContractAddress) {
-      try {
-        const tokenUri = `${PUBLIC_BASE_URL}/api/nft/metadata/${nftContractAddress}/${ticketRootId}`;
-        const mintRes = await invokeSoroban(
+      // Estrategia: intentar mint con id=ticket_root_id (lo natural cuando el
+      // contrato NFT está fresco). Si colisiona con un token preexistente
+      // (Teatro Noir y otros eventos con tests viejos dejaron tokens vivos
+      // que no se quemaron), buscar el siguiente id libre vía MAX+1 sobre las
+      // filas de DB del mismo evento y reintentar. Sin esto el ticket queda
+      // con nft_token_id=null y el flujo de reventa hereda filas cruzadas.
+      const attemptMint = async (id: number) => {
+        const tokenUri = `${PUBLIC_BASE_URL}/api/nft/metadata/${nftContractAddress}/${id}`;
+        const r = await invokeSoroban(
           organizerKeypair,
           nftContractAddress,
           'mint',
           [
             new Address(buyerWallet).toScVal(),
-            nativeToScVal(ticketRootId, { type: 'u32' }),
+            nativeToScVal(id, { type: 'u32' }),
             nativeToScVal(tokenUri, { type: 'string' }),
           ],
         );
-        nftMintTxHash = (mintRes as any).txHash ?? null;
+        return (r as any).txHash ?? null;
+      };
+      try {
+        nftMintTxHash = await attemptMint(ticketRootId);
         nftTokenId = ticketRootId;
         console.log(`[NFT] Minted token_id=${ticketRootId} on ${nftContractAddress.slice(0,8)}… to ${buyerWallet.slice(0,8)}…`);
       } catch (mintErr: any) {
-        console.warn('[NFT] mint failed (graceful degradation, ticket still secured):', mintErr?.message);
+        const msg = String(mintErr?.message ?? '');
+        if (msg.includes('TokenYaExiste') || msg.includes('#3')) {
+          try {
+            const maxAgg = await prisma.tickets.aggregate({
+              where: { contract_address: contractAddress } as any,
+              _max: { nft_token_id: true } as any,
+            });
+            const maxId = ((maxAgg as any)._max?.nft_token_id as number | null) ?? 0;
+            const bumped = Math.max(maxId, ticketRootId) + 1;
+            nftMintTxHash = await attemptMint(bumped);
+            nftTokenId = bumped;
+            console.log(`[NFT] root_id=${ticketRootId} colisión, mint con token_id=${bumped} OK`);
+          } catch (retryErr: any) {
+            console.warn('[NFT] mint retry failed (graceful degradation):', retryErr?.message);
+          }
+        } else {
+          console.warn('[NFT] mint failed (graceful degradation, ticket still secured):', msg);
+        }
       }
     } else {
       console.warn(`[NFT] event ${event.id} has no nft_contract_address — skipping NFT mint`);
@@ -1244,13 +1270,16 @@ app.post('/api/transactions/transfer-nft', authMiddleware, async (req, res) => {
     });
     const oldNftTokenId = ((oldRow as any)?.nft_token_id as number | null) ?? rootIdNum;
 
-    // 2. Find the buyer's new ACTIVE row (created by indexer with version+1).
-    //    Frontend waits 7s before calling us, so this should exist.
+    // 2. Find the buyer's new ACTIVE row. Filtered by owner_wallet=buyerWallet
+    //    para evitar la race: si el indexer aún no procesó boleto_revendido,
+    //    la única fila ACTIVE para este root_id es la del seller con su
+    //    owner_wallet — no matchea y devolvemos 409 para que el front reintente.
     const newRow = await prisma.tickets.findFirst({
       where: {
         contract_address: String(contractAddress),
         ticket_root_id: rootIdNum,
         status: 'ACTIVE',
+        owner_wallet: String(buyerWallet),
       } as any,
       orderBy: { version: 'desc' },
       select: { id: true, nft_token_id: true } as any,
