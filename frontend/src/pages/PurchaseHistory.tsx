@@ -58,6 +58,15 @@ const PurchaseHistory = () => {
               items.map((t) => {
                 const p2p = !!t.acquiredViaResale;
                 const priceXLM = p2p && t.resalePrice ? stroopsToXLM(t.resalePrice) : null;
+                // El backend a veces devuelve venue como objeto {name}; normaliza a string.
+                const venueName =
+                  typeof t.event?.venue === "string"
+                    ? t.event.venue
+                    : (t.event?.venue as any)?.name ?? "";
+                const cityName =
+                  typeof t.event?.city === "string"
+                    ? t.event.city
+                    : (t.event?.city as any)?.name ?? "";
                 return (
                   <div
                     key={t.id}
@@ -109,11 +118,11 @@ const PurchaseHistory = () => {
                             {t.seatLabel && <span className="font-medium text-foreground">Silla {t.seatLabel}</span>}
                           </span>
                         )}
-                        {t.event?.venue && (
+                        {venueName && (
                           <span className="flex items-center gap-1">
                             <MapPin className="w-3 h-3" />
-                            {t.event.venue}
-                            {t.event.city && ` · ${t.event.city}`}
+                            {venueName}
+                            {cityName && ` · ${cityName}`}
                           </span>
                         )}
                         <span className="flex items-center gap-1">
