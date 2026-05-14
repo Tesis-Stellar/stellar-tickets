@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { Link, Navigate } from "react-router-dom";
 import { Header } from "@/components/layout/Header";
 import { Footer } from "@/components/layout/Footer";
@@ -6,12 +7,30 @@ import { useAppContext } from "@/context/AppContext";
 import { Ticket, ShoppingBag, User, Settings, ArrowRightLeft } from "lucide-react";
 
 const Account = () => {
-  const { isLoggedIn, user, purchasedTickets, orders, soldTickets } = useAppContext();
+  const { isLoggedIn, user, purchasedTickets, soldTickets, refreshTickets, refreshSoldTickets } = useAppContext();
+
+  // Refresca al entrar al dashboard y cada 8s; las compras P2P pueden tardar
+  // unos segundos en aparecer porque dependen del indexer (~5s polling).
+  useEffect(() => {
+    if (!isLoggedIn) return;
+    refreshTickets().catch(() => {});
+    refreshSoldTickets().catch(() => {});
+    const id = setInterval(() => {
+      refreshTickets().catch(() => {});
+      refreshSoldTickets().catch(() => {});
+    }, 8000);
+    return () => clearInterval(id);
+  }, [isLoggedIn, refreshTickets, refreshSoldTickets]);
+
   if (!isLoggedIn) return <Navigate to="/login" replace />;
+
+  // "Mis Compras" cuenta tickets (incluye P2P, que no generan orders en DB),
+  // alineado con lo que muestra /mi-cuenta/compras.
+  const purchasesCount = purchasedTickets.length;
 
   const cards = [
     { to: "/mi-cuenta/entradas", icon: Ticket, label: "Mis Entradas", value: `${purchasedTickets.length} boleto${purchasedTickets.length !== 1 ? "s" : ""}` },
-    { to: "/mi-cuenta/compras", icon: ShoppingBag, label: "Mis Compras", value: `${orders.length} orden${orders.length !== 1 ? "es" : ""}` },
+    { to: "/mi-cuenta/compras", icon: ShoppingBag, label: "Mis Compras", value: `${purchasesCount} compra${purchasesCount !== 1 ? "s" : ""}` },
     { to: "/mi-cuenta/ventas-p2p", icon: ArrowRightLeft, label: "Mis Ventas P2P", value: `${soldTickets.length} venta${soldTickets.length !== 1 ? "s" : ""}` },
     { to: "/mi-cuenta/perfil", icon: User, label: "Mi Perfil", value: user?.name ?? "" },
     { to: "/contactanos", icon: Settings, label: "Ayuda", value: "Soporte y FAQ" },
