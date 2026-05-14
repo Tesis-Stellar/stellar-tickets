@@ -178,13 +178,20 @@ export async function runIndexer() {
 
           if (existing?.resale_price != null) {
             // P2P sale via primary flow: cancel old ticket (keep resale_price for sale history)
-            // and create new one for buyer, similar to boleto_revendido
+            // and create new one for buyer, similar to boleto_revendido.
+            // El filtro version<1 evita re-cancelar la fila del comprador si el
+            // indexer reprocesa este evento (auto-recovery de range).
             const alreadyCreated = await prisma.tickets.findFirst({
               where: { contract_address: contractId, ticket_root_id: rootId, version: 1 },
               select: { id: true },
             });
             await prisma.tickets.updateMany({
-              where: { contract_address: contractId, ticket_root_id: rootId, status: 'ACTIVE' },
+              where: {
+                contract_address: contractId,
+                ticket_root_id: rootId,
+                status: 'ACTIVE',
+                version: { lt: 1 },
+              },
               data: { status: 'CANCELLED', is_for_sale: false }
             });
             if (!alreadyCreated) {
@@ -238,9 +245,16 @@ export async function runIndexer() {
             select: { order_item_id: true },
           });
 
-          // Cancel old version
+          // Cancel old version. Filtramos por version < newVersion para que si
+          // el indexer reprocesa este evento (auto-recovery de range / cursor
+          // rewind) no cancele por error la fila del comprador (version=newVersion).
           await prisma.tickets.updateMany({
-            where: { contract_address: contractId, ticket_root_id: rootId, status: 'ACTIVE' },
+            where: {
+              contract_address: contractId,
+              ticket_root_id: rootId,
+              status: 'ACTIVE',
+              version: { lt: newVersion },
+            },
             data: { status: 'CANCELLED', is_for_sale: false }
           });
 
