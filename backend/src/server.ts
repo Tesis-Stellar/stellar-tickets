@@ -611,7 +611,7 @@ app.get('/api/events', async (req, res) => {
     res.json(dtoList);
   } catch (error: any) {
     console.error(error);
-    res.status(500).json({ error: error.message });
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error obteniendo eventos');
   }
 });
 
@@ -624,7 +624,7 @@ app.get('/api/events/featured', async (req, res) => {
     res.json(events.map(toEventDto));
   } catch (error: any) {
     console.error(error);
-    res.status(500).json({ error: error.message });
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error obteniendo eventos destacados');
   }
 });
 
@@ -641,7 +641,7 @@ app.get('/api/events/:slug', async (req, res) => {
     );
 
     if (!event) {
-      res.status(404).json({ error: 'Evento no encontrado' });
+      sendApiError(req, res, 404, 'NOT_FOUND', 'Evento no encontrado');
       return;
     }
 
@@ -686,7 +686,7 @@ app.get('/api/events/:slug', async (req, res) => {
     });
   } catch (error: any) {
     console.error(error);
-    res.status(500).json({ error: error.message });
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error obteniendo evento');
   }
 });
 
@@ -699,7 +699,7 @@ app.get('/api/events/:id/ticket-types', async (req, res) => {
     res.json(types);
   } catch (error: any) {
     console.error(error);
-    res.status(500).json({ error: error.message });
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error obteniendo tipos de boleto');
   }
 });
 
@@ -728,12 +728,12 @@ app.get('/api/events/:id/seats', async (req, res) => {
     });
 
     if (!event) {
-      res.status(404).json({ error: 'Evento no encontrado' });
+      sendApiError(req, res, 404, 'NOT_FOUND', 'Evento no encontrado');
       return;
     }
 
     if (!event.has_assigned_seating) {
-      res.status(400).json({ error: 'Este evento no tiene selección de asientos' });
+      sendApiError(req, res, 400, 'BAD_REQUEST', 'Este evento no tiene selección de asientos');
       return;
     }
 
@@ -798,7 +798,7 @@ app.get('/api/events/:id/seats', async (req, res) => {
     });
   } catch (error: any) {
     console.error(error);
-    res.status(500).json({ error: error.message });
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error obteniendo asientos');
   }
 });
 
@@ -819,7 +819,7 @@ app.get('/api/events/:id/related', async (req, res) => {
     res.json(result);
   } catch (error: any) {
     console.error(error);
-    res.status(500).json({ error: error.message });
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error obteniendo eventos relacionados');
   }
 });
 
@@ -833,7 +833,7 @@ app.post('/api/transactions/buy', async (req, res) => {
     
     const event = await prisma.events.findFirst({ where: { slug: event_slug } });
     if (!event || !event.contract_address) {
-      res.status(404).json({ error: 'Evento no válido o sin contrato asignado' });
+      sendApiError(req, res, 404, 'NOT_FOUND', 'Evento no válido o sin contrato asignado');
       return;
     }
 
@@ -856,7 +856,7 @@ app.post('/api/transactions/buy', async (req, res) => {
     res.json(payload);
   } catch (error: any) {
     console.error(error);
-    res.status(500).json({ error: error.message });
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error preparando compra');
   }
 });
 
@@ -1632,7 +1632,7 @@ app.get('/api/nft/metadata/:nftContractAddress/:tokenId', async (req, res) => {
       select: { title: true, starts_at: true, contract_address: true, slug: true } as any,
     });
     if (!event) {
-      res.status(404).json({ error: 'NFT contract no encontrado' });
+      sendApiError(req, res, 404, 'NOT_FOUND', 'NFT contract no encontrado');
       return;
     }
     const evAny = event as any;
@@ -1653,7 +1653,7 @@ app.get('/api/nft/metadata/:nftContractAddress/:tokenId', async (req, res) => {
     });
   } catch (error: any) {
     console.error('[NFT metadata] error:', error?.message);
-    res.status(500).json({ error: 'Error generando metadata' });
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error generando metadata');
   }
 });
 
@@ -1665,7 +1665,7 @@ app.get('/api/nft/qr/:nftContractAddress/:tokenIdRaw', async (req, res) => {
     const { nftContractAddress, tokenIdRaw } = req.params;
     const tokenId = Number(tokenIdRaw.replace(/\.png$/i, ''));
     if (!Number.isFinite(tokenId) || tokenId < 0) {
-      res.status(400).type('text/plain').send('Invalid tokenId');
+      sendApiError(req, res, 400, 'BAD_REQUEST', 'tokenId invalido');
       return;
     }
     const event = await prisma.events.findFirst({
@@ -1674,7 +1674,7 @@ app.get('/api/nft/qr/:nftContractAddress/:tokenIdRaw', async (req, res) => {
     });
     const eventContract = (event as any)?.contract_address as string | null | undefined;
     if (!eventContract) {
-      res.status(404).type('text/plain').send('Not found');
+      sendApiError(req, res, 404, 'NOT_FOUND', 'NFT contract no encontrado');
       return;
     }
     const live = await prisma.tickets.findFirst({
@@ -1702,7 +1702,7 @@ app.get('/api/nft/qr/:nftContractAddress/:tokenIdRaw', async (req, res) => {
     res.send(qrCache.get(cacheKey)!);
   } catch (err: any) {
     console.error('[NFT qr] error:', err?.message);
-    res.status(500).type('text/plain').send('Error generating QR');
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error generando QR');
   }
 });
 
@@ -1742,7 +1742,7 @@ app.post('/api/transactions/submit-classic', transactionRateLimit, authMiddlewar
 app.get('/api/admin/venues', authMiddleware, async (req, res) => {
   try {
     const user = await prisma.users.findUnique({ where: { id: (req as any).userId } });
-    if (user?.role !== 'ADMIN') { res.status(403).json({ error: 'Acceso denegado' }); return; }
+    if (user?.role !== 'ADMIN') { sendApiError(req, res, 403, 'FORBIDDEN', 'Acceso denegado'); return; }
 
     const venues = await prisma.venues.findMany({ include: { venue_sections: true } });
     res.json(venues.map(v => ({
@@ -1756,7 +1756,10 @@ app.get('/api/admin/venues', authMiddleware, async (req, res) => {
         capacity: s.capacity
       }))
     })));
-  } catch (error: any) { res.status(500).json({ error: error.message }); }
+  } catch (error: any) {
+    console.error('[ADMIN] Venues error:', error);
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error obteniendo venues');
+  }
 });
 
 // POST /api/admin/scan — Redeem a ticket
@@ -1864,7 +1867,7 @@ app.post('/api/admin/scan', scannerRateLimit, authMiddleware, async (req, res) =
 app.get('/api/admin/contracts', authMiddleware, async (req, res) => {
   try {
     const user = await prisma.users.findUnique({ where: { id: (req as any).userId } });
-    if (!user || user.role !== 'ADMIN') { res.status(403).json({ error: 'Acceso denegado' }); return; }
+    if (!user || user.role !== 'ADMIN') { sendApiError(req, res, 403, 'FORBIDDEN', 'Acceso denegado'); return; }
 
     const factoryId = process.env.ORGANIZER_PUBLIC || 'GBM6N2SUCK3Y6I5DHQKULZD3W27EYMU37VYHNKWLVBNS6VYZHRJPWJBT';
     
@@ -1884,13 +1887,16 @@ app.get('/api/admin/contracts', authMiddleware, async (req, res) => {
       factoryContractId: factoryId,
       events: deployedEvents
     });
-  } catch (error: any) { res.status(500).json({ error: error.message }); }
+  } catch (error: any) {
+    console.error('[ADMIN] Contracts error:', error);
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error obteniendo contratos');
+  }
 });
 
 app.get('/api/admin/events', authMiddleware, async (req, res) => {
   try {
     const user = await prisma.users.findUnique({ where: { id: (req as any).userId } });
-    if (user?.role !== 'ADMIN') { res.status(403).json({ error: 'Acceso denegado' }); return; }
+    if (user?.role !== 'ADMIN') { sendApiError(req, res, 403, 'FORBIDDEN', 'Acceso denegado'); return; }
 
     const events = await prisma.events.findMany({
       include: eventIncludes,
@@ -1898,14 +1904,15 @@ app.get('/api/admin/events', authMiddleware, async (req, res) => {
     });
     res.json(events.map(toEventDto));
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    console.error('[ADMIN] Events error:', error);
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error obteniendo eventos admin');
   }
 });
 
 app.post('/api/admin/events', authMiddleware, async (req, res) => {
   try {
     const user = await prisma.users.findUnique({ where: { id: (req as any).userId } });
-    if (user?.role !== 'ADMIN') { res.status(403).json({ error: 'Acceso denegado' }); return; }
+    if (user?.role !== 'ADMIN') { sendApiError(req, res, 403, 'FORBIDDEN', 'Acceso denegado'); return; }
 
     const { title, slug, category_id, date, venue_id, sections } = req.body;
     
@@ -1947,7 +1954,7 @@ app.post('/api/admin/events', authMiddleware, async (req, res) => {
     res.json({ success: true, eventId: newEvent.id });
   } catch (error: any) {
     console.error('[ADMIN] Create event error:', error);
-    res.status(500).json({ error: error.message });
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error creando evento');
   }
 });
 
