@@ -104,7 +104,16 @@ export function verifyWalletChallengeSignature(input: {
   }
 
   const keypair = Keypair.fromPublicKey(walletAddress);
-  const isValid = keypair.verify(Buffer.from(input.message, 'utf8'), signatureBytes);
+  if (signatureBytes.length !== 64) {
+    return { ok: false, status: 400, error: 'Firma invalida' };
+  }
+
+  let isValid = false;
+  try {
+    isValid = keypair.verify(Buffer.from(input.message, 'utf8'), signatureBytes);
+  } catch {
+    return { ok: false, status: 400, error: 'Firma invalida' };
+  }
   if (!isValid) {
     return { ok: false, status: 403, error: 'Firma de wallet invalida' };
   }

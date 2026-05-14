@@ -48,6 +48,18 @@ test('rejects a signature produced by a different wallet', () => {
   assert.deepEqual(result, { ok: false, status: 403, error: 'Firma de wallet invalida' });
 });
 
+test('rejects malformed signatures without throwing', () => {
+  const result = verifyWalletChallengeSignature({
+    walletAddress,
+    message,
+    signature: 'firma_invalida',
+    expiresAt,
+    now: issuedAt,
+  });
+
+  assert.deepEqual(result, { ok: false, status: 400, error: 'Firma invalida' });
+});
+
 test('rejects an expired wallet challenge', () => {
   const result = verifyWalletChallengeSignature({
     walletAddress,
