@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { Navigate } from "react-router-dom";
 import { Header } from "@/components/layout/Header";
 import { Footer } from "@/components/layout/Footer";
@@ -7,7 +8,13 @@ import { useAppContext } from "@/context/AppContext";
 import { Ticket } from "lucide-react";
 
 const MyTicketsAccount = () => {
-  const { isLoggedIn, purchasedTickets } = useAppContext();
+  const { isLoggedIn, purchasedTickets, refreshTickets } = useAppContext();
+  useEffect(() => {
+    if (!isLoggedIn) return;
+    refreshTickets().catch(() => {});
+    const id = setInterval(() => { refreshTickets().catch(() => {}); }, 8000);
+    return () => clearInterval(id);
+  }, [isLoggedIn, refreshTickets]);
   if (!isLoggedIn) return <Navigate to="/login" replace />;
 
   return (
