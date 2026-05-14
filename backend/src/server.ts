@@ -2384,7 +2384,8 @@ app.get('/api/tickets', authMiddleware, async (req, res) => {
           price: Number(tt.price_amount),
           serviceFee: Number(tt.service_fee_amount),
         } : undefined,
-        event: evt ? toEventDto(evt) : undefined,
+        // venue debe ser string para PurchaseHistory/MyTickets (toEventDto devuelve objeto)
+        event: evt ? { ...toEventDto(evt), venue: evt.venues?.name ?? '' } : undefined,
         seatLabel: seat?.seat_label ?? null,
         sectionName: seat?.venue_sections?.section_name ?? null,
         // Web3 fields
