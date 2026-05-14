@@ -1,4 +1,3 @@
-import { useEffect, useState } from "react";
 import { Search, X } from "lucide-react";
 import { categories, cities } from "@/data/events";
 
@@ -13,40 +12,27 @@ interface FilterPanelProps {
   onSortChange: (v: string) => void;
   onClear: () => void;
   totalResults: number;
+  /** True while the events list request is in flight */
+  isLoading?: boolean;
 }
 
 export const FilterPanel = ({
   query, category, city, sort,
   onQueryChange, onCategoryChange, onCityChange, onSortChange, onClear,
   totalResults,
+  isLoading = false,
 }: FilterPanelProps) => {
-  const [localQuery, setLocalQuery] = useState(query);
-
-  useEffect(() => {
-    setLocalQuery(query);
-  }, [query]);
-
-  const applySearch = () => {
-    onQueryChange(localQuery.trim());
-  };
-
-  const hasFilters = Boolean(query || category || city || sort || localQuery.trim());
+  const hasFilters = Boolean(query || category || city || sort);
 
   return (
-    <div className="bg-card rounded-xl border border-border p-4 space-y-4">
-      <form
-        className="space-y-4"
-        onSubmit={(e) => {
-          e.preventDefault();
-          applySearch();
-        }}
-      >
+    <div className="bg-card rounded-xl border border-border p-4 space-y-4" aria-busy={isLoading}>
+      <div className="space-y-4">
         <div className="relative">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none" />
           <input
             type="search"
-            value={localQuery}
-            onChange={(e) => setLocalQuery(e.target.value)}
+            value={query}
+            onChange={(e) => onQueryChange(e.target.value)}
             placeholder="Buscar eventos..."
             className="w-full pl-10 pr-4 py-2.5 bg-secondary rounded-lg text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary"
             aria-label="Buscar eventos"
@@ -94,25 +80,16 @@ export const FilterPanel = ({
             <option value="price-desc">Precio: mayor a menor</option>
           </select>
         </div>
+      </div>
 
-        <button
-          type="submit"
-          className="w-full py-2.5 rounded-lg text-sm font-bold bg-primary text-primary-foreground hover:opacity-90 transition-opacity shadow-sm"
-        >
-          Buscar
-        </button>
-      </form>
-
-      {/* Results + Clear */}
       <div className="flex items-center justify-between pt-2 border-t border-border">
-        <span className="text-xs text-muted-foreground">{totalResults} resultado{totalResults !== 1 ? "s" : ""}</span>
+        <span className={`text-xs text-muted-foreground ${isLoading ? "animate-pulse" : ""}`}>
+          {isLoading ? "Cargando resultados…" : `${totalResults} resultado${totalResults !== 1 ? "s" : ""}`}
+        </span>
         {hasFilters && (
           <button
             type="button"
-            onClick={() => {
-              setLocalQuery("");
-              onClear();
-            }}
+            onClick={onClear}
             className="text-xs text-destructive hover:underline flex items-center gap-1"
           >
             <X className="w-3 h-3" /> Limpiar filtros
