@@ -501,8 +501,8 @@ async function burnAndMintResaleNft(input: {
 }
 
 // GET /api/tickets/qr/:assetCode.png — public PNG referenced by stellar.toml.
-// QR encodes { contractAddress, ticketRootId } so the door scanner can resolve
-// the live ticket version regardless of resale history.
+// QR encodes a signed token bound to contract, root, version, event and owner,
+// so stale or transferred ticket images are rejected by the scanner.
 app.get('/api/tickets/qr/:assetCode.png', async (req, res) => {
   try {
     const assetCode = req.params.assetCode.replace(/\.png$/i, '');

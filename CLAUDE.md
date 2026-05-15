@@ -96,15 +96,14 @@ Patrón Factory: deploy de un event_contract independiente por evento.
 
 **Soroban (auth required):**
 - `POST /api/transactions/buy` — XDR builder unsigned
-- `POST /api/transactions/secure-ticket` — `crear_boleto` (organizer-signed); actualiza DB con `contract_address`, `ticket_root_id`, `version`, `owner_wallet` (user, no organizer); genera `asset_code` y devuelve `trustXdr`. Returns `{txHash, contractAddress, ticketRootId, trustXdr, assetCode}`.
+- `POST /api/transactions/secure-ticket` — `crear_boleto_para` (organizer-signed); actualiza DB con `contract_address`, `ticket_root_id`, `version`, `owner_wallet` (user, no organizer). Si el evento tiene `nft_contract_address`, intenta mintear NFT Soroban y devuelve `{txHash, contractAddress, ticketRootId, nftContractAddress, nftTokenId, nftMintTxHash}`. Si el mint falla, el ticket queda asegurado y el NFT queda pendiente/reintentable.
 - `POST /api/transactions/list-ticket` — `listar_boleto` (org-signed). Body `{ticketId, price}` (stroops). DB: `is_for_sale=true`, `resale_price`, `owner_wallet`.
 - `POST /api/transactions/cancel-listing` — `cancelar_venta` (org-signed). Body `{ticketId}`. DB: `is_for_sale=false`, `resale_price=null`.
 - `POST /api/transactions/build-buy-xdr` — XDR unsigned para `comprar_boleto` con buyer como source. User-friendly error en saldo insuficiente.
 - `POST /api/transactions/submit` — recibe XDR firmado por Freighter, submit a Soroban RPC, polls. Returns `{success, txHash}`.
-- `POST /api/transactions/mint-collectible` — PAYMENT 1 unidad (issuer=organizer). Idempotente (`alreadyMinted:true` si ya existe).
-- `POST /api/transactions/transfer-collectible` — clawback al vendedor + payment al comprador en una tx Horizon firmada por organizer.
-- `POST /api/transactions/build-trust-xdr` — CHANGE_TRUST limit=1 para asset_code.
-- `POST /api/transactions/submit-classic` — submit XDR clásico vía Horizon (NO Soroban RPC; ops clásicas no van por sorobanRpc).
+- `POST /api/transactions/mint-collectible` — legacy/no-op para el flujo Classic anterior. El flujo vigente usa NFT Soroban por evento.
+- `POST /api/transactions/submit-classic` — legacy para XDR clásico vía Horizon; el flujo vigente de NFT Soroban no requiere `CHANGE_TRUST`.
+- `POST /api/transactions/transfer-nft` — endpoint interno post-reventa verificada: requiere `txHash`, comprador, wallet y versión esperada; quema/remint NFT si aplica.
 
 **Auth (bcrypt + JWT):**
 - `POST /api/auth/login` — bcrypt.compare → JWT 7d + DTO
@@ -212,8 +211,8 @@ PostgreSQL schema `ticketing` en Supabase.
 
 **Web3:**
 - `ConnectWallet.tsx` — **solo si logged in**. Freighter v6 (objects: `{isConnected}`, `{address}`, `{signedTxXdr}`). Auto-link al backend (handle 409). Muestra XLM + COP (`useXlmPrice`). Refresh on `balanceVersion`. Lee `walletAddress` desde context (persistente entre navegaciones); solo invoca Freighter si no hay address en context.
-- `TicketCard.tsx` — "Asegurar en Blockchain" → `secure-ticket` → badge + Stellar Explorer + trust+mint del coleccionable. "Revender NFT" → `<Dialog>` shadcn (precio en COP, preview XLM en vivo via `useXlmPrice`) → `list-ticket` → badge "En Venta" + "Cancelar Reventa". Wallet guard alert si sin Freighter.
-- `EventDetail.tsx` — "Reventa P2P Segura" con precio XLM+COP. Si `walletAddress===sellerWallet` → "Cancelar Reventa". Else → "Comprar" → `buyResaleTicket(contractAddress, ticketRootId, buyerPk, assetCode?)` → trust + Soroban + transfer-collectible. Usa `ticketTypes` del detail (no extra call).
+- `TicketCard.tsx` — "Asegurar en Blockchain" → `secure-ticket` → badge + Stellar Explorer + modal con `nftContractAddress`/`tokenId` para agregar el NFT en Freighter. "Revender NFT" → `<Dialog>` shadcn (precio en COP, preview XLM en vivo via `useXlmPrice`) → `list-ticket` → badge "En Venta" + "Cancelar Reventa". Wallet guard con toast si sin Freighter.
+- `EventDetail.tsx` — "Reventa P2P Segura" con precio XLM+COP. Si `walletAddress===sellerWallet` → "Cancelar Reventa". Else → "Comprar" → `buyResaleTicket(contractAddress, ticketRootId, buyerPk)` → intención/XDR + firma Freighter + submit + `/transfer-nft` verificado. Muestra diálogo de éxito para compra/cancelación/listado.
 
 **Layout:** Header (nav + ConnectWallet + Admin/Scanner para ADMIN/STAFF), Footer, HeroSearch, CategorySection, AccountSidebar
 **UI:** EventCard, TicketCard, TicketSelector, SeatMap (VIP/Platea/General), BannerCarousel, FilterPanel, PromoStrip, CheckoutStepper
@@ -357,7 +356,7 @@ docs/
   - **Backend `server.ts`**:
     - Nuevo helper `invokeSoroban(signer, contract, fn, args)` (simulate + assemble + sign + poll).
     - `/secure-ticket`: tras `crear_boleto_para`, llama `mint(buyerWallet, ticketRootId, metadataUrl)` en el ticket_nft_contract del evento, guarda `nft_token_id`, devuelve `{nftContractAddress, nftTokenId, nftMintTxHash}`. Quita el flujo `trustXdr`. Mint NFT falla → degrada gracefully (ticket sigue asegurado en Soroban).
-    - `/transfer-nft` (reemplaza `/transfer-collectible`): organizer llama `admin_transfer(token_id, buyerWallet)`. Una sola firma server-side, sin clawback Classic. Idempotente (`TransferenciaInvalida` si from==to → `alreadyTransferred:true`).
+    - `/transfer-nft` (reemplaza `/transfer-collectible`): solo después de `boleto_revendido` confirmado para `txHash`, comprador, wallet y versión. El backend quema el NFT anterior cuando existe y mintea un nuevo `nft_token_id` para el comprador; no acepta transferencia pública directa por simple petición del cliente.
     - `/mint-collectible`, `/build-trust-xdr`: deprecated (no-op idempotente o eliminado).
     - `GET /api/nft/metadata/:nftContractAddress/:tokenId` → JSON SEP-39 estilo `{name, description, image, attributes[]}`. Wallets compatibles lo descargan vía `token_uri`.
     - `GET /api/nft/qr/:nftContractAddress/:tokenId.png` → PNG con `qrToken` firmado para el token/version vigente (`contractAddress`, `ticketRootId`, `version`, `eventId`, `exp`, `nonce`, `ownerWallet`). Cache corta, keyed por NFT/version/owner.
