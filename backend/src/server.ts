@@ -1095,6 +1095,34 @@ app.post('/api/transactions/secure-ticket', authMiddleware, async (req, res) => 
       return;
     }
 
+    // Persist the on-chain identity before minting the NFT. This keeps retries
+    // from minting a collectible for a ticket identity already owned by another
+    // row if the DB unique constraint detects a race or duplicate projection.
+    try {
+      await prisma.tickets.update({
+        where: { id: ticketId },
+        data: {
+          contract_address: contractAddress,
+          ticket_root_id: ticketRootId,
+          version: 0,
+          owner_wallet: ownerUser.wallet_address,
+        },
+      });
+    } catch (updateErr: any) {
+      if (
+        updateErr?.code === 'P2002' &&
+        Array.isArray(updateErr?.meta?.target) &&
+        updateErr.meta.target.includes('contract_address') &&
+        updateErr.meta.target.includes('ticket_root_id') &&
+        updateErr.meta.target.includes('version')
+      ) {
+        console.error(`[SOROBAN] Duplicate on-chain ticket identity on update contract=${contractAddress} root=${ticketRootId} version=0 current=${ticketId}`);
+        sendApiError(req, res, 409, 'CONFLICT', 'La identidad on-chain del boleto ya está asociada a otro ticket');
+        return;
+      }
+      throw updateErr;
+    }
+
     // Mint el NFT en el ticket_nft_contract del evento (Phase 4.5).
     // El organizer es admin del NFT contract, así que firma el mint server-side.
     // token_id = ticket_root_id (1 NFT por raíz; sobrevive a reventas).
@@ -1124,17 +1152,12 @@ app.post('/api/transactions/secure-ticket', authMiddleware, async (req, res) => 
       console.warn(`[NFT] event ${event.id} has no nft_contract_address — skipping NFT mint`);
     }
 
-    // Update DB with on-chain data (idempotent)
-    await prisma.tickets.update({
-      where: { id: ticketId },
-      data: {
-        contract_address: contractAddress,
-        ticket_root_id: ticketRootId,
-        version: 0,
-        owner_wallet: ownerUser.wallet_address,
-        ...(nftTokenId != null ? ({ nft_token_id: nftTokenId } as any) : {}),
-      },
-    });
+    if (nftTokenId != null) {
+      await prisma.tickets.update({
+        where: { id: ticketId },
+        data: { nft_token_id: nftTokenId } as any,
+      });
+    }
 
     console.log(`[SOROBAN] Ticket secured on-chain! root_id=${ticketRootId}, tx=${sendResponse.hash}`);
 
@@ -2974,9 +2997,27 @@ app.get('/api/tickets', authMiddleware, async (req, res) => {
       orderBy: { created_at: 'desc' },
     });
 
+    const contractAddressesWithoutOrderEvent = [
+      ...new Set(
+        tickets
+          .filter((t) => {
+            const tt = t.order_items?.event_ticket_types ?? t.order_items?.event_seat_inventory?.event_ticket_types;
+            return !tt?.events && Boolean(t.contract_address);
+          })
+          .map((t) => t.contract_address!)
+      ),
+    ];
+    const fallbackEvents = contractAddressesWithoutOrderEvent.length
+      ? await prisma.events.findMany({
+          where: { contract_address: { in: contractAddressesWithoutOrderEvent } },
+          include: eventIncludes,
+        })
+      : [];
+    const eventByContract = new Map(fallbackEvents.map((event) => [event.contract_address, event]));
+
     res.json(tickets.map((t) => {
       const tt = t.order_items?.event_ticket_types ?? t.order_items?.event_seat_inventory?.event_ticket_types;
-      const evt = tt?.events;
+      const evt = tt?.events ?? (t.contract_address ? eventByContract.get(t.contract_address) : undefined);
       const signedQrPayload = t.contract_address && t.ticket_root_id != null && t.version != null && evt?.id
         ? JSON.stringify(buildSignedTicketQrPayload({
             contractAddress: t.contract_address,

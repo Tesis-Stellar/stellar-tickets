@@ -4,10 +4,10 @@ import { Footer } from "@/components/layout/Footer";
 import { AccountSidebar } from "@/components/layout/AccountSidebar";
 import { TicketCard } from "@/components/ui/TicketCard";
 import { useAppContext } from "@/context/AppContext";
-import { Ticket } from "lucide-react";
+import { Loader2, Ticket } from "lucide-react";
 
 const MyTicketsAccount = () => {
-  const { isLoggedIn, authStatus, purchasedTickets } = useAppContext();
+  const { isLoggedIn, authStatus, purchasedTickets, ticketsLoading } = useAppContext();
   if (authStatus === "checking") {
     return <div className="min-h-screen bg-background flex flex-col"><Header /><main className="flex-1 flex items-center justify-center px-4"><p className="text-sm font-bold text-muted-foreground">Cargando sesión...</p></main><Footer /></div>;
   }
@@ -21,7 +21,13 @@ const MyTicketsAccount = () => {
         <div className="grid lg:grid-cols-4 gap-6">
           <div className="lg:col-span-1"><AccountSidebar /></div>
           <div className="lg:col-span-3 space-y-4">
-            {purchasedTickets.length === 0 ? (
+            {ticketsLoading ? (
+              <div className="text-center py-16">
+                <Loader2 className="w-12 h-12 text-primary mx-auto mb-3 animate-spin" />
+                <p className="font-bold text-foreground">Cargando tus entradas</p>
+                <p className="text-sm text-muted-foreground">Estamos consultando tus boletos y su estado en blockchain.</p>
+              </div>
+            ) : purchasedTickets.length === 0 ? (
               <div className="text-center py-16">
                 <Ticket className="w-12 h-12 text-muted-foreground mx-auto mb-3" />
                 <p className="font-bold text-foreground">No tienes entradas</p>

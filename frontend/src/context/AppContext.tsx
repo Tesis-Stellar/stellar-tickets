@@ -133,6 +133,7 @@ interface AppState {
   orders: OrderData[];
   purchasedTickets: PurchasedTicket[];
   soldTickets: SoldTicket[];
+  ticketsLoading: boolean;
   user: UserData | null;
   isLoggedIn: boolean;
   authStatus: "checking" | "authenticated" | "unauthenticated";
@@ -167,15 +168,49 @@ const textFromApiValue = (value: unknown, fallback: string) => {
   return fallback;
 };
 
-const normalizeEventData = (event?: EventApiResponse): EventData =>
-  ({
+const EVENT_MONTHS = ["ENE", "FEB", "MAR", "ABR", "MAY", "JUN", "JUL", "AGO", "SEP", "OCT", "NOV", "DIC"];
+
+const splitApiEventDate = (event?: EventApiResponse) => {
+  const rawDate = event?.eventDate ?? event?.startsAt ?? "";
+  const date = rawDate ? new Date(rawDate) : null;
+  if (!date || Number.isNaN(date.getTime())) {
+    return {
+      date: event?.date ?? "--",
+      month: event?.month ?? "---",
+      year: event?.year ?? "----",
+      time: event?.time ?? "--:--",
+    };
+  }
+
+  return {
+    date: event?.date ?? String(date.getDate()).padStart(2, "0"),
+    month: event?.month ?? EVENT_MONTHS[date.getMonth()],
+    year: event?.year ?? String(date.getFullYear()),
+    time: event?.time ?? date.toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit" }),
+  };
+};
+
+const normalizeEventData = (event?: EventApiResponse): EventData => {
+  const dateParts = splitApiEventDate(event);
+  return ({
     ...event,
+    ...dateParts,
+    title: event?.title ?? "Evento por confirmar",
+    category: event?.categoryLabel ?? event?.category ?? "General",
+    description: event?.description ?? "",
     city: textFromApiValue(event?.city, "Ciudad por confirmar"),
     venue: textFromApiValue(event?.venue, "Venue por confirmar"),
     organizer: textFromApiValue(event?.organizer, "Organizador por confirmar"),
     image: event?.posterImage || event?.bannerImage || event?.image || "https://placehold.co/800x500?text=Evento",
     bannerImage: event?.bannerImage || event?.posterImage || "https://placehold.co/1200x400?text=Evento",
+    featured: event?.featured ?? event?.isFeatured ?? false,
+    hasSeatSelection: event?.hasSeatSelection ?? event?.hasAssignedSeating ?? false,
+    ticketTypes: event?.ticketTypes ?? [],
+    recommendations: event?.recommendations ?? [],
+    relatedEventIds: event?.relatedEventIds ?? [],
+    price: event?.price ?? "",
   }) as EventData;
+};
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -203,6 +238,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   const [cart, setCart] = useState<CartItem[]>([]);
   const [orders, setOrders] = useState<OrderData[]>([]);
   const [purchasedTickets, setPurchasedTickets] = useState<PurchasedTicket[]>([]);
+  const [ticketsLoading, setTicketsLoading] = useState(false);
   const [user, setUser] = useState<UserData | null>(null);
   const [lastOrder, setLastOrder] = useState<OrderData | null>(null);
   const [token, setToken] = useState<string | null>(() => localStorage.getItem("authToken"));
@@ -355,10 +391,15 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   );
 
   const fetchPurchasedTicketsSnapshot = useCallback(async () => {
-    const ticketsData = await apiFetch<TicketApiResponse[]>("/api/tickets");
-    const mapped = mapTicketsResponse(ticketsData);
-    setPurchasedTickets(mapped);
-    return mapped;
+    setTicketsLoading(true);
+    try {
+      const ticketsData = await apiFetch<TicketApiResponse[]>("/api/tickets");
+      const mapped = mapTicketsResponse(ticketsData);
+      setPurchasedTickets(mapped);
+      return mapped;
+    } finally {
+      setTicketsLoading(false);
+    }
   }, [apiFetch, mapTicketsResponse]);
 
   const refreshTickets = useCallback(async () => {
@@ -395,8 +436,10 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       setOrders([]);
       setPurchasedTickets([]);
       setSoldTickets([]);
+      setTicketsLoading(false);
       return;
     }
+    setTicketsLoading(true);
     void (async () => {
       const load = async <T,>(label: string, request: () => Promise<T>): Promise<T | null> => {
         try {
@@ -463,6 +506,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       } else {
         setPurchasedTickets([]);
       }
+      setTicketsLoading(false);
 
       const soldData = await load("ventas", () =>
         apiFetch<Array<{ id: string; soldAt: string; resalePrice: number; contractAddress?: string; ticketRootId?: number; version?: number; ticketType?: { id: string; name: string; price: number }; event?: Partial<EventData> }>>("/api/tickets/sold")
@@ -695,16 +739,30 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     }
     const allowedRes = await api.isAllowed();
     const allowed = (allowedRes as any)?.isAllowed ?? allowedRes;
+    let accessAddress = "";
     if (!allowed) {
       const accessRes = await api.requestAccess();
       if ((accessRes as any)?.error) {
         throw new Error("Freighter rechazó la conexión. Acepta el permiso para este sitio y vuelve a intentar.");
       }
+      accessAddress = (accessRes as any)?.address ?? (typeof accessRes === "string" ? accessRes : "");
     }
-    const addrRes = await api.getAddress();
-    const active = (addrRes as any)?.address ?? (typeof addrRes === "string" ? addrRes : "");
+    let active = accessAddress;
+    try {
+      const addrRes = await api.getAddress();
+      active = ((addrRes as any)?.address ?? (typeof addrRes === "string" ? addrRes : "")) || active;
+    } catch {
+      // requestAccess already gives us the selected address on supported Freighter versions.
+    }
     if (!active) {
-      throw new Error("Freighter no devolvió una dirección. Desbloquea la extensión e intenta de nuevo.");
+      const accessRes = await api.requestAccess();
+      if ((accessRes as any)?.error) {
+        throw new Error("Freighter rechazó la conexión. Acepta el permiso para este sitio y vuelve a intentar.");
+      }
+      active = (accessRes as any)?.address ?? (typeof accessRes === "string" ? accessRes : "");
+    }
+    if (!active) {
+      throw new Error("Freighter no pudo confirmar la cuenta activa. Abre la extensión, desbloquéala y vuelve a intentar.");
     }
     if (expectedAddress && active !== expectedAddress) {
       throw new Error(`La cuenta activa en Freighter (${active.slice(0, 8)}…) no coincide con la wallet vinculada a tu cuenta (${expectedAddress.slice(0, 8)}…). Cambia la cuenta activa en Freighter.`);
@@ -969,6 +1027,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         orders,
         purchasedTickets,
         soldTickets,
+        ticketsLoading,
         user,
         isLoggedIn,
         authStatus,

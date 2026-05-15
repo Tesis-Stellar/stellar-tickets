@@ -34,6 +34,15 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
 
   const parsedPriceCOP = Number(resalePriceInput.replace(/[^\d]/g, ""));
   const previewXLM = xlmCopPrice && parsedPriceCOP > 0 ? parsedPriceCOP / xlmCopPrice : 0;
+  const organizerFeePct = 5;
+  const platformFeePct = 3;
+  const sellerPct = 100 - organizerFeePct - platformFeePct;
+  const organizerFeeCOP = (parsedPriceCOP * organizerFeePct) / 100;
+  const platformFeeCOP = (parsedPriceCOP * platformFeePct) / 100;
+  const sellerNetCOP = parsedPriceCOP - organizerFeeCOP - platformFeeCOP;
+  const organizerFeeXLM = (previewXLM * organizerFeePct) / 100;
+  const platformFeeXLM = (previewXLM * platformFeePct) / 100;
+  const sellerNetXLM = previewXLM - organizerFeeXLM - platformFeeXLM;
   const resaleStatusLabel: Record<ResaleFlowStatus, string> = {
     building_xdr: "Preparando XDR...",
     signing: "Esperando firma...",
@@ -358,6 +367,60 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
               <span>Cotización actual:</span>
               <span>{xlmCopPrice ? `1 XLM ≈ ${formatCOP(xlmCopPrice)}` : "—"}</span>
             </div>
+          </div>
+
+          <div className="rounded-lg border border-border p-3 space-y-2 text-sm">
+            <p className="text-xs font-bold uppercase tracking-wide text-muted-foreground">
+              Desglose de comisiones
+            </p>
+
+            <div className="space-y-1">
+              <div className="flex justify-between items-baseline gap-3">
+                <span className="text-muted-foreground">
+                  Organizador <span className="text-xs">({organizerFeePct}%)</span>
+                </span>
+                <div className="text-right">
+                  <span className="font-mono font-semibold text-foreground">
+                    {parsedPriceCOP > 0 ? formatCOP(organizerFeeCOP) : "—"}
+                  </span>
+                  <span className="block text-[10px] text-muted-foreground font-mono">
+                    {organizerFeeXLM > 0 ? `${organizerFeeXLM.toFixed(4)} XLM` : ""}
+                  </span>
+                </div>
+              </div>
+
+              <div className="flex justify-between items-baseline gap-3">
+                <span className="text-muted-foreground">
+                  Plataforma <span className="text-xs">({platformFeePct}%)</span>
+                </span>
+                <div className="text-right">
+                  <span className="font-mono font-semibold text-foreground">
+                    {parsedPriceCOP > 0 ? formatCOP(platformFeeCOP) : "—"}
+                  </span>
+                  <span className="block text-[10px] text-muted-foreground font-mono">
+                    {platformFeeXLM > 0 ? `${platformFeeXLM.toFixed(4)} XLM` : ""}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <div className="border-t border-border pt-2 flex justify-between items-baseline gap-3">
+              <span className="font-bold text-foreground">
+                Recibirás <span className="text-xs font-normal text-muted-foreground">({sellerPct}%)</span>
+              </span>
+              <div className="text-right">
+                <span className="font-mono font-bold text-green-600">
+                  {parsedPriceCOP > 0 ? formatCOP(sellerNetCOP) : "—"}
+                </span>
+                <span className="block text-[10px] text-green-700 font-mono">
+                  {sellerNetXLM > 0 ? `${sellerNetXLM.toFixed(4)} XLM` : ""}
+                </span>
+              </div>
+            </div>
+
+            <p className="text-[10px] text-muted-foreground pt-1">
+              Comisiones liquidadas on-chain en Stellar. La tarifa de red la paga el comprador y es despreciable para la demo.
+            </p>
           </div>
         </div>
 
