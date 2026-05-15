@@ -9,6 +9,7 @@ export type TicketQrClaims = {
   ticketRootId: number;
   version: number;
   eventId: string;
+  ownerWallet?: string | null;
   exp: number;
   nonce: string;
 };
@@ -44,6 +45,7 @@ function isValidClaims(value: Partial<TicketQrClaims>): value is TicketQrClaims 
     Number.isInteger(value.version) &&
     value.version >= 0 &&
     isNonEmptyString(value.eventId) &&
+    (value.ownerWallet == null || isNonEmptyString(value.ownerWallet)) &&
     typeof value.exp === 'number' &&
     Number.isInteger(value.exp) &&
     value.exp > 0 &&
@@ -57,6 +59,7 @@ export function signTicketQr(input: {
   ticketRootId: number;
   version: number;
   eventId: string;
+  ownerWallet?: string | null;
   now?: Date;
   ttlSeconds?: number;
   nonce?: string;
@@ -68,6 +71,7 @@ export function signTicketQr(input: {
     ticketRootId: input.ticketRootId,
     version: input.version,
     eventId: input.eventId,
+    ownerWallet: input.ownerWallet ?? null,
     exp: nowSeconds + (input.ttlSeconds ?? QR_TOKEN_TTL_SECONDS),
     nonce: input.nonce ?? randomBytes(16).toString('base64url'),
   };

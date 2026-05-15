@@ -289,6 +289,7 @@ function buildSignedTicketQrPayload(input: {
   ticketRootId: number;
   version: number;
   eventId: string;
+  ownerWallet?: string | null;
 }): { qrToken: string } {
   return {
     qrToken: signTicketQr({
@@ -297,6 +298,7 @@ function buildSignedTicketQrPayload(input: {
       ticketRootId: input.ticketRootId,
       version: input.version,
       eventId: input.eventId,
+      ownerWallet: input.ownerWallet,
     }),
   };
 }
@@ -397,6 +399,7 @@ app.get('/api/tickets/qr/:assetCode.png', async (req, res) => {
       select: {
         contract_address: true,
         ticket_root_id: true,
+        owner_wallet: true,
         order_items: {
           select: {
             event_ticket_types: {
@@ -429,10 +432,11 @@ app.get('/api/tickets/qr/:assetCode.png', async (req, res) => {
         status: 'ACTIVE',
       },
       orderBy: { version: 'desc' },
-      select: { version: true } as any,
+      select: { version: true, owner_wallet: true } as any,
     });
     const version = (live as any)?.version ?? 1;
-    const cacheKey = `${assetCode}:v${version}`;
+    const ownerWallet = (live as any)?.owner_wallet ?? (ticket as any).owner_wallet ?? null;
+    const cacheKey = `${assetCode}:v${version}:w${ownerWallet ?? '-'}`;
 
     if (!qrCache.has(cacheKey)) {
       const buf = await buildTicketQrPng(buildSignedTicketQrPayload({
@@ -440,6 +444,7 @@ app.get('/api/tickets/qr/:assetCode.png', async (req, res) => {
         ticketRootId: (ticket as any).ticket_root_id,
         version,
         eventId,
+        ownerWallet,
       }));
       qrCache.set(cacheKey, buf);
     }
@@ -1788,9 +1793,8 @@ app.get('/api/nft/metadata/:nftContractAddress/:tokenId', async (req, res) => {
   }
 });
 
-// GET /api/nft/qr/:contractAddress/:tokenId.png — PNG con el QR codificando
-// {contractAddress (event_contract), ticketRootId} para validación en puerta.
-// Es la imagen que el JSON de metadata referencia.
+// GET /api/nft/qr/:contractAddress/:tokenId.png — PNG estático por nft_token_id.
+// El QR queda ligado al snapshot de versión y owner_wallet que recibió ese NFT.
 app.get('/api/nft/qr/:nftContractAddress/:tokenIdRaw', async (req, res) => {
   try {
     const { nftContractAddress, tokenIdRaw } = req.params;
@@ -1799,36 +1803,38 @@ app.get('/api/nft/qr/:nftContractAddress/:tokenIdRaw', async (req, res) => {
       sendApiError(req, res, 400, 'BAD_REQUEST', 'tokenId invalido');
       return;
     }
-    const event = await prisma.events.findFirst({
-      where: { nft_contract_address: nftContractAddress } as any,
-      select: { id: true, contract_address: true } as any,
-    });
-    const eventContract = (event as any)?.contract_address as string | null | undefined;
-    if (!eventContract) {
-      sendApiError(req, res, 404, 'NOT_FOUND', 'NFT contract no encontrado');
-      return;
-    }
-    const live = await prisma.tickets.findFirst({
-      where: {
-        contract_address: eventContract,
-        ticket_root_id: tokenId,
-        status: 'ACTIVE',
-      },
-      orderBy: { version: 'desc' },
-      select: { version: true } as any,
-    });
-    const version = (live as any)?.version ?? 1;
-    const cacheKey = `nft:${nftContractAddress}:${tokenId}:v${version}`;
+    const cacheKey = `nft:${nftContractAddress}:${tokenId}`;
     if (!qrCache.has(cacheKey)) {
+      const event = await prisma.events.findFirst({
+        where: { nft_contract_address: nftContractAddress } as any,
+        select: { id: true, contract_address: true } as any,
+      });
+      const eventContract = (event as any)?.contract_address as string | null | undefined;
+      if (!eventContract) {
+        sendApiError(req, res, 404, 'NOT_FOUND', 'NFT contract no encontrado');
+        return;
+      }
+      const ticket = await prisma.tickets.findFirst({
+        where: {
+          contract_address: eventContract,
+          nft_token_id: tokenId,
+        } as any,
+        select: { ticket_root_id: true, version: true, owner_wallet: true } as any,
+      });
+      if (!ticket || (ticket as any).ticket_root_id == null || (ticket as any).version == null) {
+        sendApiError(req, res, 404, 'NOT_FOUND', 'NFT token no encontrado');
+        return;
+      }
       const buf = await buildTicketQrPng(buildSignedTicketQrPayload({
         contractAddress: eventContract,
-        ticketRootId: tokenId,
-        version,
+        ticketRootId: (ticket as any).ticket_root_id,
+        version: (ticket as any).version,
         eventId: (event as any).id,
+        ownerWallet: (ticket as any).owner_wallet ?? null,
       }));
       qrCache.set(cacheKey, buf);
     }
-    res.setHeader('Cache-Control', 'public, max-age=60, must-revalidate');
+    res.setHeader('Cache-Control', 'public, max-age=86400, immutable');
     res.setHeader('Content-Type', 'image/png');
     res.send(qrCache.get(cacheKey)!);
   } catch (err: any) {
@@ -1954,8 +1960,16 @@ app.post('/api/admin/scan', scannerRateLimit, authMiddleware, async (req, res) =
     }
 
     const scanDecision = evaluateScanTicket(
-      ticket ? { id: ticket.id, status: ticket.status, version: (ticket as any).version ?? null } : null,
+      ticket
+        ? {
+            id: ticket.id,
+            status: ticket.status,
+            version: (ticket as any).version ?? null,
+            ownerWallet: (ticket as any).owner_wallet ?? null,
+          }
+        : null,
       requestedVersion,
+      scanRequest.kind === 'contractTicket' ? scanRequest.ownerWallet : null,
     );
     if (!scanDecision.ok) {
       await recordCheckin({
@@ -3156,6 +3170,7 @@ app.get('/api/tickets', authMiddleware, async (req, res) => {
             ticketRootId: t.ticket_root_id,
             version: t.version,
             eventId: evt.id,
+            ownerWallet: t.owner_wallet ?? null,
           }))
         : t.qr_payload;
       return {

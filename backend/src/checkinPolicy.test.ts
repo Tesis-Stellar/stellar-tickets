@@ -24,6 +24,7 @@ test('summarizes parsed signed scan request with ticket identity claims', () => 
       version: 2,
       eventId: 'event-1',
       nonce: 'nonce-1',
+      ownerWallet: 'GOWNER',
     }),
     {
       kind: 'signed_qr',
@@ -32,6 +33,7 @@ test('summarizes parsed signed scan request with ticket identity claims', () => 
       version: 2,
       eventId: 'event-1',
       nonce: 'nonce-1',
+      ownerWallet: 'GOWNER',
     },
   );
 });

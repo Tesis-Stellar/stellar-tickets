@@ -12,6 +12,7 @@ test('signs and verifies a QR token with ticket identity claims', () => {
     ticketRootId: 42,
     version: 3,
     eventId: 'event-1',
+    ownerWallet: 'GOWNER',
     nonce: 'nonce-1',
     now,
   });
@@ -23,6 +24,7 @@ test('signs and verifies a QR token with ticket identity claims', () => {
     assert.equal(result.claims.ticketRootId, 42);
     assert.equal(result.claims.version, 3);
     assert.equal(result.claims.eventId, 'event-1');
+    assert.equal(result.claims.ownerWallet, 'GOWNER');
     assert.equal(result.claims.nonce, 'nonce-1');
   }
 });

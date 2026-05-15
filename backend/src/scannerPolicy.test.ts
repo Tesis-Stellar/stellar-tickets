@@ -48,6 +48,7 @@ test('accepts signed QR tokens and extracts ticket identity', () => {
     ticketRootId: 123,
     version: 2,
     eventId: 'event-1',
+    ownerWallet: 'GOWNER',
     nonce: 'nonce-1',
     now,
   });
@@ -61,6 +62,7 @@ test('accepts signed QR tokens and extracts ticket identity', () => {
     eventId: 'event-1',
     nonce: 'nonce-1',
     exp: expectedExp,
+    ownerWallet: 'GOWNER',
   });
 });
 
@@ -92,5 +94,13 @@ test('rejects stale QR versions after resale with 409', () => {
     ok: false,
     status: 409,
     error: 'QR vencido: este boleto fue revendido. El nuevo dueño tiene el QR válido.',
+  });
+});
+
+test('rejects stale QR owner wallet after resale with 409', () => {
+  assert.deepEqual(evaluateScanTicket({ id: 'ticket-2', status: 'ACTIVE', version: 3, ownerWallet: 'GNEW' }, 3, 'GOLD'), {
+    ok: false,
+    status: 409,
+    error: 'QR vencido: el dueño on-chain de este boleto cambió. El nuevo dueño tiene el QR válido.',
   });
 });

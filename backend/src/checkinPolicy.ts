@@ -9,6 +9,7 @@ export type CheckinPayloadSummary = {
   version?: number;
   eventId?: string;
   nonce?: string;
+  ownerWallet?: string | null;
 };
 
 export function buildCheckinPayloadSummary(input: Record<string, unknown>): CheckinPayloadSummary {
@@ -29,6 +30,7 @@ export function summarizeScanRequest(input: {
   version?: number;
   eventId?: string;
   nonce?: string;
+  ownerWallet?: string | null;
 }): CheckinPayloadSummary {
   if (input.kind === 'ticketId') {
     return { kind: 'legacy_ticket_id', ticketId: input.ticketId };
@@ -40,5 +42,6 @@ export function summarizeScanRequest(input: {
     version: input.version,
     eventId: input.eventId,
     nonce: input.nonce,
+    ownerWallet: input.ownerWallet,
   };
 }

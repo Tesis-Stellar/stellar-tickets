@@ -4,12 +4,13 @@ type TicketStatus = 'ACTIVE' | 'USED' | 'CANCELLED' | 'REFUNDED' | string;
 
 export type ScanRequest =
   | { kind: 'ticketId'; ticketId: string }
-  | { kind: 'contractTicket'; contractAddress: string; ticketRootId: number; version: number; eventId: string; nonce: string; exp: number };
+  | { kind: 'contractTicket'; contractAddress: string; ticketRootId: number; version: number; eventId: string; nonce: string; exp: number; ownerWallet?: string | null };
 
 export type ScanTicketSnapshot = {
   id: string;
   status: TicketStatus;
   version: number | null;
+  ownerWallet?: string | null;
 };
 
 export type ScanPolicyError = { ok: false; status: 400 | 403 | 404 | 409; error: string };
@@ -47,6 +48,7 @@ export function parseScanRequest(body: Record<string, unknown>, options?: { qrSe
       eventId: verification.claims.eventId,
       nonce: verification.claims.nonce,
       exp: verification.claims.exp,
+      ownerWallet: verification.claims.ownerWallet ?? null,
     };
   }
 
@@ -57,7 +59,7 @@ export function parseScanRequest(body: Record<string, unknown>, options?: { qrSe
   return { ok: false, status: 400, error: 'Se requiere qrToken firmado' };
 }
 
-export function evaluateScanTicket(ticket: ScanTicketSnapshot | null, requestedVersion?: number): ScanPolicyResult {
+export function evaluateScanTicket(ticket: ScanTicketSnapshot | null, requestedVersion?: number, requestedOwnerWallet?: string | null): ScanPolicyResult {
   if (!ticket) {
     return { ok: false, status: 404, error: 'Boleto no encontrado' };
   }
@@ -67,6 +69,14 @@ export function evaluateScanTicket(ticket: ScanTicketSnapshot | null, requestedV
       ok: false,
       status: 409,
       error: 'QR vencido: este boleto fue revendido. El nuevo dueño tiene el QR válido.',
+    };
+  }
+
+  if (requestedOwnerWallet && ticket.ownerWallet && requestedOwnerWallet !== ticket.ownerWallet) {
+    return {
+      ok: false,
+      status: 409,
+      error: 'QR vencido: el dueño on-chain de este boleto cambió. El nuevo dueño tiene el QR válido.',
     };
   }
 
