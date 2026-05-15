@@ -377,12 +377,19 @@ const AdminDashboard = () => {
               </h2>
               
               <div className="mb-8 p-5 bg-amber-500/10 border border-amber-500/20 rounded-xl relative overflow-hidden">
-                <div className="absolute top-0 right-0 p-4 opacity-10"><Building className="w-24 h-24" /></div>
-                <h3 className="text-sm font-bold text-amber-500 uppercase flex items-center gap-1.5"><Rocket className="w-4 h-4"/> Supremo: Cuenta Maestra Organizadora</h3>
-                <p className="text-xs text-muted-foreground mt-1 mb-3">Tu billetera administradora en Stellar. Despliega y delega permisos a todas las fábricas y eventos creados de forma descentralizada.</p>
-                <div className="font-mono bg-background p-3 rounded-md text-sm border border-border flex items-center justify-between">
+                <div className="absolute top-0 right-0 p-4 opacity-10 pointer-events-none"><Building className="w-24 h-24" /></div>
+                <h3 className="relative text-sm font-bold text-amber-500 uppercase flex items-center gap-1.5"><Rocket className="w-4 h-4"/> Supremo: Cuenta Maestra Organizadora</h3>
+                <p className="relative text-xs text-muted-foreground mt-1 mb-3">Tu billetera administradora en Stellar. Despliega y delega permisos a todas las fábricas y eventos creados de forma descentralizada.</p>
+                <div className="relative z-10 font-mono bg-background p-3 rounded-md text-sm border border-border flex items-center justify-between">
                   <span className="truncate mr-4 text-foreground/80">{contractsData.factoryContractId}</span>
-                  <a target="_blank" rel="noreferrer" href={`https://stellar.expert/explorer/testnet/account/${contractsData.factoryContractId}`} className="text-[10px] text-blue-500 font-bold hover:underline flex items-center gap-1 shrink-0 bg-blue-500/10 px-2 py-1 rounded">Stellar Expert <ExternalLink className="w-3 h-3"/></a>
+                  <a
+                    target="_blank"
+                    rel="noreferrer"
+                    href={`https://stellar.expert/explorer/testnet/${contractsData.factoryContractId.startsWith("C") ? "contract" : "account"}/${contractsData.factoryContractId}`}
+                    className="text-[10px] text-blue-500 font-bold hover:underline flex items-center gap-1 shrink-0 bg-blue-500/10 px-2 py-1 rounded cursor-pointer"
+                  >
+                    Stellar Expert <ExternalLink className="w-3 h-3"/>
+                  </a>
                 </div>
               </div>
 
