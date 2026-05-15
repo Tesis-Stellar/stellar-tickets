@@ -222,7 +222,7 @@ app.use(cors({
     callback(new Error('CORS origin not allowed'));
   },
 }));
-app.use(express.json());
+app.use(express.json({ limit: '8mb' }));
 
 // ── In-memory cache (avoids repeated Supabase round-trips ~150ms each) ──
 const cache = new Map<string, { data: any; expires: number }>();
@@ -578,6 +578,7 @@ function toEventDto(event: any) {
   const category = event.event_categories?.code ?? '';
   const images = EVENT_IMAGES[slug];
   const fallback = CATEGORY_IMAGES[category] || 'https://placehold.co/800x500?text=Evento';
+  const uploaded = event.cover_image_url ?? null;
   return {
     id: event.id,
     slug,
@@ -594,8 +595,8 @@ function toEventDto(event: any) {
     minPrice: minPrice,
     isFeatured: false,
     contract_address: event.contract_address,
-    posterImage: images?.poster ?? fallback,
-    bannerImage: images?.banner ?? fallback,
+    posterImage: uploaded ?? images?.poster ?? fallback,
+    bannerImage: uploaded ?? images?.banner ?? fallback,
   };
 }
 
@@ -2059,7 +2060,7 @@ app.post('/api/admin/events', authMiddleware, async (req, res) => {
     const user = await prisma.users.findUnique({ where: { id: (req as any).userId } });
     if (user?.role !== 'ADMIN') { sendApiError(req, res, 403, 'FORBIDDEN', 'Acceso denegado'); return; }
 
-    const { title, slug, category_id, date, venue_id, sections } = req.body;
+    const { title, slug, category_id, date, venue_id, sections, cover_image_url } = req.body;
     
     // Hardcode organizer for MVP
     const organizer = await prisma.organizers.findFirst();
@@ -2075,6 +2076,7 @@ app.post('/api/admin/events', authMiddleware, async (req, res) => {
         ends_at: new Date(new Date(date).getTime() + 4 * 60 * 60 * 1000), // +4 horas
         organizer_id: organizer!.id,
         venue_id: venue_id,
+        cover_image_url: typeof cover_image_url === 'string' && cover_image_url.length > 0 ? cover_image_url : null,
       }
     });
 
@@ -2083,7 +2085,9 @@ app.post('/api/admin/events', authMiddleware, async (req, res) => {
         await prisma.event_ticket_types.create({
           data: {
             event_id: newEvent.id,
-            venue_section_id: s.id,
+            // Admin quick-create models section names as general-admission
+            // ticket types. Assigned seating inventory is managed separately.
+            venue_section_id: null,
             ticket_type_name: s.name,
             description: `Boleto habilitado para ${s.name}`,
             price_amount: s.price || 0,

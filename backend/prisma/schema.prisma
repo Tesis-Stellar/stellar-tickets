@@ -69,6 +69,7 @@ model events {
   slug                 String                 @unique(map: "uq_events_slug")
   title                String
   description          String?
+  cover_image_url      String?
   starts_at            DateTime               @db.Timestamptz(6)
   ends_at              DateTime?              @db.Timestamptz(6)
   sales_start_at       DateTime?              @db.Timestamptz(6)
