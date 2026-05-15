@@ -383,6 +383,123 @@ async function mintTicketNftWithBump(input: {
   }
 }
 
+async function burnAndMintResaleNft(input: {
+  nftContractAddress: string;
+  contractAddress: string;
+  ticketRootId: number;
+  buyerWallet: string;
+}): Promise<{
+  burnTxHash: string | null;
+  mintTxHash: string | null;
+  nftTokenId: number;
+  alreadyTransferred?: boolean;
+}> {
+  if (!organizerKeypair) {
+    throw new Error('Blockchain no configurada');
+  }
+
+  const oldRow = await prisma.tickets.findFirst({
+    where: {
+      contract_address: input.contractAddress,
+      ticket_root_id: input.ticketRootId,
+      status: 'CANCELLED',
+    } as any,
+    orderBy: { version: 'desc' },
+    select: { nft_token_id: true } as any,
+  });
+  const oldNftTokenId = ((oldRow as any)?.nft_token_id as number | null) ?? input.ticketRootId;
+
+  const newRow = await prisma.tickets.findFirst({
+    where: {
+      contract_address: input.contractAddress,
+      ticket_root_id: input.ticketRootId,
+      status: 'ACTIVE',
+      owner_wallet: input.buyerWallet,
+    } as any,
+    orderBy: { version: 'desc' },
+    select: { id: true, nft_token_id: true } as any,
+  });
+  if (!newRow) {
+    const err = new Error('El indexer aun no procesa la reventa. Espera unos segundos e intenta de nuevo.');
+    (err as any).status = 409;
+    throw err;
+  }
+
+  const existingNewTokenId = (newRow as any).nft_token_id as number | null;
+  if (existingNewTokenId != null && existingNewTokenId !== oldNftTokenId) {
+    return {
+      burnTxHash: null,
+      mintTxHash: null,
+      nftTokenId: existingNewTokenId,
+      alreadyTransferred: true,
+    };
+  }
+
+  const allocateTokenId = async () => {
+    const maxAgg = await prisma.tickets.aggregate({
+      where: { contract_address: input.contractAddress } as any,
+      _max: { nft_token_id: true } as any,
+    });
+    const maxId = ((maxAgg as any)._max?.nft_token_id as number | null) ?? 0;
+    return Math.max(maxId, input.ticketRootId) + 1;
+  };
+
+  const adminScVal = new Address(organizerKeypair.publicKey()).toScVal();
+  let burnTxHash: string | null = null;
+  try {
+    const burnResult = await invokeSoroban(
+      organizerKeypair,
+      input.nftContractAddress,
+      'burn',
+      [adminScVal, nativeToScVal(oldNftTokenId, { type: 'u32' })],
+    );
+    burnTxHash = (burnResult as any).txHash ?? null;
+    console.log(`[NFT] burned token=${oldNftTokenId} on ${input.nftContractAddress.slice(0, 8)}...`);
+  } catch (error: any) {
+    const msg = String(error?.message ?? '');
+    if (msg.includes('TokenNoEncontrado') || msg.includes('#4')) {
+      console.log(`[NFT] burn skipped (token=${oldNftTokenId} already gone)`);
+    } else {
+      throw error;
+    }
+  }
+
+  const attemptMint = async (tokenId: number) => {
+    const tokenUri = `${PUBLIC_BASE_URL}/api/nft/metadata/${input.nftContractAddress}/${tokenId}`;
+    const mintResult = await invokeSoroban(
+      organizerKeypair,
+      input.nftContractAddress,
+      'mint',
+      [
+        new Address(input.buyerWallet).toScVal(),
+        nativeToScVal(tokenId, { type: 'u32' }),
+        nativeToScVal(tokenUri, { type: 'string' }),
+      ],
+    );
+    return (mintResult as any).txHash ?? null;
+  };
+
+  let nftTokenId = await allocateTokenId();
+  let mintTxHash: string | null = null;
+  try {
+    mintTxHash = await attemptMint(nftTokenId);
+  } catch (error: any) {
+    const msg = String(error?.message ?? '');
+    if (!msg.includes('TokenYaExiste') && !msg.includes('#3')) {
+      throw error;
+    }
+    nftTokenId = await allocateTokenId();
+    mintTxHash = await attemptMint(nftTokenId);
+  }
+
+  await prisma.tickets.update({
+    where: { id: (newRow as any).id },
+    data: { nft_token_id: nftTokenId } as any,
+  });
+
+  return { burnTxHash, mintTxHash, nftTokenId };
+}
+
 // GET /api/tickets/qr/:assetCode.png — public PNG referenced by stellar.toml.
 // QR encodes { contractAddress, ticketRootId } so the door scanner can resolve
 // the live ticket version regardless of resale history.
@@ -1731,28 +1848,33 @@ app.post('/api/transactions/transfer-nft', transactionRateLimit, authMiddleware,
     }
 
     try {
-      const result = await invokeSoroban(
-        organizerKeypair,
-        authorization.nftContractAddress,
-        'admin_transfer',
-        [
-          nativeToScVal(Number(ticketRootId), { type: 'u32' }),
-          new Address(String(buyerWallet)).toScVal(),
-        ],
+      const result = await burnAndMintResaleNft({
+        nftContractAddress: authorization.nftContractAddress,
+        contractAddress: String(contractAddress),
+        ticketRootId: Number(ticketRootId),
+        buyerWallet: String(buyerWallet),
+      });
+      console.log(
+        `[NFT] verified burn+mint root=${ticketRootId} v${authorization.version} token=${result.nftTokenId} -> ${String(buyerWallet).slice(0, 8)}...`
       );
-      console.log(`[NFT] verified admin_transfer token=${ticketRootId} v${authorization.version} -> ${String(buyerWallet).slice(0,8)}...`);
-      res.json({ success: true, txHash: (result as any).txHash ?? null });
+      res.json({
+        success: true,
+        alreadyTransferred: result.alreadyTransferred ?? false,
+        burnTxHash: result.burnTxHash,
+        mintTxHash: result.mintTxHash,
+        txHash: result.mintTxHash,
+        nftTokenId: result.nftTokenId,
+        nftContractAddress: authorization.nftContractAddress,
+      });
     } catch (e: any) {
-      // Mensaje TransferenciaInvalida (=6) cuando from==to → idempotente
-      const msg = String(e?.message ?? '');
-      if (msg.includes('TransferenciaInvalida') || msg.includes('#6')) {
-        res.json({ success: true, alreadyTransferred: true });
+      if (e?.status === 409) {
+        sendApiError(req, res, 409, 'CONFLICT', e.message);
         return;
       }
       throw e;
     }
   } catch (error: any) {
-    console.error('[NFT] transfer error:', error?.message ?? error);
+    console.error('[NFT] transfer burn+mint error:', error?.message ?? error);
     sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error transfiriendo NFT');
   }
 });
