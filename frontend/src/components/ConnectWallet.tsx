@@ -48,7 +48,13 @@ export const ConnectWallet = () => {
         return false;
       }
       console.error("linkWallet error:", err);
-      return true;
+      setWalletAddress(null);
+      toast({
+        title: "No se pudo verificar la wallet",
+        description: msg || "Freighter debe firmar el challenge para vincular esta wallet a tu cuenta.",
+        variant: "destructive",
+      });
+      return false;
     }
   };
 

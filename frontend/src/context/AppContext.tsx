@@ -159,6 +159,7 @@ interface AppState {
   buyResaleTicket: (contractAddress: string, ticketRootId: number, buyerPublicKey: string, currentVersion: number, options?: ResaleFlowOptions) => Promise<{ success: boolean; txHash?: string; error?: string }>;
   linkWallet: (walletAddress: string) => Promise<void>;
   refreshTickets: () => Promise<void>;
+  refreshSoldTickets: () => Promise<void>;
   walletAddress: string | null;
   setWalletAddress: (address: string | null) => void;
   lastOrder: OrderData | null;
@@ -856,6 +857,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
           options?.onStatus?.("failed");
           return { success: false, txHash: result.txHash, error: "Transaccion enviada, pero el indexer aun no confirma el listado." };
         }
+        setBalanceVersion((v) => v + 1);
         options?.onStatus?.("confirmed");
         return { success: true, txHash: result.txHash };
       } catch (error: any) {
@@ -897,6 +899,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
           options?.onStatus?.("failed");
           return { success: false, txHash: result.txHash, error: "Transaccion enviada, pero el indexer aun no confirma la cancelacion." };
         }
+        setBalanceVersion((v) => v + 1);
         options?.onStatus?.("confirmed");
         return { success: true, txHash: result.txHash };
       } catch (error: any) {
@@ -1025,8 +1028,9 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
           signature,
         }),
       });
+      setWalletAddress(walletAddress);
     },
-    [apiFetch]
+    [apiFetch, setWalletAddress]
   );
 
   return (
@@ -1056,6 +1060,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         buyResaleTicket,
         linkWallet,
         refreshTickets,
+        refreshSoldTickets,
         walletAddress,
         setWalletAddress,
         lastOrder,

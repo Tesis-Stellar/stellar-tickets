@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import test from 'node:test';
 import { Keypair } from '@stellar/stellar-sdk';
 import {
@@ -24,7 +25,26 @@ function sign(messageToSign: string, signer = keypair): string {
   return signer.sign(Buffer.from(messageToSign, 'utf8')).toString('base64');
 }
 
-test('accepts a valid Freighter-style message signature for the requested wallet', () => {
+function signFreighterMessage(messageToSign: string, signer = keypair): string {
+  const hash = createHash('sha256')
+    .update(`Stellar Signed Message:\n${messageToSign}`, 'utf8')
+    .digest();
+  return signer.sign(hash).toString('base64');
+}
+
+test('accepts a valid Freighter signMessage signature for the requested wallet', () => {
+  const result = verifyWalletChallengeSignature({
+    walletAddress,
+    message,
+    signature: signFreighterMessage(message),
+    expiresAt,
+    now: issuedAt,
+  });
+
+  assert.deepEqual(result, { ok: true });
+});
+
+test('accepts the legacy raw challenge signature used by older manual tests', () => {
   const result = verifyWalletChallengeSignature({
     walletAddress,
     message,

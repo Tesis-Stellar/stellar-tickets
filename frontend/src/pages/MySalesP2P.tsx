@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { Navigate } from "react-router-dom";
 import { Header } from "@/components/layout/Header";
 import { Footer } from "@/components/layout/Footer";
@@ -7,8 +8,19 @@ import { useXlmPrice, formatCOP, stroopsToXLM } from "@/hooks/useXlmPrice";
 import { ArrowRightLeft } from "lucide-react";
 
 const MySalesP2P = () => {
-  const { isLoggedIn, authStatus, soldTickets } = useAppContext();
+  const { isLoggedIn, authStatus, soldTickets, refreshSoldTickets, refreshTickets } = useAppContext();
   const xlmCop = useXlmPrice();
+  useEffect(() => {
+    if (!isLoggedIn) return;
+    refreshSoldTickets().catch(() => {});
+    refreshTickets().catch(() => {});
+    const id = window.setInterval(() => {
+      refreshSoldTickets().catch(() => {});
+      refreshTickets().catch(() => {});
+    }, 8000);
+    return () => window.clearInterval(id);
+  }, [isLoggedIn, refreshSoldTickets, refreshTickets]);
+
   if (authStatus === "checking") {
     return <div className="min-h-screen bg-background flex flex-col"><Header /><main className="flex-1 flex items-center justify-center px-4"><p className="text-sm font-bold text-muted-foreground">Cargando sesión...</p></main><Footer /></div>;
   }

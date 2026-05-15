@@ -232,7 +232,7 @@ const EventDetail = () => {
                               const pk = walletAddress;
                               setBuyingId(lt.id);
                               setTicketFlowStatus(lt.id, "building_xdr");
-                              await linkWallet(pk).catch(() => {});
+                              await linkWallet(pk);
                               const buyResult = await buyResaleTicket(lt.contractAddress, lt.ticketRootId, pk, lt.version, {
                                 onStatus: (status) => setTicketFlowStatus(lt.id, status),
                               });

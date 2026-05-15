@@ -1,7 +1,8 @@
-import { randomBytes } from 'crypto';
+import { createHash, randomBytes } from 'crypto';
 import { Keypair } from '@stellar/stellar-sdk';
 
 export const WALLET_CHALLENGE_TTL_MS = 5 * 60 * 1000;
+const FREIGHTER_SIGN_MESSAGE_PREFIX = 'Stellar Signed Message:\n';
 
 export type WalletChallenge = {
   nonce: string;
@@ -110,7 +111,13 @@ export function verifyWalletChallengeSignature(input: {
 
   let isValid = false;
   try {
-    isValid = keypair.verify(Buffer.from(input.message, 'utf8'), signatureBytes);
+    const rawMessage = Buffer.from(input.message, 'utf8');
+    const freighterMessageHash = createHash('sha256')
+      .update(`${FREIGHTER_SIGN_MESSAGE_PREFIX}${input.message}`, 'utf8')
+      .digest();
+    isValid =
+      keypair.verify(freighterMessageHash, signatureBytes) ||
+      keypair.verify(rawMessage, signatureBytes);
   } catch {
     return { ok: false, status: 400, error: 'Firma invalida' };
   }

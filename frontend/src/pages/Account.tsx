@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { Link, Navigate } from "react-router-dom";
 import { Header } from "@/components/layout/Header";
 import { Footer } from "@/components/layout/Footer";
@@ -6,15 +7,28 @@ import { useAppContext } from "@/context/AppContext";
 import { Ticket, ShoppingBag, User, Settings, ArrowRightLeft } from "lucide-react";
 
 const Account = () => {
-  const { isLoggedIn, authStatus, user, purchasedTickets, orders, soldTickets } = useAppContext();
+  const { isLoggedIn, authStatus, user, purchasedTickets, soldTickets, refreshTickets, refreshSoldTickets } = useAppContext();
+  useEffect(() => {
+    if (!isLoggedIn) return;
+    refreshTickets().catch(() => {});
+    refreshSoldTickets().catch(() => {});
+    const id = window.setInterval(() => {
+      refreshTickets().catch(() => {});
+      refreshSoldTickets().catch(() => {});
+    }, 8000);
+    return () => window.clearInterval(id);
+  }, [isLoggedIn, refreshSoldTickets, refreshTickets]);
+
   if (authStatus === "checking") {
     return <div className="min-h-screen bg-background flex flex-col"><Header /><main className="flex-1 flex items-center justify-center px-4"><p className="text-sm font-bold text-muted-foreground">Cargando sesión...</p></main><Footer /></div>;
   }
   if (!isLoggedIn) return <Navigate to="/login" replace />;
 
+  const purchasesCount = purchasedTickets.length;
+
   const cards = [
     { to: "/mi-cuenta/entradas", icon: Ticket, label: "Mis Entradas", value: `${purchasedTickets.length} boleto${purchasedTickets.length !== 1 ? "s" : ""}` },
-    { to: "/mi-cuenta/compras", icon: ShoppingBag, label: "Mis Compras", value: `${orders.length} orden${orders.length !== 1 ? "es" : ""}` },
+    { to: "/mi-cuenta/compras", icon: ShoppingBag, label: "Mis Compras", value: `${purchasesCount} compra${purchasesCount !== 1 ? "s" : ""}` },
     { to: "/mi-cuenta/ventas-p2p", icon: ArrowRightLeft, label: "Mis Ventas P2P", value: `${soldTickets.length} venta${soldTickets.length !== 1 ? "s" : ""}` },
     { to: "/mi-cuenta/perfil", icon: User, label: "Mi Perfil", value: user?.name ?? "" },
     { to: "/contactanos", icon: Settings, label: "Ayuda", value: "Soporte y FAQ" },
