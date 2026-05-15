@@ -1,4 +1,4 @@
-import { QrCode, MapPin, Calendar, ShieldCheck, Lock, ExternalLink, Tag } from "lucide-react";
+import { QrCode, MapPin, Calendar, ShieldCheck, Lock, ExternalLink, Tag, CheckCircle2 } from "lucide-react";
 import { QRCodeCanvas } from "qrcode.react";
 import type { PurchasedTicket, ResaleFlowStatus } from "@/context/AppContext";
 import { useAppContext } from "@/context/AppContext";
@@ -32,6 +32,7 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
   const [justMintedNftAddress, setJustMintedNftAddress] = useState<string | null>(null);
   const [justMintedNftTokenId, setJustMintedNftTokenId] = useState<number | null>(null);
   const [resaleFlowStatus, setResaleFlowStatus] = useState<ResaleFlowStatus | null>(null);
+  const [resaleSuccessDialog, setResaleSuccessDialog] = useState<{ kind: "list" | "cancel"; txHash?: string } | null>(null);
 
   const parsedPriceCOP = Number(resalePriceInput.replace(/[^\d]/g, ""));
   const previewXLM = xlmCopPrice && parsedPriceCOP > 0 ? parsedPriceCOP / xlmCopPrice : 0;
@@ -130,6 +131,7 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
       if (result.success) {
         setIsListed(true);
         setTxHash(result.txHash ?? txHash);
+        setResaleSuccessDialog({ kind: "list", txHash: result.txHash ?? txHash ?? undefined });
       } else {
         toast({
           title: "No se pudo publicar la reventa",
@@ -207,6 +209,7 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
                         if (result.success) {
                           setIsListed(false);
                           setTxHash(result.txHash ?? txHash);
+                          setResaleSuccessDialog({ kind: "cancel", txHash: result.txHash ?? txHash ?? undefined });
                         } else {
                           toast({
                             title: "No se pudo cancelar la reventa",
@@ -453,6 +456,44 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
             className="bg-blue-600 hover:bg-blue-700 text-white"
           >
             Listar por {parsedPriceCOP > 0 ? formatCOP(parsedPriceCOP) : "—"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+
+    <Dialog open={!!resaleSuccessDialog} onOpenChange={(open) => !open && setResaleSuccessDialog(null)}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <CheckCircle2 className="w-5 h-5 text-green-600" />
+            {resaleSuccessDialog?.kind === "cancel" ? "Reventa cancelada" : "Boleto publicado en reventa"}
+          </DialogTitle>
+          <DialogDescription>
+            {resaleSuccessDialog?.kind === "cancel"
+              ? "Tu boleto se retiró del mercado P2P y vuelve a quedar disponible en Mis Entradas."
+              : "Tu boleto quedó publicado en el mercado P2P del evento."}
+          </DialogDescription>
+        </DialogHeader>
+
+        {resaleSuccessDialog?.txHash ? (
+          <div className="rounded-lg bg-muted/50 p-3 space-y-1 text-xs">
+            <div className="text-muted-foreground">Transaction hash</div>
+            <div className="font-mono break-all text-foreground">{resaleSuccessDialog.txHash}</div>
+            <a
+              href={`https://stellar.expert/explorer/testnet/tx/${resaleSuccessDialog.txHash}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1 text-purple-600 hover:text-purple-700 font-semibold mt-1"
+            >
+              <ExternalLink className="w-3 h-3" />
+              Ver en Stellar Explorer
+            </a>
+          </div>
+        ) : null}
+
+        <DialogFooter>
+          <Button onClick={() => setResaleSuccessDialog(null)} className="bg-purple-600 hover:bg-purple-700 text-white">
+            Listo
           </Button>
         </DialogFooter>
       </DialogContent>

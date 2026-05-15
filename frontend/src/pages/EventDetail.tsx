@@ -3,12 +3,21 @@ import { useParams, Link, useNavigate } from "react-router-dom";
 import { Header } from "@/components/layout/Header";
 import { Footer } from "@/components/layout/Footer";
 import { getEventBySlug, getEventTicketTypes, getRelatedEvents, type EventData, type LiveTicket } from "@/data/events";
-import { MapPin, Calendar, Clock, ChevronLeft, User, Info, ShieldCheck, Lock, Loader2 } from "lucide-react";
+import { MapPin, Calendar, Clock, ChevronLeft, User, Info, ShieldCheck, Lock, Loader2, ExternalLink, CheckCircle2 } from "lucide-react";
 import { EventCard } from "@/components/ui/EventCard";
 import { useAppContext, type ResaleFlowStatus } from "@/context/AppContext";
 import { useXlmPrice, formatCOP } from "@/hooks/useXlmPrice";
 import { getOfficialPurchasePath } from "@/lib/purchaseRoute";
 import { useToast } from "@/hooks/use-toast";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
 
 const EventDetail = () => {
   const { id: slug } = useParams<{ id: string }>();
@@ -20,6 +29,7 @@ const EventDetail = () => {
   const [buyingId, setBuyingId] = useState<string | null>(null);
   const [cancellingId, setCancellingId] = useState<string | null>(null);
   const [flowStatusByTicketId, setFlowStatusByTicketId] = useState<Record<string, ResaleFlowStatus>>({});
+  const [successDialog, setSuccessDialog] = useState<{ kind: "buy" | "cancel"; txHash?: string } | null>(null);
   const { buyResaleTicket, cancelResaleListing, linkWallet, walletAddress } = useAppContext();
   const { toast } = useToast();
   const xlmCop = useXlmPrice();
@@ -192,6 +202,7 @@ const EventDetail = () => {
                                   title: "Reventa cancelada",
                                   description: "Tu boleto fue retirado del mercado P2P.",
                                 });
+                                setSuccessDialog({ kind: "cancel", txHash: result.txHash });
                                 setLiveTickets((prev) => prev.filter((t) => t.id !== lt.id));
                               } else {
                                 toast({
@@ -241,6 +252,7 @@ const EventDetail = () => {
                                   title: "Compra confirmada",
                                   description: `Tu boleto fue reconciliado por el backend${buyResult.txHash ? ` · Tx ${buyResult.txHash.slice(0, 12)}...` : ""}.`,
                                 });
+                                setSuccessDialog({ kind: "buy", txHash: buyResult.txHash });
                                 setLiveTickets((prev) => prev.filter((t) => t.id !== lt.id));
                               } else {
                                 toast({
@@ -284,6 +296,49 @@ const EventDetail = () => {
         )}
       </main>
       <Footer />
+
+      <Dialog open={!!successDialog} onOpenChange={(open) => !open && setSuccessDialog(null)}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <CheckCircle2 className="w-5 h-5 text-green-600" />
+              {successDialog?.kind === "buy" ? "Compra P2P confirmada" : "Reventa cancelada"}
+            </DialogTitle>
+            <DialogDescription>
+              {successDialog?.kind === "buy"
+                ? "Tu boleto aparecerá en Mis Entradas cuando el indexer termine de reflejar la compra."
+                : "Tu boleto se retiró del mercado P2P y vuelve a quedar disponible en Mis Entradas."}
+            </DialogDescription>
+          </DialogHeader>
+
+          {successDialog?.txHash ? (
+            <div className="rounded-lg bg-muted/50 p-3 space-y-1 text-xs">
+              <div className="text-muted-foreground">Transaction hash</div>
+              <div className="font-mono break-all text-foreground">{successDialog.txHash}</div>
+              <a
+                href={`https://stellar.expert/explorer/testnet/tx/${successDialog.txHash}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 text-purple-600 hover:text-purple-700 font-semibold mt-1"
+              >
+                <ExternalLink className="w-3 h-3" />
+                Ver en Stellar Explorer
+              </a>
+            </div>
+          ) : null}
+
+          <DialogFooter className="gap-2 sm:gap-0">
+            {successDialog?.kind === "buy" ? (
+              <Button variant="outline" onClick={() => navigate("/mi-cuenta/entradas")}>
+                Ir a Mis Entradas
+              </Button>
+            ) : null}
+            <Button onClick={() => setSuccessDialog(null)} className="bg-purple-600 hover:bg-purple-700 text-white">
+              Listo
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };
