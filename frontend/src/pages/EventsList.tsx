@@ -22,6 +22,13 @@ const EventsList = () => {
   const [results, setResults] = useState<EventData[]>([]);
 
   useEffect(() => {
+    setCat(presetCategory);
+    setQuery("");
+    setCity("");
+    setSort("");
+  }, [presetCategory]);
+
+  useEffect(() => {
     void (async () => {
       try {
         const sortMap: Record<string, string> = { date: "date_asc", "price-asc": "price_asc", "price-desc": "price_desc" };
