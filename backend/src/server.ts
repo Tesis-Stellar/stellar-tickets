@@ -384,12 +384,53 @@ const eventIncludes = {
   event_ticket_types: { where: { is_active: true } },
 };
 
-// GET /api/events - List published events
+// GET /api/events - List published events (supports ?search=&category=&city=&sort=)
 app.get('/api/events', async (req, res) => {
   try {
-    const events = await cached('events:all', 60_000, () =>
+    const { search, category, city, sort } = req.query as Record<string, string | undefined>;
+
+    let events = await cached('events:all', 60_000, () =>
       prisma.events.findMany({ where: { status: 'PUBLISHED' }, include: eventIncludes, orderBy: { starts_at: 'asc' } })
     );
+
+    if (search) {
+      const q = search.toLowerCase();
+      events = events.filter(e =>
+        (e.title ?? '').toLowerCase().includes(q) ||
+        (e.description ?? '').toLowerCase().includes(q)
+      );
+    }
+
+    if (category) {
+      const cat = category.toLowerCase();
+      events = events.filter(e =>
+        ((e as any).event_categories?.display_name ?? '').toLowerCase() === cat ||
+        ((e as any).event_categories?.code ?? '').toLowerCase() === cat
+      );
+    }
+
+    if (city) {
+      const c = city.toLowerCase();
+      events = events.filter(e =>
+        ((e as any).venues?.cities?.city_name ?? '').toLowerCase() === c
+      );
+    }
+
+    if (sort === 'price_asc' || sort === 'price_desc') {
+      events = [...events].sort((a, b) => {
+        const minPrice = (ev: typeof a) => {
+          const prices = ((ev as any).event_ticket_types ?? []).map((t: any) => Number(t.price_amount)).filter((p: number) => p > 0);
+          return prices.length ? Math.min(...prices) : Infinity;
+        };
+        const diff = minPrice(a) - minPrice(b);
+        return sort === 'price_asc' ? diff : -diff;
+      });
+    } else if (sort === 'date_asc') {
+      events = [...events].sort((a, b) =>
+        new Date((a as any).starts_at ?? 0).getTime() - new Date((b as any).starts_at ?? 0).getTime()
+      );
+    }
+
     res.json(events.map(toEventDto));
   } catch (error: any) {
     console.error(error);
