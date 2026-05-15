@@ -29,6 +29,9 @@ export interface PurchasedTicket {
   version?: number;
   ownerWallet?: string;
   resalePrice?: number;
+  acquiredViaResale?: boolean;
+  seatLabel?: string | null;
+  sectionName?: string | null;
   nftContractAddress?: string | null;
   nftTokenId?: number | null;
   qrPayload?: string | null;
@@ -61,6 +64,9 @@ type TicketApiResponse = {
   version?: number;
   ownerWallet?: string;
   resalePrice?: number | null;
+  acquiredViaResale?: boolean;
+  seatLabel?: string | null;
+  sectionName?: string | null;
   qrPayload?: string | null;
 };
 
@@ -355,6 +361,9 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         version: ticket.version,
         ownerWallet: ticket.ownerWallet,
         resalePrice: ticket.resalePrice ?? undefined,
+        acquiredViaResale: ticket.acquiredViaResale ?? false,
+        seatLabel: ticket.seatLabel ?? null,
+        sectionName: ticket.sectionName ?? null,
         nftContractAddress: (ticket as any).nftContractAddress ?? null,
         nftTokenId: (ticket as any).nftTokenId ?? null,
         qrPayload: ticket.qrPayload ?? null,

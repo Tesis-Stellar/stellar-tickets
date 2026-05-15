@@ -2985,7 +2985,7 @@ app.get('/api/tickets', authMiddleware, async (req, res) => {
             },
             event_seat_inventory: {
               include: {
-                seats: true,
+                seats: { include: { venue_sections: true } },
                 event_ticket_types: {
                   include: { events: { include: eventIncludes } },
                 },
@@ -3015,9 +3015,33 @@ app.get('/api/tickets', authMiddleware, async (req, res) => {
       : [];
     const eventByContract = new Map(fallbackEvents.map((event) => [event.contract_address, event]));
 
-    res.json(tickets.map((t) => {
+    const p2pLookups = await Promise.all(
+      tickets.map(async (t) => {
+        if (
+          typeof t.version === 'number' &&
+          t.version > 0 &&
+          t.contract_address &&
+          t.ticket_root_id != null
+        ) {
+          const prev = await prisma.tickets.findFirst({
+            where: {
+              contract_address: t.contract_address,
+              ticket_root_id: t.ticket_root_id,
+              version: t.version - 1,
+            },
+            select: { resale_price: true },
+          });
+          return prev?.resale_price ? Number(prev.resale_price) : null;
+        }
+        return null;
+      })
+    );
+
+    res.json(tickets.map((t, idx) => {
       const tt = t.order_items?.event_ticket_types ?? t.order_items?.event_seat_inventory?.event_ticket_types;
       const evt = tt?.events ?? (t.contract_address ? eventByContract.get(t.contract_address) : undefined);
+      const seat = t.order_items?.event_seat_inventory?.seats;
+      const acquiredViaResale = typeof t.version === 'number' && t.version > 0;
       const signedQrPayload = t.contract_address && t.ticket_root_id != null && t.version != null && evt?.id
         ? JSON.stringify(buildSignedTicketQrPayload({
             contractAddress: t.contract_address,
@@ -3038,6 +3062,8 @@ app.get('/api/tickets', authMiddleware, async (req, res) => {
           serviceFee: Number(tt.service_fee_amount),
         } : undefined,
         event: evt ? toEventDto(evt) : undefined,
+        seatLabel: seat?.seat_label ?? null,
+        sectionName: seat?.venue_sections?.section_name ?? null,
         // Web3 fields
         isSecuredOnChain: Boolean(t.contract_address),
         isForSale: t.is_for_sale ?? false,
@@ -3045,7 +3071,10 @@ app.get('/api/tickets', authMiddleware, async (req, res) => {
         ticketRootId: t.ticket_root_id,
         version: t.version,
         ownerWallet: t.owner_wallet,
-        resalePrice: t.resale_price ? Number(t.resale_price) : null,
+        resalePrice: acquiredViaResale
+          ? p2pLookups[idx]
+          : t.resale_price ? Number(t.resale_price) : null,
+        acquiredViaResale,
         nftContractAddress: (evt as any)?.nft_contract_address ?? null,
         nftTokenId: (t as any).nft_token_id ?? null,
         qrPayload: signedQrPayload,
