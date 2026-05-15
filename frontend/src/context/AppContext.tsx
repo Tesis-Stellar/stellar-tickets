@@ -153,7 +153,7 @@ interface AppState {
   register: (user: { name: string; email: string; phone: string; document: string; password: string }) => Promise<boolean>;
   logout: () => void;
   updateProfile: (data: Partial<UserData>) => Promise<void>;
-  secureTicketOnChain: (ticketId: string) => Promise<{ success: boolean; txHash?: string; nftContractAddress?: string | null; error?: string }>;
+  secureTicketOnChain: (ticketId: string) => Promise<{ success: boolean; txHash?: string; nftContractAddress?: string | null; nftTokenId?: number | null; warning?: string; error?: string }>;
   listTicketForSale: (ticketId: string, priceXLM: number, options?: ResaleFlowOptions) => Promise<{ success: boolean; txHash?: string; error?: string }>;
   cancelResaleListing: (ticketId: string, options?: ResaleFlowOptions) => Promise<{ success: boolean; txHash?: string; error?: string }>;
   buyResaleTicket: (contractAddress: string, ticketRootId: number, buyerPublicKey: string, currentVersion: number, options?: ResaleFlowOptions) => Promise<{ success: boolean; txHash?: string; error?: string }>;
@@ -781,7 +781,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   }, []);
 
   const secureTicketOnChain = useCallback(
-    async (ticketId: string): Promise<{ success: boolean; txHash?: string; nftContractAddress?: string | null; error?: string }> => {
+    async (ticketId: string): Promise<{ success: boolean; txHash?: string; nftContractAddress?: string | null; nftTokenId?: number | null; warning?: string; error?: string }> => {
       try {
         const result = await apiFetch<{
           success: boolean;
@@ -816,7 +816,15 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         );
         setBalanceVersion((v) => v + 1);
 
-        return { success: true, txHash: result.txHash, nftContractAddress: result.nftContractAddress };
+        return {
+          success: true,
+          txHash: result.txHash,
+          nftContractAddress: result.nftContractAddress,
+          nftTokenId: result.nftTokenId ?? null,
+          warning: result.nftContractAddress && result.nftTokenId == null
+            ? "La boleta quedó asegurada en blockchain, pero el NFT coleccionable no se pudo mintear todavía."
+            : undefined,
+        };
       } catch (error: any) {
         const msg = error.message || "Error asegurando ticket en blockchain";
         return { success: false, error: msg };

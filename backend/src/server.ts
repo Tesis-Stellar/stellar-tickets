@@ -91,7 +91,16 @@ async function invokeSoroban(
   fnName: string,
   args: xdr.ScVal[],
 ): Promise<SorobanRpc.Api.GetTransactionResponse> {
-  const accResp = await sorobanServer.getAccount(signer.publicKey());
+  let accResp: Awaited<ReturnType<typeof sorobanServer.getAccount>>;
+  try {
+    accResp = await sorobanServer.getAccount(signer.publicKey());
+  } catch (error: any) {
+    const message = String(error?.message ?? error);
+    if (message.includes('Account not found')) {
+      throw new Error(`Cuenta ORGANIZER_SECRET no existe o no esta fondeada en testnet: ${signer.publicKey()}`);
+    }
+    throw error;
+  }
   const account = new Account(accResp.accountId(), accResp.sequenceNumber());
   const tx = new TransactionBuilder(account, {
     fee: '10000000',
@@ -115,7 +124,15 @@ async function invokeSoroban(
     res = await sorobanServer.getTransaction(send.hash);
     attempts++;
   } while (res.status === 'NOT_FOUND' && attempts < 30);
-  if (res.status !== 'SUCCESS') throw new Error(`Soroban tx failed: ${res.status}`);
+  if (res.status !== 'SUCCESS') {
+    let diagnostics = '';
+    try {
+      diagnostics = JSON.stringify((res as any).diagnosticEvents ?? (res as any).resultXdr ?? '');
+    } catch {
+      diagnostics = '';
+    }
+    throw new Error(`Soroban tx failed: ${res.status}${diagnostics ? ` diagnostics=${diagnostics.slice(0, 500)}` : ''}`);
+  }
   return res;
 }
 
@@ -312,6 +329,56 @@ async function createTransactionIntent(input: {
     },
     select: { id: true, expires_at: true },
   });
+}
+
+async function mintTicketNftWithBump(input: {
+  nftContractAddress: string;
+  contractAddress: string;
+  ticketRootId: number;
+  buyerWallet: string;
+}): Promise<{ nftTokenId: number; nftMintTxHash: string | null }> {
+  if (!organizerKeypair) {
+    throw new Error('Blockchain no configurada');
+  }
+
+  const attemptMint = async (tokenId: number) => {
+    const tokenUri = `${PUBLIC_BASE_URL}/api/nft/metadata/${input.nftContractAddress}/${tokenId}`;
+    const result = await invokeSoroban(
+      organizerKeypair,
+      input.nftContractAddress,
+      'mint',
+      [
+        new Address(input.buyerWallet).toScVal(),
+        nativeToScVal(tokenId, { type: 'u32' }),
+        nativeToScVal(tokenUri, { type: 'string' }),
+      ],
+    );
+    return (result as any).txHash ?? null;
+  };
+
+  try {
+    return {
+      nftTokenId: input.ticketRootId,
+      nftMintTxHash: await attemptMint(input.ticketRootId),
+    };
+  } catch (mintErr: any) {
+    const msg = String(mintErr?.message ?? '');
+    if (!msg.includes('TokenYaExiste') && !msg.includes('#3')) {
+      throw mintErr;
+    }
+
+    const maxAgg = await prisma.tickets.aggregate({
+      where: { contract_address: input.contractAddress } as any,
+      _max: { nft_token_id: true } as any,
+    });
+    const maxId = ((maxAgg as any)._max?.nft_token_id as number | null) ?? 0;
+    const bumped = Math.max(maxId, input.ticketRootId) + 1;
+
+    return {
+      nftTokenId: bumped,
+      nftMintTxHash: await attemptMint(bumped),
+    };
+  }
 }
 
 // GET /api/tickets/qr/:assetCode.png — public PNG referenced by stellar.toml.
@@ -904,11 +971,6 @@ app.post('/api/transactions/secure-ticket', authMiddleware, async (req, res) => 
       sendApiError(req, res, 403, 'FORBIDDEN', 'No autorizado');
       return;
     }
-    if (ticket.contract_address) {
-      sendApiError(req, res, 409, 'CONFLICT', 'Ticket ya asegurado en blockchain');
-      return;
-    }
-
     const ownerUser = await prisma.users.findUnique({
       where: { id: (req as any).userId },
       select: { wallet_address: true },
@@ -920,8 +982,59 @@ app.post('/api/transactions/secure-ticket', authMiddleware, async (req, res) => 
 
     const ticketType = ticket.order_items?.event_ticket_types ?? ticket.order_items?.event_seat_inventory?.event_ticket_types;
     const event = ticketType?.events;
+    if (ticket.contract_address && ticket.nft_token_id == null && ticket.ticket_root_id != null && ticket.owner_wallet) {
+      const eventForNft = event?.nft_contract_address
+        ? event
+        : await prisma.events.findFirst({
+            where: { contract_address: ticket.contract_address },
+            select: { id: true, nft_contract_address: true },
+          });
+
+      if (!eventForNft?.nft_contract_address) {
+        sendApiError(req, res, 400, 'BAD_REQUEST', 'Evento sin nft_contract_address (NFT no desplegado)');
+        return;
+      }
+
+      try {
+        const minted = await mintTicketNftWithBump({
+          nftContractAddress: eventForNft.nft_contract_address,
+          contractAddress: ticket.contract_address,
+          ticketRootId: ticket.ticket_root_id,
+          buyerWallet: ticket.owner_wallet,
+        });
+        await prisma.tickets.update({
+          where: { id: ticketId },
+          data: { nft_token_id: minted.nftTokenId } as any,
+        });
+        res.json({
+          success: true,
+          txHash: minted.nftMintTxHash,
+          contractAddress: ticket.contract_address,
+          ticketRootId: ticket.ticket_root_id,
+          chainEventId: deriveChainEventId(eventForNft.id),
+          nftContractAddress: eventForNft.nft_contract_address,
+          nftTokenId: minted.nftTokenId,
+          nftMintTxHash: minted.nftMintTxHash,
+          networkPassphrase: NETWORK_PASSPHRASE,
+          network: 'TESTNET',
+          completedPendingNft: true,
+        });
+        return;
+      } catch (mintErr: any) {
+        const detail = String(mintErr?.message ?? 'Error desconocido');
+        console.warn('[NFT] pending mint retry failed:', detail);
+        sendApiError(req, res, 502, 'SOROBAN_FAILED', `Ticket asegurado, pero no fue posible mintear el NFT pendiente: ${detail.slice(0, 180)}`);
+        return;
+      }
+    }
+
     if (!event?.contract_address) {
       sendApiError(req, res, 400, 'BAD_REQUEST', 'Evento sin contrato desplegado');
+      return;
+    }
+
+    if (ticket.contract_address) {
+      sendApiError(req, res, 409, 'CONFLICT', 'Ticket ya asegurado en blockchain');
       return;
     }
 
@@ -1131,20 +1244,15 @@ app.post('/api/transactions/secure-ticket', authMiddleware, async (req, res) => 
     let nftTokenId: number | null = null;
     if (nftContractAddress) {
       try {
-        const tokenUri = `${PUBLIC_BASE_URL}/api/nft/metadata/${nftContractAddress}/${ticketRootId}`;
-        const mintRes = await invokeSoroban(
-          organizerKeypair,
+        const minted = await mintTicketNftWithBump({
           nftContractAddress,
-          'mint',
-          [
-            new Address(buyerWallet).toScVal(),
-            nativeToScVal(ticketRootId, { type: 'u32' }),
-            nativeToScVal(tokenUri, { type: 'string' }),
-          ],
-        );
-        nftMintTxHash = (mintRes as any).txHash ?? null;
-        nftTokenId = ticketRootId;
-        console.log(`[NFT] Minted token_id=${ticketRootId} on ${nftContractAddress.slice(0,8)}… to ${buyerWallet.slice(0,8)}…`);
+          contractAddress,
+          ticketRootId,
+          buyerWallet,
+        });
+        nftMintTxHash = minted.nftMintTxHash;
+        nftTokenId = minted.nftTokenId;
+        console.log(`[NFT] Minted token_id=${nftTokenId} on ${nftContractAddress.slice(0,8)}… to ${buyerWallet.slice(0,8)}…`);
       } catch (mintErr: any) {
         console.warn('[NFT] mint failed (graceful degradation, ticket still secured):', mintErr?.message);
       }

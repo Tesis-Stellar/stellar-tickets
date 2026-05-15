@@ -30,6 +30,7 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
   const [resalePriceInput, setResalePriceInput] = useState("");
   const [nftDialogOpen, setNftDialogOpen] = useState(false);
   const [justMintedNftAddress, setJustMintedNftAddress] = useState<string | null>(null);
+  const [justMintedNftTokenId, setJustMintedNftTokenId] = useState<number | null>(null);
   const [resaleFlowStatus, setResaleFlowStatus] = useState<ResaleFlowStatus | null>(null);
 
   const parsedPriceCOP = Number(resalePriceInput.replace(/[^\d]/g, ""));
@@ -68,9 +69,15 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
         setIsMinted(true);
         setTxHash(result.txHash ?? null);
         const nftAddr = result.nftContractAddress ?? null;
-        if (nftAddr) {
+        if (nftAddr && result.nftTokenId != null) {
           setJustMintedNftAddress(nftAddr);
+          setJustMintedNftTokenId(result.nftTokenId);
           setNftDialogOpen(true);
+        } else if (result.warning) {
+          toast({
+            title: "Boleto asegurado",
+            description: result.warning,
+          });
         }
       } else {
         toast({
@@ -235,15 +242,27 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
                   <ExternalLink className="w-3 h-3" /> Ver en Stellar Explorer
                 </a>
               )}
-              {ticket.nftContractAddress && (
+              {ticket.nftContractAddress && ticket.nftTokenId != null && (
                 <button
                   onClick={() => {
                     setJustMintedNftAddress(ticket.nftContractAddress ?? null);
+                    setJustMintedNftTokenId(ticket.nftTokenId ?? null);
                     setNftDialogOpen(true);
                   }}
                   className="inline-flex items-center gap-1 px-2 py-1 text-[10px] text-purple-400 hover:text-purple-300 transition-colors"
                 >
                   Ver NFT en Freighter
+                </button>
+              )}
+              {ticket.nftContractAddress && ticket.nftTokenId == null && (
+                <button
+                  onClick={claimTicket}
+                  disabled={isMinting}
+                  className={`inline-flex items-center gap-1 px-2 py-1 text-[10px] transition-colors ${
+                    isMinting ? "text-muted-foreground" : "text-purple-400 hover:text-purple-300"
+                  }`}
+                >
+                  {isMinting ? "Creando NFT..." : "Crear NFT en Freighter"}
                 </button>
               )}
             </div>
@@ -253,7 +272,7 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
                 disabled={isListing}
                 className={`inline-flex items-center gap-1 px-3 py-1 text-xs font-black rounded-lg transition-colors shadow-md shadow-blue-900/20 w-fit ${isListing ? "bg-muted text-muted-foreground" : "bg-blue-600 hover:bg-blue-700 text-white"}`}
               >
-                {isListing && resaleFlowStatus ? resaleStatusLabel[resaleFlowStatus] : isListing ? "Listando en Soroban..." : "Revender NFT"}
+                {isListing && resaleFlowStatus ? resaleStatusLabel[resaleFlowStatus] : isListing ? "Listando en Soroban..." : "Vender boleta"}
               </button>
             )}
             {(isListing || isCancelling) && resaleFlowStatus ? (
@@ -308,7 +327,7 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
           <ol className="text-xs text-muted-foreground list-decimal pl-4 space-y-1">
             <li>Abre Freighter → pestaña <b>Collectibles</b></li>
             <li>"Add Collectible" → pega la dirección de arriba</li>
-            <li>Token ID: <span className="font-mono">{ticket.ticketRootId ?? "—"}</span></li>
+            <li>Token ID: <span className="font-mono">{justMintedNftTokenId ?? ticket.nftTokenId}</span></li>
           </ol>
         </div>
         <DialogFooter className="gap-2 sm:gap-0">

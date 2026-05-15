@@ -3,10 +3,13 @@
  *
  * Para cada evento PUBLISHED con contract_address (event_contract ya desplegado)
  * pero SIN nft_contract_address: deploya un ticket_nft_contract, lo inicializa
- * con organizer como admin, y persiste en DB.
+ * con el ORGANIZER_SECRET activo del backend como admin, y persiste en DB.
  *
  * Run (defaults to .env):
  *   cd backend && npx tsx scripts/deploy-nft-contracts.ts
+ *
+ * Redeploy NFT contracts even if the event already has one:
+ *   cd backend && REDEPLOY_NFT_CONTRACTS=true npx tsx scripts/deploy-nft-contracts.ts
  *
  * Run con prod DB:
  *   cd backend && ENV_FILE=.env.prod npx tsx scripts/deploy-nft-contracts.ts
@@ -33,6 +36,7 @@ const RPC_URL = process.env.SOROBAN_RPC_URL || 'https://soroban-testnet.stellar.
 const NETWORK_PASSPHRASE = Networks.TESTNET;
 const WASM_DIR = path.resolve(__dirname, '../../contracts/wasm');
 const server = new SorobanRpc.Server(RPC_URL);
+const REDEPLOY_NFT_CONTRACTS = process.env.REDEPLOY_NFT_CONTRACTS === 'true';
 
 async function getAccount(publicKey: string): Promise<Account> {
   const r = await server.getAccount(publicKey);
@@ -141,9 +145,11 @@ function deriveSymbol(slug: string): string {
       if (m) envVars[m[1]] = m[2].trim();
     }
     const admin = Keypair.fromSecret(envVars['ADMIN_SECRET']);
-    const organizer = Keypair.fromSecret(envVars['ORGANIZER_SECRET']);
+    const organizerSecret = process.env.ORGANIZER_SECRET || envVars['ORGANIZER_SECRET'];
+    const organizer = Keypair.fromSecret(organizerSecret);
     console.log(`Admin:     ${admin.publicKey()}`);
     console.log(`Organizer: ${organizer.publicKey()}`);
+    console.log(`Redeploy:  ${REDEPLOY_NFT_CONTRACTS ? 'yes' : 'no'}`);
 
     const wasmPath = path.join(WASM_DIR, 'ticket_nft_contract.wasm');
     if (!fs.existsSync(wasmPath)) throw new Error(`WASM not found: ${wasmPath}`);
@@ -159,7 +165,7 @@ function deriveSymbol(slug: string): string {
     for (let i = 0; i < events.length; i++) {
       const ev = events[i];
       const evAny = ev as any;
-      if (evAny.nft_contract_address) {
+      if (evAny.nft_contract_address && !REDEPLOY_NFT_CONTRACTS) {
         console.log(`[${i + 1}/${events.length}] ${ev.title} — ya tiene NFT (${evAny.nft_contract_address.slice(0, 10)}…), skip`);
         continue;
       }
