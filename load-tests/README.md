@@ -65,6 +65,32 @@ SCAN_QR_TOKEN='ey...' \
 k6 run load-tests/scanner.k6.js
 ```
 
+### Checkout guard
+
+Modo no destructivo: requiere una cuenta de prueba autenticada con carrito activo vacio. Valida lectura de carrito y rechazos esperados de checkout vacio.
+
+```bash
+BASE_URL=http://localhost:3000 \
+CHECKOUT_EMAIL=<EMAIL_DE_PRUEBA_CON_CARRITO_VACIO> \
+CHECKOUT_PASSWORD='<PASSWORD_DE_PRUEBA>' \
+k6 run load-tests/checkout-guard.k6.js
+```
+
+Por defecto usa 20 requests por minuto durante 1 minuto. Si la cuenta tiene items en el carrito, el script se detiene para evitar crear ordenes.
+
+### Transaction guards
+
+Modo no destructivo: valida que endpoints Web3 sensibles rechacen requests incompletos sin tocar Soroban ni crear eventos.
+
+```bash
+BASE_URL=http://localhost:3000 \
+TRANSACTION_EMAIL=<EMAIL_DE_PRUEBA> \
+TRANSACTION_PASSWORD='<PASSWORD_DE_PRUEBA>' \
+k6 run load-tests/transactions-guard.k6.js
+```
+
+Por defecto usa 8 iteraciones por minuto durante 1 minuto. Cada iteracion ejecuta 3 requests, para mantenerse por debajo del rate limit transaccional.
+
 ## Parametros comunes
 
 - `BASE_URL`: API objetivo. Default: `http://localhost:3000`.

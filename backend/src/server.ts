@@ -2566,7 +2566,29 @@ function markHeldSeatInventoryAsSoldOrFail(inventoryIds: string[], expectedCount
   `;
 }
 
+let seatHoldReleaseLastRunAt = 0;
+let seatHoldReleaseInFlight: Promise<{ released: number }> | null = null;
+const SEAT_HOLD_RELEASE_INTERVAL_MS = 5_000;
+
 async function releaseExpiredSeatHolds(now = new Date()) {
+  if (seatHoldReleaseInFlight) {
+    return seatHoldReleaseInFlight;
+  }
+
+  if (now.getTime() - seatHoldReleaseLastRunAt < SEAT_HOLD_RELEASE_INTERVAL_MS) {
+    return { released: 0 };
+  }
+
+  seatHoldReleaseLastRunAt = now.getTime();
+  seatHoldReleaseInFlight = releaseExpiredSeatHoldsNow(now)
+    .finally(() => {
+      seatHoldReleaseInFlight = null;
+    });
+
+  return seatHoldReleaseInFlight;
+}
+
+async function releaseExpiredSeatHoldsNow(now = new Date()) {
   const expiredHolds = await prisma.seat_holds.findMany({
     where: { status: 'ACTIVE', expires_at: { lte: now } },
     select: { id: true, cart_id: true, event_seat_inventory_id: true },

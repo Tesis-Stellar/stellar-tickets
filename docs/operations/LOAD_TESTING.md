@@ -25,6 +25,8 @@ Se selecciono k6 por cuatro razones:
 | QR NFT | `GET /api/nft/qr/:contract/:tokenId.png` | Sirve la imagen escaneable asociada al NFT. |
 | Login | `POST /api/auth/login` | Valida un flujo critico de autenticacion sin depender de wallet. |
 | Scanner | `POST /api/admin/scan` | Es el flujo operativo mas sensible durante la entrada al evento. |
+| Checkout guard | `GET /api/cart`, `POST /api/checkout/preview`, `POST /api/checkout/confirm` | Valida que checkout responda de forma estable ante carrito vacio, sin crear ordenes. |
+| Transaction guards | `POST /api/transactions/submit`, `POST /api/transactions/submit-classic`, `POST /api/transactions/transfer-nft` | Valida rechazos controlados en rutas Web3 sensibles sin tocar Soroban. |
 
 ## Justificacion de concurrencia y duracion
 
@@ -35,6 +37,8 @@ Los numeros se eligieron para representar una demo academica y un evento pequeno
 | Lectura publica | 20 | 1 minuto | Simula varios usuarios navegando catalogo, detalle y recursos NFT al mismo tiempo. Es la ruta con mas probabilidad de concurrencia. |
 | Login | 10 req/min, 5 VUs prealocados | 1 minuto | Login usa hashing, base de datos y rate limit de seguridad; se mide con tasa controlada para no confundir proteccion antiabuso con falla de rendimiento. |
 | Scanner | 30 req/min, 5 VUs prealocados | 1 minuto | Representa varios validadores o intentos simultaneos en puerta sin exceder el rate limit definido para scanner. |
+| Checkout guard | 20 req/min, 5 VUs prealocados | 1 minuto | Checkout es mutante; por defecto se prueba con carrito vacio para medir validacion, autenticacion y consultas sin crear ordenes. |
+| Transaction guards | 8 iter/min, 5 VUs prealocados | 1 minuto | Cada iteracion ejecuta 3 requests, para un maximo aproximado de 24 requests/min y sin exceder el rate limit transaccional de 30/min. |
 
 La duracion de 30 a 60 segundos permite estabilizar mediciones de percentil sin convertir la prueba en una carga prolongada sobre infraestructura gratuita o compartida.
 
@@ -49,9 +53,19 @@ La duracion de 30 a 60 segundos permite estabilizar mediciones de percentil sin 
 | `/api/nft/qr/:contract/:tokenId.png` | p95 menor a 1000 ms |
 | `/api/auth/login` | p95 menor a 3000 ms |
 | `/api/admin/scan` | p95 menor a 800 ms |
+| `/api/cart` | p95 menor a 3000 ms |
+| `/api/checkout/preview` carrito vacio | p95 menor a 2500 ms |
+| `/api/checkout/confirm` carrito vacio | p95 menor a 5000 ms |
+| `/api/transactions/submit` rechazo temprano | p95 menor a 1000 ms |
+| `/api/transactions/submit-classic` rechazo temprano | p95 menor a 800 ms |
+| `/api/transactions/transfer-nft` rechazo temprano | p95 menor a 1000 ms |
 | Todos | tasa de error menor a 1% |
 
 Los codigos `400` y `409` pueden ser resultados esperados en scanner cuando se prueba QR invalido, usado o duplicado. En esos casos no se interpretan como fallo de disponibilidad, sino como rechazo funcional correcto.
+
+Los codigos `400`, `403`, `409` y `503` pueden ser resultados esperados en transaction guards cuando el request se rechaza antes de llegar a Soroban. La prueba mide estabilidad y proteccion de borde, no confirmacion on-chain.
+
+Los umbrales de checkout son mas amplios porque el escenario no destructivo recorre carrito, validacion de checkout y limpieza de reservas contra PostgreSQL remoto antes de rechazar. Para checkout real de produccion deberia existir una prueba separada con fixtures temporales e infraestructura dedicada.
 
 ## Comandos
 
@@ -83,12 +97,31 @@ SCANNER_PASSWORD='<PASSWORD_DE_PRUEBA>' \
 k6 run load-tests/scanner.k6.js
 ```
 
+Checkout no destructivo:
+
+```bash
+BASE_URL=http://localhost:3000 \
+CHECKOUT_EMAIL=<EMAIL_DE_PRUEBA_CON_CARRITO_VACIO> \
+CHECKOUT_PASSWORD='<PASSWORD_DE_PRUEBA>' \
+k6 run load-tests/checkout-guard.k6.js
+```
+
+Transaction guards:
+
+```bash
+BASE_URL=http://localhost:3000 \
+TRANSACTION_EMAIL=<EMAIL_DE_PRUEBA> \
+TRANSACTION_PASSWORD='<PASSWORD_DE_PRUEBA>' \
+k6 run load-tests/transactions-guard.k6.js
+```
+
 ## Limitaciones
 
 - No mide rendimiento de Soroban Testnet ni del RPC publico.
 - No automatiza Freighter, porque la firma de wallet es interactiva.
 - No debe ejecutarse con alta concurrencia contra la base de datos de demo sin acordar una ventana de prueba.
-- Checkout confirm y compra de reventa no se incluyen como carga automatica por ser flujos que crean datos y pueden contaminar la base de demo.
+- Checkout real, compra de reventa, mint NFT y transferencia NFT real no se ejecutan por defecto como carga automatica porque crean datos, consumen tickets o dependen de Soroban Testnet.
+- Para medir esos flujos se deben crear fixtures temporales, usar idempotency keys controladas y limpiar la base despues de la corrida.
 
 ## Evidencia esperada
 

@@ -35,6 +35,7 @@ Documentación operativa del proyecto.
 - `operations/SECRETS_AND_CUSTODY.md`
 - `operations/FRONTEND_LINT_BASELINE.md`
 - `operations/LOAD_TESTING.md`
+- `operations/QUEUE_SYSTEM_PLAN.md`
 
 ### `setup/`
 Guías de preparación y actualización del entorno.
@@ -70,7 +71,9 @@ Este archivo se mantiene temporalmente en la raíz de `docs/` hasta decidir si r
 6. `operations/ENVIRONMENTS.md`
 7. `operations/RUNTIME_DEPLOYMENT.md`
 8. `operations/SECRETS_AND_CUSTODY.md`
-9. `setup/DOCKER_CLI_WORKFLOW.md`
+9. `operations/LOAD_TESTING.md`
+10. `operations/QUEUE_SYSTEM_PLAN.md`
+11. `setup/DOCKER_CLI_WORKFLOW.md`
 
 ## Nota
 
