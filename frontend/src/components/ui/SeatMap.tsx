@@ -1,4 +1,4 @@
-import { useMemo, useCallback } from "react";
+import { useMemo, useCallback, useState, type PointerEvent } from "react";
 
 // ── Public types ───────────────────────────────────────────────────────────
 
@@ -134,7 +134,7 @@ function SeatBtn({ seat, sectionId, sectionIndex, sectionMap, selectedIds, maxRe
   const disabled = isOcc || isBlockedSeat || isCapped;
   const p = PALETTE[sectionIndex % PALETTE.length];
   const section = sectionMap[sectionId];
-  const dim = size === "xs" ? "w-5 h-5 text-[7px]" : "w-6 h-6 text-[8px]";
+  const dim = size === "xs" ? "w-4 h-4 text-[7px]" : "w-6 h-6 text-[8px]";
 
   let bgStyle: React.CSSProperties = {};
   let extraClass = "";
@@ -148,11 +148,14 @@ function SeatBtn({ seat, sectionId, sectionIndex, sectionMap, selectedIds, maxRe
     };
     extraClass = "scale-110 cursor-pointer";
     title = "Seleccionado";
-  } else if (isOcc) {
-    extraClass = "bg-muted-foreground/20 text-transparent cursor-not-allowed";
-    title = seat.status === "SOLD" ? "Asiento vendido" : "Asiento reservado";
+  } else if (seat.status === "SOLD") {
+    extraClass = "bg-red-500 text-white cursor-not-allowed opacity-90";
+    title = "Asiento vendido";
+  } else if (seat.status === "HELD") {
+    extraClass = "bg-amber-400 text-amber-950 cursor-not-allowed opacity-90";
+    title = "Asiento reservado";
   } else if (isBlockedSeat) {
-    extraClass = "bg-muted/40 text-transparent cursor-not-allowed opacity-40";
+    extraClass = "bg-slate-400 text-white cursor-not-allowed opacity-70";
     title = "Asiento bloqueado";
   } else if (isCapped) {
     extraClass = "bg-muted/60 text-transparent cursor-not-allowed opacity-50";
@@ -186,7 +189,7 @@ function SeatBtn({ seat, sectionId, sectionIndex, sectionMap, selectedIds, maxRe
       style={bgStyle}
       className={`${dim} rounded-sm font-bold flex items-center justify-center transition-transform select-none border-0 outline-none shrink-0 ${extraClass}`}
     >
-      {isSel ? "✓" : (isOcc || isBlockedSeat) ? "" : seat.number}
+      {isSel ? "✓" : seat.status === "SOLD" ? "X" : seat.status === "HELD" ? "H" : isBlockedSeat ? "-" : seat.number}
     </button>
   );
 }
@@ -211,6 +214,89 @@ function SectionHeader({ section, pi }: { section: SectionConfig; pi: number }) 
       <div className="w-3 h-3 rounded-sm" style={{ backgroundColor: p.available }} />
       <span className="text-xs font-bold text-foreground">{section.name}</span>
       <span className="text-xs text-muted-foreground">— ${section.price.toLocaleString("es-CO")}</span>
+    </div>
+  );
+}
+
+function SeatLegend({ sections, selectedSeats }: { sections: SectionConfig[]; selectedSeats: SelectedSeat[] }) {
+  return (
+    <div className="flex flex-wrap items-center justify-center gap-5 mt-6 pt-4 border-t border-border">
+      {sections.map((s, i) => {
+        const p = PALETTE[i % PALETTE.length];
+        const cnt = selectedSeats.filter((x) => x.sectionId === s.id).length;
+        return (
+          <div key={s.id} className="flex items-center gap-1.5">
+            <div className="w-4 h-4 rounded-sm" style={{ backgroundColor: p.available }} />
+            <span className="text-xs text-muted-foreground">
+              {s.name}{cnt > 0 && <span className="font-bold text-foreground"> ({cnt})</span>}
+            </span>
+          </div>
+        );
+      })}
+      <div className="flex items-center gap-1.5">
+        <div className="w-4 h-4 rounded-sm bg-red-500 flex items-center justify-center text-white text-[8px] font-bold">X</div>
+        <span className="text-xs text-muted-foreground">Vendido</span>
+      </div>
+      <div className="flex items-center gap-1.5">
+        <div className="w-4 h-4 rounded-sm bg-amber-400 flex items-center justify-center text-amber-950 text-[8px] font-bold">H</div>
+        <span className="text-xs text-muted-foreground">Reservado</span>
+      </div>
+      <div className="flex items-center gap-1.5">
+        <div className="w-4 h-4 rounded-sm bg-slate-400 flex items-center justify-center text-white text-[8px] font-bold">-</div>
+        <span className="text-xs text-muted-foreground">Bloqueado</span>
+      </div>
+      <div className="flex items-center gap-1.5">
+        <div className="w-4 h-4 rounded-sm flex items-center justify-center text-white text-[9px] font-bold" style={{ backgroundColor: PALETTE[0].available }}>✓</div>
+        <span className="text-xs text-muted-foreground">Seleccionado</span>
+      </div>
+    </div>
+  );
+}
+
+function FadedSeatBlock({ className = "" }: { className?: string }) {
+  return (
+    <div className={`grid grid-cols-8 gap-[2px] opacity-20 ${className}`}>
+      {Array.from({ length: 48 }).map((_, i) => (
+        <span key={i} className="w-2 h-2 rounded-[2px] bg-slate-400" />
+      ))}
+    </div>
+  );
+}
+
+function SoccerField() {
+  return (
+    <div className="relative w-[230px] h-[132px] bg-green-500/70 border-4 border-green-200/80 shadow-inner">
+      <div className="absolute inset-3 border-2 border-white/35" />
+      <div className="absolute top-3 bottom-3 left-1/2 w-[2px] bg-white/35" />
+      <div className="absolute left-1/2 top-1/2 w-12 h-12 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white/35" />
+      <div className="absolute left-3 top-1/2 w-12 h-20 -translate-y-1/2 border-2 border-white/30" />
+      <div className="absolute right-3 top-1/2 w-12 h-20 -translate-y-1/2 border-2 border-white/30" />
+      <span className="absolute bottom-2 left-1/2 -translate-x-1/2 text-[9px] font-black uppercase tracking-widest text-green-950/45">Cancha</span>
+    </div>
+  );
+}
+
+function ArenaStage() {
+  return (
+    <div className="relative flex flex-col items-center">
+      <div className="w-40 h-16 rounded-sm bg-slate-300/80 border border-slate-400 flex items-center justify-center shadow-sm">
+        <span className="text-slate-600 text-xs font-black uppercase tracking-widest">Escenario</span>
+      </div>
+      <div className="w-8 h-12 bg-slate-300/80 border-x border-slate-400" />
+    </div>
+  );
+}
+
+function TheaterStage() {
+  return (
+    <div className="flex flex-col items-center mb-8">
+      <div
+        className="h-16 w-[520px] max-w-[75vw] bg-slate-300 border border-slate-400 shadow-sm flex items-center justify-center"
+        style={{ clipPath: "polygon(5% 0, 95% 0, 88% 100%, 12% 100%)" }}
+      >
+        <span className="text-slate-600 text-xs font-black uppercase tracking-widest">Escenario</span>
+      </div>
+      <div className="w-[420px] max-w-[60vw] h-6 bg-gradient-to-b from-slate-200/70 to-transparent" />
     </div>
   );
 }
@@ -277,55 +363,6 @@ function VertCols({ rows, reversed, sectionMap, selectedIds, maxReached, onToggl
 
 // ── Oval field ─────────────────────────────────────────────────────────────
 
-function OvalField() {
-  return (
-    <div
-      className="flex items-center justify-center shrink-0"
-      style={{
-        background: "linear-gradient(160deg, #14532d 0%, #166534 50%, #15803d 100%)",
-        borderRadius: "50%",
-        width: 200,
-        height: 120,
-        border: "3px solid #22c55e",
-        boxShadow: "0 0 28px rgba(34,197,94,0.30), inset 0 0 20px rgba(0,0,0,0.35)",
-      }}
-    >
-      <div
-        style={{
-          border: "1.5px solid rgba(255,255,255,0.22)",
-          borderRadius: "50%",
-          width: 130,
-          height: 76,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-        }}
-      >
-        <span className="text-green-300/60 text-[9px] font-black tracking-widest uppercase">Cancha</span>
-      </div>
-    </div>
-  );
-}
-
-// ── Stage visual ───────────────────────────────────────────────────────────
-
-function Stage({ venueType }: { venueType: VenueType }) {
-  const isTheater = venueType === "THEATER";
-  return (
-    <div className="flex flex-col items-center mb-8">
-      <div
-        className={`w-3/4 py-3 text-center rounded-t-[100%] ${isTheater ? "" : "bg-muted"}`}
-        style={isTheater ? { background: "linear-gradient(135deg, #92400e, #b45309, #92400e)" } : undefined}
-      >
-        <span className={`text-xs font-bold uppercase tracking-widest ${isTheater ? "text-amber-100" : "text-muted-foreground"}`}>
-          Escenario
-        </span>
-      </div>
-      <div className="w-3/4 h-3 bg-gradient-to-b from-muted/30 to-transparent" />
-    </div>
-  );
-}
-
 // ── Stadium position detector ──────────────────────────────────────────────
 
 type StadiumPos = "norte" | "sur" | "occidental" | "oriental" | "extra";
@@ -336,10 +373,28 @@ function getStadiumPos(name: string, index: number): StadiumPos {
   if (n.includes("sur") || n.includes("south")) return "sur";
   if (n.includes("occid") || n.includes("oeste") || n.includes("west")) return "occidental";
   if (n.includes("orient") || n.includes("este") || n.includes("east")) return "oriental";
-  if (n.includes("palco")) return "norte";
-  if (n === "vip") return "sur";
+  if (n.includes("platea")) return "occidental";
+  if (n.includes("vip") || n.includes("palco")) return "oriental";
+  if (n.includes("general")) return "norte";
   const fallback: StadiumPos[] = ["norte", "sur", "occidental", "oriental", "extra"];
   return fallback[index % fallback.length];
+}
+
+function getArenaPos(name: string, index: number): StadiumPos {
+  const n = name.toLowerCase();
+  if (n.includes("platea") || n.includes("preferencial")) return "sur";
+  if (n.includes("vip") || n.includes("palco")) return "oriental";
+  if (n.includes("general")) return "occidental";
+  const fallback: StadiumPos[] = ["occidental", "sur", "oriental", "extra"];
+  return fallback[index % fallback.length];
+}
+
+function getTheaterDepth(name: string, index: number): number {
+  const n = name.toLowerCase();
+  if (n.includes("vip") || n.includes("palco")) return 0;
+  if (n.includes("platea") || n.includes("preferencial")) return 1;
+  if (n.includes("general")) return 2;
+  return index + 3;
 }
 
 // ── Stadium layout ─────────────────────────────────────────────────────────
@@ -351,7 +406,65 @@ interface StadiumLayoutProps {
   maxSeats: number;
 }
 
-function StadiumLayout({ sections, selectedSeats, onToggleSeat, maxSeats }: StadiumLayoutProps) {
+interface RadialSectionProps {
+  group: { section: SectionConfig; rows: MapRow[]; pi: number };
+  startDeg: number;
+  endDeg: number;
+  cx: number;
+  cy: number;
+  rx: number;
+  ry: number;
+  rowGap?: number;
+  sectionMap: Record<string, SectionConfig>;
+  selectedIds: Set<string>;
+  maxReached: boolean;
+  onToggle: (seat: SelectedSeat) => void;
+}
+
+function pointOnEllipse(cx: number, cy: number, rx: number, ry: number, deg: number) {
+  const rad = (deg * Math.PI) / 180;
+  return { x: cx + Math.cos(rad) * rx, y: cy + Math.sin(rad) * ry };
+}
+
+function RadialSection({ group, startDeg, endDeg, cx, cy, rx, ry, rowGap = 20, sectionMap, selectedIds, maxReached, onToggle }: RadialSectionProps) {
+  const outerRx = rx + Math.max(0, group.rows.length - 1) * rowGap;
+  const outerRy = ry + Math.max(0, group.rows.length - 1) * (rowGap * 0.66);
+  const labelPoint = pointOnEllipse(cx, cy, outerRx + 26, outerRy + 26, (startDeg + endDeg) / 2);
+  return (
+    <>
+      <div
+        className="absolute z-20 -translate-x-1/2 -translate-y-1/2"
+        style={{ left: labelPoint.x, top: labelPoint.y }}
+      >
+        <SectionBadge name={group.section.name} pi={group.pi} />
+      </div>
+      {group.rows.map((row, rowIndex) => {
+        const rowRx = rx + rowIndex * rowGap;
+        const rowRy = ry + rowIndex * (rowGap * 0.72);
+        return row.seats.map((seat, seatIndex) => {
+          const t = row.seats.length <= 1 ? 0.5 : seatIndex / (row.seats.length - 1);
+          const deg = startDeg + (endDeg - startDeg) * t;
+          const p = pointOnEllipse(cx, cy, rowRx, rowRy, deg);
+          const tangent = deg + 90;
+          return (
+            <div
+              key={`${row.sectionId}-${row.label}-${seat.id}`}
+              className="absolute z-10 -translate-x-1/2 -translate-y-1/2"
+              style={{ left: p.x, top: p.y, transform: `translate(-50%, -50%) rotate(${tangent}deg)` }}
+            >
+              <div style={{ transform: `rotate(${-tangent}deg)` }}>
+                <SeatBtn seat={seat} sectionId={row.sectionId} sectionIndex={row.sectionIndex}
+                  sectionMap={sectionMap} selectedIds={selectedIds} maxReached={maxReached} onToggle={onToggle} size="xs" />
+              </div>
+            </div>
+          );
+        });
+      })}
+    </>
+  );
+}
+
+function StadiumLayout({ sections, selectedSeats, onToggleSeat, maxSeats, zoom, pan }: ZoomableLayoutProps) {
   const maxReached = selectedSeats.length >= maxSeats;
   const selectedIds = useMemo(() => new Set(selectedSeats.map((s) => s.id)), [selectedSeats]);
   const sectionMap = useMemo(() => {
@@ -374,101 +487,129 @@ function StadiumLayout({ sections, selectedSeats, onToggleSeat, maxSeats }: Stad
   }, [sections]);
 
   const handleToggle = useCallback((seat: SelectedSeat) => onToggleSeat(seat), [onToggleSeat]);
-
-  const legend = (
-    <div className="flex flex-wrap items-center justify-center gap-4 mt-5 pt-4 border-t border-border w-full">
-      {sections.map((s, i) => {
-        const p = PALETTE[i % PALETTE.length];
-        const cnt = selectedSeats.filter((x) => x.sectionId === s.id).length;
-        return (
-          <div key={s.id} className="flex items-center gap-1.5">
-            <div className="w-4 h-4 rounded-sm" style={{ backgroundColor: p.available }} />
-            <span className="text-xs text-muted-foreground">
-              {s.name}{cnt > 0 && <span className="font-bold text-foreground"> ({cnt})</span>}
-            </span>
-          </div>
-        );
-      })}
-      <div className="flex items-center gap-1.5">
-        <div className="w-4 h-4 rounded-sm bg-muted-foreground/20" />
-        <span className="text-xs text-muted-foreground">Ocupado</span>
-      </div>
-      <div className="flex items-center gap-1.5">
-        <div className="w-4 h-4 rounded-sm flex items-center justify-center text-white text-[8px] font-bold" style={{ backgroundColor: PALETTE[0].available }}>✓</div>
-        <span className="text-xs text-muted-foreground">Seleccionado</span>
-      </div>
-    </div>
-  );
+  const stadiumArcs: Record<StadiumPos, { start: number; end: number; rx: number; ry: number }> = {
+    norte: { start: -152, end: -28, rx: 232, ry: 132 },
+    oriental: { start: -12, end: 64, rx: 252, ry: 138 },
+    sur: { start: 28, end: 152, rx: 232, ry: 132 },
+    occidental: { start: 116, end: 192, rx: 252, ry: 138 },
+    extra: { start: -112, end: -68, rx: 202, ry: 116 },
+  };
 
   return (
     <div className="overflow-x-auto">
-      <div className="min-w-fit flex flex-col items-center gap-2 pb-4">
-
-        {positioned.norte.length > 0 && (
-          <div className="flex flex-col items-center gap-1">
-            <div className="flex gap-2 mb-1">
-              {positioned.norte.map(({ section, pi }) => <SectionBadge key={section.id} name={section.name} pi={pi} />)}
-            </div>
-            {positioned.norte.map(({ section, rows, cols }) => (
-              <HorizRows key={section.id} rows={rows} cols={cols} sectionMap={sectionMap}
-                selectedIds={selectedIds} maxReached={maxReached} onToggle={handleToggle} />
-            ))}
+      <div
+        className="min-w-[920px] pb-4 transition-transform duration-200"
+        style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`, transformOrigin: "top center" }}
+      >
+        <div className="relative mx-auto w-[760px] h-[560px] bg-white overflow-hidden">
+          <div className="absolute left-1/2 top-[280px] h-[385px] w-[625px] -translate-x-1/2 -translate-y-1/2 rounded-[48%] border border-slate-200" />
+          <div className="absolute left-1/2 top-[280px] h-[190px] w-[350px] -translate-x-1/2 -translate-y-1/2 rounded-[48%] border-[10px] border-slate-100" />
+          <div className="absolute left-1/2 top-[280px] -translate-x-1/2 -translate-y-1/2 z-0">
+            <SoccerField />
           </div>
-        )}
 
-        <div className="flex items-center gap-3">
-          {positioned.occidental.length > 0 ? (
-            <div className="flex flex-col items-center gap-1">
-              {positioned.occidental.map(({ section, rows, pi }) => (
-                <div key={section.id} className="flex flex-col items-center gap-1">
-                  <SectionBadge name={section.name} pi={pi} />
-                  <VertCols rows={rows} reversed sectionMap={sectionMap}
-                    selectedIds={selectedIds} maxReached={maxReached} onToggle={handleToggle} />
-                </div>
-              ))}
-            </div>
-          ) : <div className="w-6" />}
-
-          <OvalField />
-
-          {positioned.oriental.length > 0 ? (
-            <div className="flex flex-col items-center gap-1">
-              {positioned.oriental.map(({ section, rows, pi }) => (
-                <div key={section.id} className="flex flex-col items-center gap-1">
-                  <SectionBadge name={section.name} pi={pi} />
-                  <VertCols rows={rows} reversed={false} sectionMap={sectionMap}
-                    selectedIds={selectedIds} maxReached={maxReached} onToggle={handleToggle} />
-                </div>
-              ))}
-            </div>
-          ) : <div className="w-6" />}
+          {(Object.keys(positioned) as StadiumPos[]).flatMap((pos) =>
+            positioned[pos].map((group, index) => {
+              const arc = stadiumArcs[pos];
+              const offset = index * 34;
+              return (
+                <RadialSection
+                  key={group.section.id}
+                  group={group}
+                  startDeg={arc.start}
+                  endDeg={arc.end}
+                  cx={380}
+                  cy={280}
+                  rx={arc.rx + offset}
+                  ry={arc.ry + offset * 0.62}
+                  rowGap={19}
+                  sectionMap={sectionMap}
+                  selectedIds={selectedIds}
+                  maxReached={maxReached}
+                  onToggle={handleToggle}
+                />
+              );
+            })
+          )}
         </div>
 
-        {positioned.sur.length > 0 && (
-          <div className="flex flex-col items-center gap-1">
-            {positioned.sur.map(({ section, rows, cols }) => (
-              <HorizRows key={section.id} rows={rows} cols={cols} sectionMap={sectionMap}
-                selectedIds={selectedIds} maxReached={maxReached} onToggle={handleToggle} />
-            ))}
-            <div className="flex gap-2 mt-1">
-              {positioned.sur.map(({ section, pi }) => <SectionBadge key={section.id} name={section.name} pi={pi} />)}
-            </div>
-          </div>
-        )}
+        <SeatLegend sections={sections} selectedSeats={selectedSeats} />
+      </div>
+    </div>
+  );
+}
 
-        {positioned.extra.length > 0 && (
-          <div className="flex flex-col items-center gap-2 mt-2 pt-2 border-t border-border/40 w-full">
-            {positioned.extra.map(({ section, rows, pi, cols }) => (
-              <div key={section.id} className="flex flex-col items-center gap-1">
-                <SectionBadge name={section.name} pi={pi} />
-                <HorizRows rows={rows} cols={cols} sectionMap={sectionMap}
-                  selectedIds={selectedIds} maxReached={maxReached} onToggle={handleToggle} />
-              </div>
-            ))}
-          </div>
-        )}
+function ArenaLayout({ sections, selectedSeats, onToggleSeat, maxSeats, zoom, pan }: ZoomableLayoutProps) {
+  const maxReached = selectedSeats.length >= maxSeats;
+  const selectedIds = useMemo(() => new Set(selectedSeats.map((s) => s.id)), [selectedSeats]);
+  const sectionMap = useMemo(() => {
+    const m: Record<string, SectionConfig> = {};
+    for (const s of sections) m[s.id] = s;
+    return m;
+  }, [sections]);
+  const handleToggle = useCallback((seat: SelectedSeat) => onToggleSeat(seat), [onToggleSeat]);
+  const positioned = useMemo(() => {
+    const r: Record<StadiumPos, Array<{ section: SectionConfig; rows: MapRow[]; pi: number; cols: number }>> = {
+      norte: [], sur: [], occidental: [], oriental: [], extra: [],
+    };
+    sections.forEach((section, pi) => {
+      const pos = getArenaPos(section.name, pi);
+      const rows = buildRowsFromSeats(section, pi);
+      const cols = rows.reduce((max, row) => Math.max(max, row.seats.length), 0);
+      r[pos].push({ section, rows, pi, cols });
+    });
+    return r;
+  }, [sections]);
 
-        {legend}
+  const arenaArcs: Record<StadiumPos, { start: number; end: number; rx: number; ry: number }> = {
+    norte: { start: -148, end: -32, rx: 240, ry: 136 },
+    oriental: { start: -20, end: 42, rx: 292, ry: 190 },
+    sur: { start: 58, end: 122, rx: 278, ry: 178 },
+    occidental: { start: 138, end: 200, rx: 292, ry: 190 },
+    extra: { start: -150, end: -30, rx: 246, ry: 140 },
+  };
+
+  return (
+    <div className="overflow-auto rounded-xl border border-slate-100 bg-white">
+      <div
+        className="min-w-[900px] h-[640px] pb-4 transition-transform duration-200"
+        style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`, transformOrigin: "top center" }}
+      >
+        <div className="relative mx-auto w-[900px] h-[600px] bg-white overflow-hidden">
+          <div className="absolute left-1/2 top-[335px] h-[360px] w-[660px] -translate-x-1/2 -translate-y-1/2 rounded-[50%] border border-slate-200" />
+          <div className="absolute left-1/2 top-[335px] h-[245px] w-[465px] -translate-x-1/2 -translate-y-1/2 rounded-[50%] border-[14px] border-slate-100" />
+          <div className="absolute left-1/2 top-14 -translate-x-1/2">
+            <ArenaStage />
+          </div>
+          <div className="absolute left-1/2 top-[335px] h-[118px] w-[220px] -translate-x-1/2 -translate-y-1/2 rounded-[45%] bg-green-400/45 border-4 border-green-100 flex items-center justify-center">
+            <span className="text-[10px] font-black uppercase tracking-widest text-green-900/45">Arena</span>
+          </div>
+
+          {(Object.keys(positioned) as StadiumPos[]).flatMap((pos) =>
+            positioned[pos].map((group, index) => {
+              const arc = arenaArcs[pos];
+              const offset = index * 32;
+              return (
+                <RadialSection
+                  key={group.section.id}
+                  group={group}
+                  startDeg={arc.start}
+                  endDeg={arc.end}
+                  cx={450}
+                  cy={335}
+                  rx={arc.rx + offset}
+                  ry={arc.ry + offset * 0.62}
+                  rowGap={18}
+                  sectionMap={sectionMap}
+                  selectedIds={selectedIds}
+                  maxReached={maxReached}
+                  onToggle={handleToggle}
+                />
+              );
+            })
+          )}
+        </div>
+        <SeatLegend sections={sections} selectedSeats={selectedSeats} />
       </div>
     </div>
   );
@@ -482,9 +623,56 @@ interface CinemaLayoutProps {
   selectedSeats: SelectedSeat[];
   onToggleSeat: (seat: SelectedSeat) => void;
   maxSeats: number;
+  zoom: number;
 }
 
-function CinemaLayout({ venueType, sections, selectedSeats, onToggleSeat, maxSeats }: CinemaLayoutProps) {
+interface ZoomableLayoutProps extends StadiumLayoutProps {
+  zoom: number;
+  pan: { x: number; y: number };
+}
+
+interface SeatMapViewportProps {
+  children: React.ReactNode;
+  className?: string;
+  onPan: (dx: number, dy: number) => void;
+}
+
+function SeatMapViewport({ children, className = "", onPan }: SeatMapViewportProps) {
+  const [drag, setDrag] = useState<{ id: number; x: number; y: number } | null>(null);
+
+  const startDrag = (event: PointerEvent<HTMLDivElement>) => {
+    if ((event.target as HTMLElement).closest("button")) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setDrag({ id: event.pointerId, x: event.clientX, y: event.clientY });
+  };
+
+  const moveDrag = (event: PointerEvent<HTMLDivElement>) => {
+    if (!drag || drag.id !== event.pointerId) return;
+    const dx = event.clientX - drag.x;
+    const dy = event.clientY - drag.y;
+    onPan(dx, dy);
+    setDrag({ id: event.pointerId, x: event.clientX, y: event.clientY });
+  };
+
+  const stopDrag = (event: PointerEvent<HTMLDivElement>) => {
+    if (drag?.id === event.pointerId) setDrag(null);
+  };
+
+  return (
+    <div
+      className={`overflow-hidden rounded-xl border border-slate-100 bg-white ${drag ? "cursor-grabbing" : "cursor-grab"} ${className}`}
+      onPointerDown={startDrag}
+      onPointerMove={moveDrag}
+      onPointerUp={stopDrag}
+      onPointerCancel={stopDrag}
+      style={{ touchAction: "none" }}
+    >
+      {children}
+    </div>
+  );
+}
+
+function CinemaLayout({ sections, selectedSeats, onToggleSeat, maxSeats, zoom, pan }: CinemaLayoutProps & { pan: { x: number; y: number } }) {
   const maxReached = selectedSeats.length >= maxSeats;
   const selectedIds = useMemo(() => new Set(selectedSeats.map((s) => s.id)), [selectedSeats]);
   const sectionMap = useMemo(() => {
@@ -493,75 +681,47 @@ function CinemaLayout({ venueType, sections, selectedSeats, onToggleSeat, maxSea
     return m;
   }, [sections]);
 
-  const { rows, cols } = useMemo(() => {
-    const all: MapRow[] = [];
-    let rowIdx = 0;
-    let maxCols = 0;
-    sections.forEach((s, si) => {
-      const sectionRows = buildRowsFromSeats(s, si);
-      sectionRows.forEach((r, j) => {
-        all.push({ ...r, isFirstRow: j === 0 });
-        maxCols = Math.max(maxCols, r.seats.length);
-        rowIdx++;
-      });
-    });
-    return { rows: all, cols: maxCols };
-  }, [sections]);
+  const groups = useMemo(() => sections
+    .map((section, pi) => {
+      const rows = buildRowsFromSeats(section, pi);
+      const cols = rows.reduce((m, r) => Math.max(m, r.seats.length), 0);
+      return { section, rows, cols, pi, depth: getTheaterDepth(section.name, pi) };
+    })
+    .sort((a, b) => a.depth - b.depth || a.pi - b.pi), [sections]);
 
   const handleToggle = useCallback((seat: SelectedSeat) => onToggleSeat(seat), [onToggleSeat]);
 
   return (
     <div className="overflow-x-auto">
-      <div className="min-w-fit px-2 pb-4">
-        <Stage venueType={venueType} />
+      <div
+        className="min-w-[900px] px-2 pb-4 transition-transform duration-200"
+        style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`, transformOrigin: "top center" }}
+      >
+        <div className="relative mx-auto w-[880px] min-h-[610px] bg-white rounded-xl overflow-hidden border border-slate-100 px-10 pb-14">
+          <TheaterStage />
 
-        <div className="space-y-0">
-          {rows.map((row) => {
-            const section = sectionMap[row.sectionId];
-            return (
-              <div key={`${row.sectionId}-${row.label}`}>
-                {row.isFirstRow && section && <SectionHeader section={section} pi={row.sectionIndex} />}
-                <div className="flex items-center justify-center gap-1 mb-[3px]">
-                  <span className="w-5 shrink-0 text-[10px] font-bold text-muted-foreground text-right select-none">{row.label}</span>
-                  <div className="flex gap-[4px]">
-                    {row.seats.map((seat) => (
-                      <SeatBtn key={seat.id} seat={seat} sectionId={row.sectionId} sectionIndex={row.sectionIndex}
-                        sectionMap={sectionMap} selectedIds={selectedIds}
-                        maxReached={maxReached} onToggle={handleToggle} />
-                    ))}
-                    {Array.from({ length: Math.max(0, cols - row.seats.length) }).map((_, i) => (
-                      <div key={`pad-${i}`} className="w-6 h-6" />
-                    ))}
-                  </div>
-                  <span className="w-5 shrink-0 text-[10px] font-bold text-muted-foreground text-left select-none">{row.label}</span>
-                </div>
+          <div className="mt-10 flex flex-col items-center gap-8">
+            {groups.map(({ section, rows, cols, pi }, index) => (
+              <div
+                key={section.id}
+                className="flex flex-col items-center gap-2"
+                style={{
+                  transform: index === 0
+                    ? "perspective(900px) rotateX(5deg)"
+                    : index === groups.length - 1
+                      ? "perspective(900px) rotateX(-3deg)"
+                      : undefined,
+                }}
+              >
+                <SectionBadge name={section.name} pi={pi} />
+                <HorizRows rows={rows} cols={cols} sectionMap={sectionMap} selectedIds={selectedIds}
+                  maxReached={maxReached} onToggle={handleToggle} />
               </div>
-            );
-          })}
-        </div>
-
-        <div className="flex flex-wrap items-center justify-center gap-5 mt-6 pt-4 border-t border-border">
-          {sections.map((s, i) => {
-            const p = PALETTE[i % PALETTE.length];
-            const cnt = selectedSeats.filter((x) => x.sectionId === s.id).length;
-            return (
-              <div key={s.id} className="flex items-center gap-1.5">
-                <div className="w-4 h-4 rounded-sm" style={{ backgroundColor: p.available }} />
-                <span className="text-xs text-muted-foreground">
-                  {s.name}{cnt > 0 && <span className="font-bold text-foreground"> ({cnt})</span>}
-                </span>
-              </div>
-            );
-          })}
-          <div className="flex items-center gap-1.5">
-            <div className="w-4 h-4 rounded-sm bg-muted-foreground/20" />
-            <span className="text-xs text-muted-foreground">Ocupado</span>
-          </div>
-          <div className="flex items-center gap-1.5">
-            <div className="w-4 h-4 rounded-sm flex items-center justify-center text-white text-[9px] font-bold" style={{ backgroundColor: PALETTE[0].available }}>✓</div>
-            <span className="text-xs text-muted-foreground">Seleccionado</span>
+            ))}
           </div>
         </div>
+
+        <SeatLegend sections={sections} selectedSeats={selectedSeats} />
       </div>
     </div>
   );
@@ -570,8 +730,18 @@ function CinemaLayout({ venueType, sections, selectedSeats, onToggleSeat, maxSea
 // ── Main SeatMap ───────────────────────────────────────────────────────────
 
 export function SeatMap({ venueType, venueName, sections, selectedSeats, onToggleSeat, maxSeats = 10 }: SeatMapProps) {
+  const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
   const maxReached = selectedSeats.length >= maxSeats;
-  const isStadium = venueType === "STADIUM" || venueType === "COLISEUM";
+  const isStadium = venueType === "STADIUM";
+  const isArena = venueType === "ARENA" || venueType === "COLISEUM";
+  const zoomOut = () => setZoom((value) => Math.max(0.65, Number((value - 0.15).toFixed(2))));
+  const zoomIn = () => setZoom((value) => Math.min(1.6, Number((value + 0.15).toFixed(2))));
+  const resetZoom = () => {
+    setZoom(1);
+    setPan({ x: 0, y: 0 });
+  };
+  const movePan = (dx: number, dy: number) => setPan((value) => ({ x: value.x + dx, y: value.y + dy }));
 
   if (sections.length === 0) {
     return <p className="text-sm text-muted-foreground text-center py-8">No hay secciones configuradas para este evento.</p>;
@@ -581,25 +751,49 @@ export function SeatMap({ venueType, venueName, sections, selectedSeats, onToggl
     <div className="space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-2">
         <span className="text-xs text-muted-foreground font-medium">{venueName}</span>
-        {maxReached && <span className="text-xs text-destructive font-bold">Máximo {maxSeats} asientos</span>}
+        <div className="flex items-center gap-2">
+          {maxReached && <span className="text-xs text-destructive font-bold">Máximo {maxSeats} asientos</span>}
+          <div className="flex items-center rounded-lg border border-border overflow-hidden bg-background">
+            <button type="button" onClick={zoomOut} className="h-8 w-8 text-sm font-black hover:bg-muted" aria-label="Alejar mapa">−</button>
+            <button type="button" onClick={resetZoom} className="h-8 px-2 text-[11px] font-bold text-muted-foreground border-x border-border hover:bg-muted">
+              {Math.round(zoom * 100)}%
+            </button>
+            <button type="button" onClick={zoomIn} className="h-8 w-8 text-sm font-black hover:bg-muted" aria-label="Acercar mapa">+</button>
+          </div>
+        </div>
       </div>
 
-      {isStadium ? (
-        <StadiumLayout
-          sections={sections}
-          selectedSeats={selectedSeats}
-          onToggleSeat={onToggleSeat}
-          maxSeats={maxSeats}
-        />
-      ) : (
-        <CinemaLayout
-          venueType={venueType}
-          sections={sections}
-          selectedSeats={selectedSeats}
-          onToggleSeat={onToggleSeat}
-          maxSeats={maxSeats}
-        />
-      )}
+      <SeatMapViewport onPan={movePan}>
+        {isStadium ? (
+          <StadiumLayout
+            sections={sections}
+            selectedSeats={selectedSeats}
+            onToggleSeat={onToggleSeat}
+            maxSeats={maxSeats}
+            zoom={zoom}
+            pan={pan}
+          />
+        ) : isArena ? (
+          <ArenaLayout
+            sections={sections}
+            selectedSeats={selectedSeats}
+            onToggleSeat={onToggleSeat}
+            maxSeats={maxSeats}
+            zoom={zoom}
+            pan={pan}
+          />
+        ) : (
+          <CinemaLayout
+            venueType={venueType}
+            sections={sections}
+            selectedSeats={selectedSeats}
+            onToggleSeat={onToggleSeat}
+            maxSeats={maxSeats}
+            zoom={zoom}
+            pan={pan}
+          />
+        )}
+      </SeatMapViewport>
     </div>
   );
 }

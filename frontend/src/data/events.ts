@@ -93,6 +93,26 @@ const mapMinPrice = (value: EventListItemDto["minPrice"]) => {
   return value?.amount ?? value?.value ?? 0;
 };
 
+const defaultRecommendations = (item: EventListItemDto) => {
+  const category = (item.categoryLabel ?? item.category ?? "").toLowerCase();
+  const isSports = category.includes("deporte");
+  const isFamily = category.includes("familiar");
+  const isTheater = category.includes("teatro") || category.includes("comedia");
+
+  return [
+    "Presenta tu QR desde la sección Mis Entradas al ingresar al evento.",
+    "Llega con al menos 30 minutos de anticipación para evitar filas en el acceso.",
+    isSports
+      ? "Consulta las restricciones del escenario para objetos, alimentos y bebidas antes de asistir."
+      : isFamily
+        ? "Si asistes con menores, verifica horarios, acompañantes y zonas recomendadas para familias."
+        : isTheater
+          ? "Evita llegar después de iniciada la función; el ingreso puede depender de la logística del recinto."
+          : "Revisa la ubicación del recinto y planea tu transporte con anticipación.",
+    "Este evento hace parte de una demo académica; la compra y validación son simuladas.",
+  ];
+};
+
 const mapEvent = (item: EventListItemDto): EventData => {
   const price = mapMinPrice(item.minPrice);
   const rawDate = item.eventDate ?? item.startsAt ?? "";
@@ -111,7 +131,7 @@ const mapEvent = (item: EventListItemDto): EventData => {
     time: item.eventTime ?? (dateObj && !Number.isNaN(dateObj.getTime()) ? dateObj.toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit" }) : "--:--"),
     organizer: item.organizer,
     description: item.description,
-    recommendations: [],
+    recommendations: defaultRecommendations(item),
     image: item.posterImage || item.bannerImage || "https://placehold.co/800x500?text=Evento",
     bannerImage: item.bannerImage || item.posterImage || "https://placehold.co/1200x400?text=Evento",
     featured: item.isFeatured ?? false,
@@ -214,9 +234,9 @@ export const getEventTicketTypes = async (eventId: string): Promise<TicketType[]
 };
 
 export const bannerData = [
-  { image: "https://images.unsplash.com/photo-1470229722913-7c0e2dbbafd3?w=1200&h=400&fit=crop", title: "Shakira en Bogotá", subtitle: "15 de mayo · Estadio El Campín", cta: "Comprar Boletos", gradient: "from-primary/90 to-primary/60" },
-  { image: "https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=1200&h=400&fit=crop", title: "Estéreo Picnic 2026", subtitle: "3 al 6 de abril · Parque Briceño", cta: "Comprar Abono", gradient: "from-purple-900/90 to-violet-700/60" },
-  { image: "https://images.unsplash.com/photo-1489944440615-453fc2b6a9a9?w=1200&h=400&fit=crop", title: "Colombia vs Argentina", subtitle: "3 de abril · Estadio El Campín", cta: "Asegura tu entrada", gradient: "from-amber-900/90 to-yellow-700/60" },
+  { image: "https://images.unsplash.com/photo-1470229722913-7c0e2dbbafd3?w=1200&h=400&fit=crop", title: "Bogotá Pop Night 2026", subtitle: "20 de junio · Movistar Arena Demo", cta: "Comprar Boletos", gradient: "from-primary/90 to-primary/60" },
+  { image: "https://images.unsplash.com/photo-1533174072545-7a4b6ad7a6c3?w=1200&h=400&fit=crop", title: "Caribe Live Barranquilla", subtitle: "18 de julio · Centro de Eventos Caribe Demo", cta: "Ver Festival", gradient: "from-purple-900/90 to-violet-700/60" },
+  { image: "https://images.unsplash.com/photo-1459865264687-595d652de67e?w=1200&h=400&fit=crop", title: "Final Capital Cup 2026", subtitle: "30 de agosto · Estadio Capital Demo", cta: "Asegura tu entrada", gradient: "from-amber-900/90 to-yellow-700/60" },
 ];
 
 export const categories = ["Conciertos", "Teatro", "Deportes", "Festivales", "Comedia", "Familiar"];

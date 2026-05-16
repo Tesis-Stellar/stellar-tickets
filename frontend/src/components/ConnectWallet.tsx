@@ -171,24 +171,25 @@ export const ConnectWallet = () => {
   return (
     <button
       onClick={address ? () => {} : connectWallet}
-      className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-lg transition-all border shadow-sm cursor-pointer
+      className={`h-10 max-w-[260px] flex items-center gap-2 px-3 text-sm font-bold rounded-lg transition-all border shadow-sm cursor-pointer overflow-hidden
         ${address
           ? "bg-purple-600 border-purple-800 text-white hover:bg-purple-700"
           : "bg-white text-primary border-primary/20 hover:bg-gray-50"}`
       }
     >
-      <Wallet className="w-4 h-4" />
-      <span>
-        {address
-          ? `${address.slice(0,4)}...${address.slice(-4)}`
-          : "Connect Wallet"}
-      </span>
-      {balance && (
-        <span className="text-[10px] bg-purple-800/50 px-1.5 py-0.5 rounded font-mono">
-          {balance} XLM
-          {xlmCop ? ` ~ ${formatCOP(parseFloat(balance) * xlmCop)}` : ""}
+      <Wallet className="w-4 h-4 shrink-0" />
+      <span className="min-w-0 flex flex-col items-start leading-none">
+        <span className="max-w-[120px] truncate">
+          {address
+            ? `${address.slice(0,4)}...${address.slice(-4)}`
+            : "Connect Wallet"}
         </span>
-      )}
+        {address && balance && (
+          <span className="mt-1 max-w-[170px] truncate text-[10px] font-mono text-white/80">
+            {balance} XLM{xlmCop ? ` ~ ${formatCOP(parseFloat(balance) * xlmCop)}` : ""}
+          </span>
+        )}
+      </span>
     </button>
   );
 };

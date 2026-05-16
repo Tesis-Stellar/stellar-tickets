@@ -4,7 +4,7 @@ import { Header } from "@/components/layout/Header";
 import { Footer } from "@/components/layout/Footer";
 import { CheckoutStepper } from "@/components/ui/CheckoutStepper";
 import { useAppContext } from "@/context/AppContext";
-import { CreditCard, ShieldCheck } from "lucide-react";
+import { CreditCard, Loader2, ShieldCheck } from "lucide-react";
 
 const Field = ({ label, name, type = "text", placeholder = "", value, onChange, error }: { label: string; name: string; type?: string; placeholder?: string; value: string; onChange: (name: string, value: string) => void; error?: string }) => (
   <div>
@@ -22,6 +22,7 @@ const Checkout = () => {
   const [form, setForm] = useState({ name: "", email: "", phone: "", document: "", docType: "CC", payMethod: "card", terms: false });
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [completedOrderId, setCompletedOrderId] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const subtotal = cart.reduce((s, c) => s + c.ticketType.price * c.quantity, 0);
   const fees = cart.reduce((s, c) => s + c.ticketType.serviceFee * c.quantity, 0);
@@ -62,6 +63,7 @@ const Checkout = () => {
   };
 
   const handleNext = async () => {
+    if (isSubmitting) return;
     if (step === 1 && validate1()) setStep(2);
     else if (step === 2 && validate2()) {
       const paymentMap: Record<string, "CARD" | "PSE" | "CASHPOINT"> = {
@@ -69,15 +71,20 @@ const Checkout = () => {
         pse: "PSE",
         nequi: "CASHPOINT",
       };
-      const order = await checkout({
-        name: form.name,
-        email: form.email,
-        phone: form.phone,
-        document: `${form.docType} ${form.document}`,
-        paymentMethod: paymentMap[form.payMethod] ?? "CARD",
-      });
-      setCompletedOrderId(order?.id ?? null);
-      setStep(3);
+      setIsSubmitting(true);
+      try {
+        const order = await checkout({
+          name: form.name,
+          email: form.email,
+          phone: form.phone,
+          document: `${form.docType} ${form.document}`,
+          paymentMethod: paymentMap[form.payMethod] ?? "CARD",
+        });
+        setCompletedOrderId(order?.id ?? null);
+        setStep(3);
+      } finally {
+        setIsSubmitting(false);
+      }
     }
   };
 
@@ -150,9 +157,10 @@ const Checkout = () => {
                 </>
               )}
               <div className="flex gap-3 pt-4">
-                {step > 1 && <button onClick={() => setStep(step - 1)} className="px-6 py-3 bg-secondary text-secondary-foreground font-bold rounded-lg text-sm hover:bg-secondary/80 transition-colors">Anterior</button>}
-                <button onClick={handleNext} className="flex-1 py-3 bg-accent hover:bg-accent/90 text-accent-foreground font-black rounded-lg text-sm transition-colors">
-                  {step === 2 ? `Confirmar compra simulada — $${total.toLocaleString("es-CO")}` : "Continuar"}
+                {step > 1 && <button disabled={isSubmitting} onClick={() => setStep(step - 1)} className="px-6 py-3 bg-secondary text-secondary-foreground font-bold rounded-lg text-sm hover:bg-secondary/80 disabled:opacity-60 disabled:cursor-not-allowed transition-colors">Anterior</button>}
+                <button disabled={isSubmitting} onClick={handleNext} className="flex-1 py-3 bg-accent hover:bg-accent/90 disabled:opacity-70 disabled:cursor-wait text-accent-foreground font-black rounded-lg text-sm transition-colors flex items-center justify-center gap-2">
+                  {isSubmitting && <Loader2 className="w-4 h-4 animate-spin" />}
+                  {isSubmitting ? "Confirmando..." : step === 2 ? `Confirmar compra simulada — $${total.toLocaleString("es-CO")}` : "Continuar"}
                 </button>
               </div>
             </div>

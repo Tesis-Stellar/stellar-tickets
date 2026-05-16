@@ -743,6 +743,31 @@ const eventIncludes = {
   event_ticket_types: { where: { is_active: true } },
 };
 
+async function getTicketTypeAvailability(eventId: string, ticketType: any, hasAssignedSeating: boolean): Promise<number> {
+  if (hasAssignedSeating || ticketType.venue_section_id) {
+    return prisma.event_seat_inventory.count({
+      where: {
+        event_id: eventId,
+        event_ticket_type_id: ticketType.id,
+        status: 'AVAILABLE',
+      },
+    });
+  }
+
+  const inventory = Number(ticketType.inventory_quantity ?? 0);
+  if (inventory <= 0) return 0;
+
+  const sold = await prisma.order_items.aggregate({
+    where: {
+      event_ticket_type_id: ticketType.id,
+      orders: { status: 'PAID' },
+    },
+    _sum: { quantity: true },
+  });
+
+  return Math.max(0, inventory - Number(sold._sum.quantity ?? 0));
+}
+
 const EVENT_LIST_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function normalizeEventSearchText(value: unknown): string {
@@ -879,14 +904,14 @@ app.get('/api/events/:slug', async (req, res) => {
     }
 
     // Include ticket types in detail response to avoid extra API call
-    const ticketTypes = (event.event_ticket_types ?? []).map((t: any) => ({
+    const ticketTypes = await Promise.all((event.event_ticket_types ?? []).map(async (t: any) => ({
       id: t.id,
       name: t.ticket_type_name,
       price: Number(t.price_amount),
       serviceFee: Number(t.service_fee_amount),
-      availability: t.inventory_quantity ?? 0,
+      availability: await getTicketTypeAvailability(event.id, t, Boolean(event.has_assigned_seating)),
       maxPerOrder: t.max_per_order ?? 10,
-    }));
+    })));
 
     res.json({
       ...toEventDto(event),
@@ -904,9 +929,21 @@ app.get('/api/events/:slug', async (req, res) => {
 // GET /api/events/:id/ticket-types - Ticket types for an event
 app.get('/api/events/:id/ticket-types', async (req, res) => {
   try {
-    const types = await prisma.event_ticket_types.findMany({
-      where: { event_id: req.params.id, is_active: true },
+    const event = await prisma.events.findUnique({
+      where: { id: req.params.id },
+      include: { event_ticket_types: { where: { is_active: true } } },
     });
+    if (!event) { sendApiError(req, res, 404, 'NOT_FOUND', 'Evento no encontrado'); return; }
+
+    const types = await Promise.all(event.event_ticket_types.map(async (t: any) => ({
+      id: t.id,
+      name: t.ticket_type_name,
+      price: Number(t.price_amount),
+      serviceFee: Number(t.service_fee_amount),
+      availability: await getTicketTypeAvailability(event.id, t, Boolean(event.has_assigned_seating)),
+      maxPerOrder: t.max_per_order ?? 10,
+    })));
+
     res.json(types);
   } catch (error: any) {
     console.error(error);
