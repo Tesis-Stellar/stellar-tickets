@@ -159,7 +159,7 @@ export const ConnectWallet = () => {
       console.error("Error connecting wallet:", error);
       toast({
         title: "No fue posible conectar Freighter",
-        description: "Verifica que la extensión esté instalada, desbloqueada y con permisos para localhost.",
+        description: "Verifica que la extensión esté instalada, desbloqueada y con permisos para este sitio.",
         variant: "destructive",
       });
     }

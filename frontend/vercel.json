@@ -2,19 +2,19 @@
   "rewrites": [
     {
       "source": "/.well-known/stellar.toml",
-      "destination": "https://stellar-tickets-production.up.railway.app/.well-known/stellar.toml"
+      "destination": "https://stellar-tickets-staging.up.railway.app/.well-known/stellar.toml"
     },
     {
       "source": "/api/tickets/qr/:asset",
-      "destination": "https://stellar-tickets-production.up.railway.app/api/tickets/qr/:asset"
+      "destination": "https://stellar-tickets-staging.up.railway.app/api/tickets/qr/:asset"
     },
     {
       "source": "/api/nft/qr/:contract/:tokenId",
-      "destination": "https://stellar-tickets-production.up.railway.app/api/nft/qr/:contract/:tokenId"
+      "destination": "https://stellar-tickets-staging.up.railway.app/api/nft/qr/:contract/:tokenId"
     },
     {
       "source": "/api/nft/metadata/:contract/:tokenId",
-      "destination": "https://stellar-tickets-production.up.railway.app/api/nft/metadata/:contract/:tokenId"
+      "destination": "https://stellar-tickets-staging.up.railway.app/api/nft/metadata/:contract/:tokenId"
     },
     {
       "source": "/(.*)",
