@@ -1,10 +1,13 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Header } from "@/components/layout/Header";
 import { Footer } from "@/components/layout/Footer";
 import { useAppContext } from "@/context/AppContext";
 import { ShieldCheck, Plus, RefreshCw, Rocket, Building, MapPin, Users, Ticket, ExternalLink, Image as ImageIcon, X } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+
+const getErrorMessage = (error: unknown, fallback: string) =>
+  error instanceof Error ? error.message : fallback;
 
 interface AdminEvent {
   id: string;
@@ -54,7 +57,7 @@ const AdminDashboard = () => {
   
   const { toast } = useToast();
 
-  const loadData = async () => {
+  const loadData = useCallback(async () => {
     setLoading(true);
     try {
       const [eventsData, venuesData, contractsRes] = await Promise.all([
@@ -65,12 +68,12 @@ const AdminDashboard = () => {
       setEvents(eventsData || []);
       setVenues(venuesData || []);
       setContractsData(contractsRes || null);
-    } catch (err: any) {
-      toast({ title: "Error", description: err.message, variant: "destructive" });
+    } catch (err: unknown) {
+      toast({ title: "Error", description: getErrorMessage(err, "No fue posible cargar datos"), variant: "destructive" });
     } finally {
       setLoading(false);
     }
-  };
+  }, [apiFetch, toast]);
 
   useEffect(() => {
     if (authStatus === "checking") return;
@@ -79,7 +82,7 @@ const AdminDashboard = () => {
       return;
     }
     loadData();
-  }, [authStatus, user, navigate]);
+  }, [authStatus, user, navigate, loadData]);
 
   const handleVenueChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const venueId = e.target.value;
@@ -182,21 +185,21 @@ const AdminDashboard = () => {
       (e.target as HTMLFormElement).reset();
       setSelectedVenueId("");
       clearCoverImage();
-    } catch (err: any) {
-      toast({ title: "Error al crear", description: err.message, variant: "destructive" });
+    } catch (err: unknown) {
+      toast({ title: "Error al crear", description: getErrorMessage(err, "No fue posible crear el evento"), variant: "destructive" });
     }
   };
 
   const deployContract = async (id: string) => {
     setDeployingId(id);
     try {
-      const res = await apiFetch<any>(`/api/admin/events/${id}/deploy`, { method: "POST" });
+      const res = await apiFetch<{ success?: boolean; contractAddress?: string }>(`/api/admin/events/${id}/deploy`, { method: "POST" });
       if (res?.success) {
-        toast({ title: "Deploy On-Chain Exitoso", description: `Contrato: ${res.contractAddress.slice(0,8)}...` });
+        toast({ title: "Deploy On-Chain Exitoso", description: `Contrato: ${res.contractAddress?.slice(0,8) ?? ""}...` });
         loadData();
       }
-    } catch (err: any) {
-      toast({ title: "Fallo el Despliegue", description: err.message, variant: "destructive" });
+    } catch (err: unknown) {
+      toast({ title: "Fallo el Despliegue", description: getErrorMessage(err, "No fue posible desplegar el contrato"), variant: "destructive" });
     } finally {
       setDeployingId(null);
     }

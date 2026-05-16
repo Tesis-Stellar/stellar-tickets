@@ -9,6 +9,9 @@ import { getEventBySlug, getEventById, type EventData } from "@/data/events";
 import { getOfficialPurchasePath, shouldRedirectPurchaseMode } from "@/lib/purchaseRoute";
 import { useToast } from "@/hooks/use-toast";
 
+const getErrorMessage = (error: unknown, fallback: string) =>
+  error instanceof Error ? error.message : fallback;
+
 interface SeatsApiResponse {
   venueType: VenueType;
   venueName: string;
@@ -61,8 +64,8 @@ const SeatSelection = () => {
           try {
             const data = await apiFetch<SeatsApiResponse>(`/api/events/${ev.id}/seats`);
             setSeatsResponse(data);
-          } catch (e: any) {
-            setError(e?.message || "No fue posible cargar los asientos");
+          } catch (e: unknown) {
+            setError(getErrorMessage(e, "No fue posible cargar los asientos"));
           }
         }
       } catch {
@@ -121,11 +124,11 @@ const SeatSelection = () => {
           });
         }
         navigate("/carrito");
-      } catch (e: any) {
+      } catch (e: unknown) {
         // Seats may have been taken by another user between selection and add.
         toast({
           title: "No se pudieron reservar los asientos",
-          description: e?.message ?? "Recarga la disponibilidad y vuelve a intentar.",
+          description: getErrorMessage(e, "Recarga la disponibilidad y vuelve a intentar."),
           variant: "destructive",
         });
         // Refresh seat availability

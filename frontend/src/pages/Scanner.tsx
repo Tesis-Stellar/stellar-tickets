@@ -6,6 +6,9 @@ import { CheckCircle2, XCircle, Loader2, ShieldCheck, Camera } from "lucide-reac
 import { useAppContext } from "@/context/AppContext";
 import { parseScannerPayload } from "@/lib/scannerPayload";
 
+const getErrorMessage = (error: unknown, fallback: string) =>
+  error instanceof Error ? error.message : fallback;
+
 export const ScannerPage = () => {
   const { user, authStatus, apiFetch } = useAppContext();
   const navigate = useNavigate();
@@ -30,7 +33,7 @@ export const ScannerPage = () => {
       setLoading(true);
       const { body, label } = parseScannerPayload(value);
 
-      const res = await apiFetch<any>("/api/admin/scan", {
+      const res = await apiFetch<{ success?: boolean }>("/api/admin/scan", {
         method: "POST",
         body: JSON.stringify(body)
       });
@@ -42,11 +45,11 @@ export const ScannerPage = () => {
           submessage: `Entrada validada: ${label}`
         });
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       setResult({
         type: "error",
         message: "Acceso Denegado",
-        submessage: err.message || "QR Inválido o ya fue escaneado."
+        submessage: getErrorMessage(err, "QR Inválido o ya fue escaneado.")
       });
     } finally {
       // Re-enable scanning after 3 seconds

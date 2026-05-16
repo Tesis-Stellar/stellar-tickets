@@ -63,6 +63,7 @@ interface EventListItemDto {
   isFeatured?: boolean;
   hasSeatSelection?: boolean;
   hasAssignedSeating?: boolean;
+  venueType?: string;
   venue?: { name?: string } | string;
   minPrice?: { amount?: number; value?: number } | number;
 }
@@ -115,7 +116,7 @@ const mapEvent = (item: EventListItemDto): EventData => {
     bannerImage: item.bannerImage || item.posterImage || "https://placehold.co/1200x400?text=Evento",
     featured: item.isFeatured ?? false,
     hasSeatSelection: item.hasSeatSelection ?? item.hasAssignedSeating ?? false,
-    venueType: (item as any).venueType ?? undefined,
+    venueType: item.venueType,
     ticketTypes: [],
     relatedEventIds: [],
     price: price > 0 ? `Desde ${toCurrency(price)}` : "Gratis",

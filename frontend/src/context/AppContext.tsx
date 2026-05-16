@@ -52,6 +52,7 @@ type ResaleFlowOptions = {
 
 type TicketApiResponse = {
   id: string;
+  ticketCode?: string;
   purchasedAt?: string;
   quantity: number;
   seatIds?: string[];
@@ -67,7 +68,40 @@ type TicketApiResponse = {
   acquiredViaResale?: boolean;
   seatLabel?: string | null;
   sectionName?: string | null;
+  nftContractAddress?: string | null;
+  nftTokenId?: number | null;
   qrPayload?: string | null;
+};
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null;
+const getErrorMessage = (error: unknown, fallback: string) =>
+  error instanceof Error ? error.message : fallback;
+const hasFreighterError = (value: unknown) =>
+  isRecord(value) && isRecord(value.error);
+const getFreighterErrorMessage = (value: unknown, fallback: string) =>
+  isRecord(value) && isRecord(value.error) && typeof value.error.message === "string"
+    ? value.error.message
+    : fallback;
+const getFreighterAddress = (value: unknown) =>
+  typeof value === "string" ? value : isRecord(value) && typeof value.address === "string" ? value.address : "";
+const getFreighterFlag = (value: unknown, key: "isAllowed" | "isConnected") =>
+  typeof value === "boolean" ? value : isRecord(value) && typeof value[key] === "boolean" ? value[key] : false;
+const getSignedTxXdr = (value: unknown) =>
+  typeof value === "string" ? value : isRecord(value) && typeof value.signedTxXdr === "string" ? value.signedTxXdr : "";
+const getSignedMessagePayload = (value: unknown) => {
+  if (!isRecord(value)) return { signedMessage: undefined, signerAddress: undefined };
+  const signedMessage = value.signedMessage;
+  const signerAddress = typeof value.signerAddress === "string" ? value.signerAddress : undefined;
+  return { signedMessage, signerAddress };
+};
+const serializeSignedMessage = (value: unknown) => {
+  if (typeof value === "string") return value;
+  if (value instanceof Uint8Array) return btoa(String.fromCharCode(...Array.from(value)));
+  if (Array.isArray(value) && value.every((item): item is number => typeof item === "number")) {
+    return btoa(String.fromCharCode(...value));
+  }
+  return "";
 };
 
 type OrderApiResponse = {
@@ -343,7 +377,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       ticketsData.map((ticket) => ({
         id: ticket.id,
         event: normalizeEventData(ticket.event),
-        ticketCode: (ticket as any)?.ticketCode,
+        ticketCode: ticket.ticketCode,
         ticketType: {
           id: ticket.ticketType?.id ?? "unknown",
           name: ticket.ticketType?.name ?? "Boleta",
@@ -365,8 +399,8 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         acquiredViaResale: ticket.acquiredViaResale ?? false,
         seatLabel: ticket.seatLabel ?? null,
         sectionName: ticket.sectionName ?? null,
-        nftContractAddress: (ticket as any).nftContractAddress ?? null,
-        nftTokenId: (ticket as any).nftTokenId ?? null,
+        nftContractAddress: ticket.nftContractAddress ?? null,
+        nftTokenId: ticket.nftTokenId ?? null,
         qrPayload: ticket.qrPayload ?? null,
       })),
     []
@@ -743,33 +777,33 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   const ensureFreighterReady = useCallback(async (expectedAddress?: string): Promise<string> => {
     const api = await import("@stellar/freighter-api");
     const connectedRes = await api.isConnected();
-    const connected = (connectedRes as any)?.isConnected ?? connectedRes;
+    const connected = getFreighterFlag(connectedRes, "isConnected");
     if (!connected) {
       throw new Error("Freighter no está disponible en este navegador. Instala la extensión y desbloquéala.");
     }
     const allowedRes = await api.isAllowed();
-    const allowed = (allowedRes as any)?.isAllowed ?? allowedRes;
+    const allowed = getFreighterFlag(allowedRes, "isAllowed");
     let accessAddress = "";
     if (!allowed) {
       const accessRes = await api.requestAccess();
-      if ((accessRes as any)?.error) {
+      if (hasFreighterError(accessRes)) {
         throw new Error("Freighter rechazó la conexión. Acepta el permiso para este sitio y vuelve a intentar.");
       }
-      accessAddress = (accessRes as any)?.address ?? (typeof accessRes === "string" ? accessRes : "");
+      accessAddress = getFreighterAddress(accessRes);
     }
     let active = accessAddress;
     try {
       const addrRes = await api.getAddress();
-      active = ((addrRes as any)?.address ?? (typeof addrRes === "string" ? addrRes : "")) || active;
+      active = getFreighterAddress(addrRes) || active;
     } catch {
       // requestAccess already gives us the selected address on supported Freighter versions.
     }
     if (!active) {
       const accessRes = await api.requestAccess();
-      if ((accessRes as any)?.error) {
+      if (hasFreighterError(accessRes)) {
         throw new Error("Freighter rechazó la conexión. Acepta el permiso para este sitio y vuelve a intentar.");
       }
-      active = (accessRes as any)?.address ?? (typeof accessRes === "string" ? accessRes : "");
+      active = getFreighterAddress(accessRes);
     }
     if (!active) {
       throw new Error("Freighter no pudo confirmar la cuenta activa. Abre la extensión, desbloquéala y vuelve a intentar.");
@@ -825,8 +859,8 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
             ? "La boleta quedó asegurada en blockchain, pero el NFT coleccionable no se pudo mintear todavía."
             : undefined,
         };
-      } catch (error: any) {
-        const msg = error.message || "Error asegurando ticket en blockchain";
+      } catch (error: unknown) {
+        const msg = getErrorMessage(error, "Error asegurando ticket en blockchain");
         return { success: false, error: msg };
       }
     },
@@ -846,7 +880,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         options?.onStatus?.("signing");
         const { signTransaction } = await import("@stellar/freighter-api");
         const signResult = await signTransaction(xdr, { networkPassphrase });
-        const signedXdr = typeof signResult === "string" ? signResult : (signResult as any)?.signedTxXdr ?? "";
+        const signedXdr = getSignedTxXdr(signResult);
         if (!signedXdr) {
           options?.onStatus?.("failed");
           return { success: false, error: "Firma cancelada por el usuario" };
@@ -868,9 +902,9 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         setBalanceVersion((v) => v + 1);
         options?.onStatus?.("confirmed");
         return { success: true, txHash: result.txHash };
-      } catch (error: any) {
+      } catch (error: unknown) {
         options?.onStatus?.("failed");
-        return { success: false, error: error.message || "Error listando ticket" };
+        return { success: false, error: getErrorMessage(error, "Error listando ticket") };
       }
     },
     [apiFetch, ensureFreighterReady, waitForTicketReconciliation, walletAddress]
@@ -888,7 +922,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         options?.onStatus?.("signing");
         const { signTransaction } = await import("@stellar/freighter-api");
         const signResult = await signTransaction(xdr, { networkPassphrase });
-        const signedXdr = typeof signResult === "string" ? signResult : (signResult as any)?.signedTxXdr ?? "";
+        const signedXdr = getSignedTxXdr(signResult);
         if (!signedXdr) {
           options?.onStatus?.("failed");
           return { success: false, error: "Firma cancelada por el usuario" };
@@ -910,9 +944,9 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         setBalanceVersion((v) => v + 1);
         options?.onStatus?.("confirmed");
         return { success: true, txHash: result.txHash };
-      } catch (error: any) {
+      } catch (error: unknown) {
         options?.onStatus?.("failed");
-        return { success: false, error: error.message || "Error cancelando listado" };
+        return { success: false, error: getErrorMessage(error, "Error cancelando listado") };
       }
     },
     [apiFetch, ensureFreighterReady, waitForTicketReconciliation, walletAddress]
@@ -940,7 +974,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         // 2. Firma + submit del comprar_boleto
         options?.onStatus?.("signing");
         const signResult = await signTransaction(xdr, { networkPassphrase });
-        const signedXdr = typeof signResult === "string" ? signResult : (signResult as any)?.signedTxXdr ?? "";
+        const signedXdr = getSignedTxXdr(signResult);
         if (!signedXdr) {
           options?.onStatus?.("failed");
           return { success: false, error: "Firma cancelada por el usuario" };
@@ -968,8 +1002,8 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
               expectedVersion: currentVersion + 1,
             }),
           });
-        } catch (e: any) {
-          console.warn("[nft] verified transfer skipped:", e?.message);
+        } catch (e: unknown) {
+          console.warn("[nft] verified transfer skipped:", getErrorMessage(e, "transfer failed"));
         }
         const confirmed = await waitForTicketReconciliation(
           (tickets) =>
@@ -989,9 +1023,9 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
 
         options?.onStatus?.("confirmed");
         return { success: true, txHash: submitResult.txHash };
-      } catch (error: any) {
+      } catch (error: unknown) {
         options?.onStatus?.("failed");
-        return { success: false, error: error.message || "Error comprando ticket" };
+        return { success: false, error: getErrorMessage(error, "Error comprando ticket") };
       }
     },
     [apiFetch, refreshSoldTickets, ensureFreighterReady, waitForTicketReconciliation]
@@ -1013,20 +1047,16 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         networkPassphrase: STELLAR_TESTNET_PASSPHRASE,
         address: walletAddress,
       });
-      if ((signed as any)?.error) {
-        throw new Error((signed as any).error.message ?? "Freighter no pudo firmar el challenge de wallet");
+      if (hasFreighterError(signed)) {
+        throw new Error(getFreighterErrorMessage(signed, "Freighter no pudo firmar el challenge de wallet"));
       }
 
-      const signedMessage = (signed as any)?.signedMessage;
-      const signerAddress = (signed as any)?.signerAddress;
+      const { signedMessage, signerAddress } = getSignedMessagePayload(signed);
       if (signerAddress && signerAddress !== walletAddress) {
         throw new Error("La firma no corresponde a la wallet seleccionada en Freighter");
       }
 
-      const signature =
-        typeof signedMessage === "string"
-          ? signedMessage
-          : btoa(String.fromCharCode(...Array.from(signedMessage ?? [])));
+      const signature = serializeSignedMessage(signedMessage);
 
       await apiFetch("/api/users/me/wallet", {
         method: "PATCH",

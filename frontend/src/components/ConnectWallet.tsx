@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useCallback, useState, useEffect } from "react";
 import { Wallet } from "lucide-react";
 import { useAppContext } from "@/context/AppContext";
 import { useXlmPrice, formatCOP } from "@/hooks/useXlmPrice";
@@ -8,7 +8,21 @@ import { useToast } from "@/hooks/use-toast";
 const freighterApi = () => import("@stellar/freighter-api");
 
 const HORIZON_URL = "https://horizon-testnet.stellar.org";
-const isFreighterInjected = () => typeof window !== "undefined" && Boolean((window as any).freighter);
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null;
+const getErrorMessage = (error: unknown, fallback = "") =>
+  error instanceof Error ? error.message : fallback;
+const hasFreighterError = (value: unknown) =>
+  isRecord(value) && isRecord(value.error);
+const getFreighterErrorMessage = (value: unknown, fallback: string) =>
+  isRecord(value) && isRecord(value.error) && typeof value.error.message === "string"
+    ? value.error.message
+    : fallback;
+const getFreighterAddress = (value: unknown) =>
+  typeof value === "string" ? value : isRecord(value) && typeof value.address === "string" ? value.address : "";
+const getFreighterFlag = (value: unknown, key: "isAllowed" | "isConnected") =>
+  typeof value === "boolean" ? value : isRecord(value) && typeof value[key] === "boolean" ? value[key] : false;
+const isFreighterInjected = () => typeof window !== "undefined" && "freighter" in window;
 const isSafariBrowser = () =>
   typeof navigator !== "undefined" &&
   /^((?!chrome|android|crios|fxios|edgios).)*safari/i.test(navigator.userAgent);
@@ -21,24 +35,24 @@ export const ConnectWallet = () => {
   const [loading, setLoading] = useState(!walletAddress);
   const xlmCop = useXlmPrice();
 
-  const fetchBalance = async (pk: string) => {
+  const fetchBalance = useCallback(async (pk: string) => {
     try {
       const res = await fetch(`${HORIZON_URL}/accounts/${pk}`);
       if (!res.ok) return;
-      const data = await res.json();
-      const native = data.balances?.find((b: any) => b.asset_type === "native");
-      if (native) setBalance(parseFloat(native.balance).toFixed(2));
+      const data = (await res.json()) as { balances?: Array<{ asset_type?: string; balance?: string }> };
+      const native = data.balances?.find((b) => b.asset_type === "native");
+      if (native?.balance) setBalance(parseFloat(native.balance).toFixed(2));
     } catch {
       // Silently fail — balance is optional UX
     }
-  };
+  }, []);
 
-  const tryLinkWallet = async (pk: string): Promise<boolean> => {
+  const tryLinkWallet = useCallback(async (pk: string): Promise<boolean> => {
     try {
       await linkWallet(pk);
       return true;
-    } catch (err: any) {
-      const msg = err.message ?? "";
+    } catch (err: unknown) {
+      const msg = getErrorMessage(err);
       if (msg.includes("409") || msg.includes("ya vinculada")) {
         toast({
           title: "Wallet ya vinculada",
@@ -56,12 +70,12 @@ export const ConnectWallet = () => {
       });
       return false;
     }
-  };
+  }, [linkWallet, setWalletAddress, toast]);
 
   // Refresh balance when balanceVersion changes (after buy/list/cancel) or address loads
   useEffect(() => {
     if (address) fetchBalance(address);
-  }, [balanceVersion, address]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [balanceVersion, address, fetchBalance]);
 
   // Auto-detect Freighter only if logged in AND no address cached in context yet.
   useEffect(() => {
@@ -80,10 +94,10 @@ export const ConnectWallet = () => {
         if (!isFreighterInjected()) return;
         const api = await freighterApi();
         const allowResult = await api.isAllowed();
-        const allowed = (allowResult as any)?.isAllowed ?? allowResult;
+        const allowed = getFreighterFlag(allowResult, "isAllowed");
         if (!allowed) return;
         const addrResult = await api.getAddress();
-        const pk = (addrResult as any)?.address ?? (typeof addrResult === "string" ? addrResult : "");
+        const pk = getFreighterAddress(addrResult);
         if (pk) {
           const linked = await tryLinkWallet(pk);
           if (linked) {
@@ -97,7 +111,7 @@ export const ConnectWallet = () => {
       }
     };
     checkConnection();
-  }, [setWalletAddress, linkWallet, isLoggedIn, address]);
+  }, [setWalletAddress, isLoggedIn, address, tryLinkWallet]);
 
   const connectWallet = async () => {
     if (!isLoggedIn) {
@@ -120,15 +134,15 @@ export const ConnectWallet = () => {
       }
       const api = await freighterApi();
       const accessResult = await api.requestAccess();
-      if ((accessResult as any)?.error) {
+      if (hasFreighterError(accessResult)) {
         toast({
           title: "Freighter rechazó la conexión",
-          description: (accessResult as any).error.message ?? "La extensión no permitió conectar la billetera.",
+          description: getFreighterErrorMessage(accessResult, "La extensión no permitió conectar la billetera."),
           variant: "destructive",
         });
         return;
       }
-      const pk = (accessResult as any)?.address ?? (typeof accessResult === "string" ? accessResult : "");
+      const pk = getFreighterAddress(accessResult);
       if (pk) {
         const linked = await tryLinkWallet(pk);
         if (linked) {
