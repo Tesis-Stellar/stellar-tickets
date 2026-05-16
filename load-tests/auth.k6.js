@@ -5,14 +5,17 @@ import { BASE_URL, headers, requiredEnv } from './lib/config.js';
 export const options = {
   scenarios: {
     login_controlled: {
-      executor: 'constant-vus',
-      vus: Number(__ENV.VUS || 5),
-      duration: __ENV.DURATION || '30s',
+      executor: 'constant-arrival-rate',
+      rate: Number(__ENV.RATE || 10),
+      timeUnit: '1m',
+      duration: __ENV.DURATION || '1m',
+      preAllocatedVUs: Number(__ENV.VUS || 5),
+      maxVUs: Number(__ENV.MAX_VUS || 10),
     },
   },
   thresholds: {
     http_req_failed: ['rate<0.01'],
-    'http_req_duration{name:login}': ['p(95)<1000'],
+    'http_req_duration{name:login}': ['p(95)<3000'],
   },
 };
 

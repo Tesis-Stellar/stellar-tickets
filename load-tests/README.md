@@ -40,7 +40,7 @@ LOAD_TEST_PASSWORD='<PASSWORD_DE_PRUEBA>' \
 k6 run load-tests/auth.k6.js
 ```
 
-Por defecto usa 5 usuarios virtuales durante 30 segundos.
+Por defecto usa 10 requests por minuto durante 1 minuto, con 5 VUs prealocados.
 
 ### Scanner
 
@@ -52,6 +52,8 @@ SCANNER_EMAIL=<EMAIL_STAFF_O_ADMIN> \
 SCANNER_PASSWORD='<PASSWORD_DE_PRUEBA>' \
 k6 run load-tests/scanner.k6.js
 ```
+
+Por defecto usa 30 requests por minuto durante 1 minuto, con 5 VUs prealocados.
 
 Modo con QR real: el primer request puede marcar el ticket como usado y los siguientes deben responder 409. Usarlo solo con fixtures temporales.
 
@@ -67,6 +69,7 @@ k6 run load-tests/scanner.k6.js
 
 - `BASE_URL`: API objetivo. Default: `http://localhost:3000`.
 - `VUS`: cantidad de usuarios virtuales.
+- `RATE`: requests por minuto en escenarios controlados.
 - `DURATION`: duracion del escenario.
 
 Ejemplo:

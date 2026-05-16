@@ -7,9 +7,12 @@ http.setResponseCallback(http.expectedStatuses(200, 400, 409));
 export const options = {
   scenarios: {
     scanner_controlled: {
-      executor: 'constant-vus',
-      vus: Number(__ENV.VUS || 5),
-      duration: __ENV.DURATION || '30s',
+      executor: 'constant-arrival-rate',
+      rate: Number(__ENV.RATE || 30),
+      timeUnit: '1m',
+      duration: __ENV.DURATION || '1m',
+      preAllocatedVUs: Number(__ENV.VUS || 5),
+      maxVUs: Number(__ENV.MAX_VUS || 10),
     },
   },
   thresholds: {

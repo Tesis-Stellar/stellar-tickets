@@ -171,14 +171,17 @@ async function authMiddleware(req: Request, res: Response, next: NextFunction) {
   try {
     const payload = jwt.verify(header.slice(7), EFFECTIVE_JWT_SECRET) as { userId: string };
     (req as any).userId = payload.userId;
-    const user = await prisma.users.findUnique({
-      where: { id: payload.userId },
-      select: { is_active: true },
-    });
+    const user = await cached(`auth:user:${payload.userId}`, 30_000, () =>
+      prisma.users.findUnique({
+        where: { id: payload.userId },
+        select: { id: true, role: true, is_active: true },
+      })
+    );
     if (user && !user.is_active) {
       sendApiError(req, res, 403, 'USER_INACTIVE', 'Usuario inactivo');
       return;
     }
+    (req as any).authUser = user;
     next();
   } catch {
     sendApiError(req, res, 401, 'UNAUTHORIZED', 'Token inválido o expirado');
@@ -225,11 +228,24 @@ app.use(cors({
 app.use(express.json({ limit: '8mb' }));
 
 // ── In-memory cache (avoids repeated Supabase round-trips ~150ms each) ──
-const cache = new Map<string, { data: any; expires: number }>();
+const cache = new Map<string, { data?: any; promise?: Promise<any>; expires: number }>();
 function cached<T>(key: string, ttlMs: number, fn: () => Promise<T>): Promise<T> {
   const hit = cache.get(key);
-  if (hit && Date.now() < hit.expires) return Promise.resolve(hit.data as T);
-  return fn().then((data) => { cache.set(key, { data, expires: Date.now() + ttlMs }); return data; });
+  if (hit && Date.now() < hit.expires) {
+    if (hit.promise) return hit.promise as Promise<T>;
+    return Promise.resolve(hit.data as T);
+  }
+  const promise = fn()
+    .then((data) => {
+      cache.set(key, { data, expires: Date.now() + ttlMs });
+      return data;
+    })
+    .catch((error) => {
+      cache.delete(key);
+      throw error;
+    });
+  cache.set(key, { promise, expires: Date.now() + ttlMs });
+  return promise;
 }
 function invalidateCache(prefix?: string) {
   if (!prefix) { cache.clear(); return; }
@@ -838,13 +854,15 @@ app.get('/api/events/:slug', async (req, res) => {
     // Live tickets are NOT cached (change frequently with resale)
     let live_tickets: any[] = [];
     if (event.contract_address) {
-       const rawTickets = await prisma.tickets.findMany({
-         where: { contract_address: event.contract_address, is_for_sale: true, status: 'ACTIVE' },
-         select: {
-           id: true, ticket_root_id: true, version: true, owner_wallet: true, contract_address: true, resale_price: true, asset_code: true,
-           nft_token_id: true,
-         } as any,
-       }) as any[];
+       const rawTickets = await cached(`events:live-tickets:${event.contract_address}`, 30_000, () =>
+         prisma.tickets.findMany({
+           where: { contract_address: event.contract_address, is_for_sale: true, status: 'ACTIVE' },
+           select: {
+             id: true, ticket_root_id: true, version: true, owner_wallet: true, contract_address: true, resale_price: true, asset_code: true,
+             nft_token_id: true,
+           } as any,
+         })
+       ) as any[];
        live_tickets = rawTickets.map(t => ({
          id: t.id,
          ticketRootId: t.ticket_root_id,
@@ -1886,10 +1904,12 @@ app.post('/api/transactions/transfer-nft', transactionRateLimit, authMiddleware,
 app.get('/api/nft/metadata/:nftContractAddress/:tokenId', async (req, res) => {
   try {
     const { nftContractAddress, tokenId } = req.params;
-    const event = await prisma.events.findFirst({
-      where: { nft_contract_address: nftContractAddress } as any,
-      select: { title: true, starts_at: true, contract_address: true, slug: true } as any,
-    });
+    const event = await cached(`nft:metadata:event:${nftContractAddress}`, 3_600_000, () =>
+      prisma.events.findFirst({
+        where: { nft_contract_address: nftContractAddress } as any,
+        select: { title: true, starts_at: true, contract_address: true, slug: true } as any,
+      })
+    );
     if (!event) {
       sendApiError(req, res, 404, 'NOT_FOUND', 'NFT contract no encontrado');
       return;
@@ -1928,22 +1948,26 @@ app.get('/api/nft/qr/:nftContractAddress/:tokenIdRaw', async (req, res) => {
     }
     const cacheKey = `nft:${nftContractAddress}:${tokenId}`;
     if (!qrCache.has(cacheKey)) {
-      const event = await prisma.events.findFirst({
-        where: { nft_contract_address: nftContractAddress } as any,
-        select: { id: true, contract_address: true } as any,
-      });
+      const event = await cached(`nft:qr:event:${nftContractAddress}`, 3_600_000, () =>
+        prisma.events.findFirst({
+          where: { nft_contract_address: nftContractAddress } as any,
+          select: { id: true, contract_address: true } as any,
+        })
+      );
       const eventContract = (event as any)?.contract_address as string | null | undefined;
       if (!eventContract) {
         sendApiError(req, res, 404, 'NOT_FOUND', 'NFT contract no encontrado');
         return;
       }
-      const ticket = await prisma.tickets.findFirst({
-        where: {
-          contract_address: eventContract,
-          nft_token_id: tokenId,
-        } as any,
-        select: { ticket_root_id: true, version: true, owner_wallet: true } as any,
-      });
+      const ticket = await cached(`nft:qr:ticket:${eventContract}:${tokenId}`, 3_600_000, () =>
+        prisma.tickets.findFirst({
+          where: {
+            contract_address: eventContract,
+            nft_token_id: tokenId,
+          } as any,
+          select: { ticket_root_id: true, version: true, owner_wallet: true } as any,
+        })
+      );
       if (!ticket || (ticket as any).ticket_root_id == null || (ticket as any).version == null) {
         sendApiError(req, res, 404, 'NOT_FOUND', 'NFT token no encontrado');
         return;
@@ -2025,7 +2049,7 @@ app.get('/api/admin/venues', authMiddleware, async (req, res) => {
 // POST /api/admin/scan — Redeem a ticket
 app.post('/api/admin/scan', scannerRateLimit, authMiddleware, async (req, res) => {
   try {
-    const user = await prisma.users.findUnique({ where: { id: (req as any).userId } });
+    const user = (req as any).authUser ?? await prisma.users.findUnique({ where: { id: (req as any).userId } });
     const roleDecision = authorizeScannerRole(user?.role);
     if (roleDecision) {
       sendApiError(req, res, roleDecision.status, codeForStatus(roleDecision.status), roleDecision.error);

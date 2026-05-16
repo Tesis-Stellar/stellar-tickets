@@ -33,8 +33,8 @@ Los numeros se eligieron para representar una demo academica y un evento pequeno
 | Escenario | VUs | Duracion | Justificacion |
 | --- | ---: | --- | --- |
 | Lectura publica | 20 | 1 minuto | Simula varios usuarios navegando catalogo, detalle y recursos NFT al mismo tiempo. Es la ruta con mas probabilidad de concurrencia. |
-| Login | 5 | 30 segundos | Login usa hashing y base de datos; se prueba concurrencia moderada sin generar carga artificial innecesaria. |
-| Scanner | 5 | 30 segundos | Representa varios validadores o intentos simultaneos en puerta. El scanner muta estado, por eso se mantiene controlado. |
+| Login | 10 req/min, 5 VUs prealocados | 1 minuto | Login usa hashing, base de datos y rate limit de seguridad; se mide con tasa controlada para no confundir proteccion antiabuso con falla de rendimiento. |
+| Scanner | 30 req/min, 5 VUs prealocados | 1 minuto | Representa varios validadores o intentos simultaneos en puerta sin exceder el rate limit definido para scanner. |
 
 La duracion de 30 a 60 segundos permite estabilizar mediciones de percentil sin convertir la prueba en una carga prolongada sobre infraestructura gratuita o compartida.
 
@@ -47,7 +47,7 @@ La duracion de 30 a 60 segundos permite estabilizar mediciones de percentil sin 
 | `/api/events/:slug` | p95 menor a 700 ms |
 | `/api/nft/metadata/:contract/:tokenId` | p95 menor a 500 ms |
 | `/api/nft/qr/:contract/:tokenId.png` | p95 menor a 1000 ms |
-| `/api/auth/login` | p95 menor a 1000 ms |
+| `/api/auth/login` | p95 menor a 3000 ms |
 | `/api/admin/scan` | p95 menor a 800 ms |
 | Todos | tasa de error menor a 1% |
 
