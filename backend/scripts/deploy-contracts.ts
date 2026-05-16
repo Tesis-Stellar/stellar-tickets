@@ -7,9 +7,9 @@
  * 1. Generates (or reuses) admin + platform + organizer keypairs
  * 2. Funds them via Friendbot (testnet faucet)
  * 3. Uploads event_contract WASM → gets wasm hash
- * 4. Deploys one event_contract instance per event
+ * 4. Deploys one event_contract instance per target event
  * 5. Initializes each contract (organizer, platform, token, commissions)
- * 6. Updates the database with contract addresses
+ * 6. Updates only the target event with its contract address
  */
 
 import {
@@ -176,6 +176,7 @@ async function initializeEventContract(
 
 async function main() {
   console.log('=== Soroban Contract Deployment to Testnet ===\n');
+  const deployEventId = process.env.DEPLOY_EVENT_ID?.trim();
 
   // 1. Load keys from .env.deploy (pre-configured wallets)
   const envDeployPath = path.resolve(__dirname, '../.env.deploy');
@@ -208,17 +209,21 @@ async function main() {
   }
   const wasmHash = await uploadWasm(adminKeypair, eventWasmPath);
 
-  // 4. Clear existing contract addresses and redeploy all PUBLISHED events
-  await prisma.events.updateMany({
-    where: { status: 'PUBLISHED' },
-    data: { contract_address: null },
-  });
+  // 4. Deploy only the requested event when invoked from admin. Never clear
+  // contracts already attached to other events; tickets may already reference them.
   const events = await prisma.events.findMany({
-    where: { status: 'PUBLISHED' },
+    where: {
+      status: 'PUBLISHED',
+      ...(deployEventId ? { id: deployEventId, contract_address: null } : { contract_address: null }),
+    },
     orderBy: { created_at: 'asc' },
   });
 
-  console.log(`\nFound ${events.length} events without contracts`);
+  if (deployEventId && events.length === 0) {
+    throw new Error(`No deployable PUBLISHED event without contract found for DEPLOY_EVENT_ID=${deployEventId}`);
+  }
+
+  console.log(`\nFound ${events.length} deployable event(s) without contracts`);
 
   // 5. Deploy and initialize one contract per event
   for (let i = 0; i < events.length; i++) {

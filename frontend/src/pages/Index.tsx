@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { Header } from "@/components/layout/Header";
 import { HeroSearch } from "@/components/layout/HeroSearch";
 import { BannerCarousel } from "@/components/ui/BannerCarousel";
@@ -48,9 +49,9 @@ const Index = () => {
             <h2 className="text-2xl md:text-3xl font-black text-foreground uppercase tracking-tight">
               Eventos Destacados
             </h2>
-            <a href="#" className="text-primary font-bold text-sm hover:underline">
+            <Link to="/eventos" className="text-primary font-bold text-sm hover:underline">
               Ver todos →
-            </a>
+            </Link>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 md:gap-6">
@@ -97,9 +98,9 @@ const Index = () => {
                   Las experiencias más grandes del año
                 </p>
               </div>
-              <a href="#" className="text-primary font-bold text-sm hover:underline">
+              <Link to="/eventos/festivales" className="text-primary font-bold text-sm hover:underline">
                 Ver todos →
-              </a>
+              </Link>
             </div>
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
               {festivalEvents.map((event) => (

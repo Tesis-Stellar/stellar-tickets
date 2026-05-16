@@ -66,16 +66,16 @@ model events {
   organizer_id         String                 @db.Uuid
   category_id          Int                    @db.SmallInt
   venue_id             String                 @db.Uuid
-  slug                 String
+  slug                 String                 @unique(map: "uq_events_slug")
   title                String
   description          String?
+  cover_image_url      String?
   starts_at            DateTime               @db.Timestamptz(6)
   ends_at              DateTime?              @db.Timestamptz(6)
   sales_start_at       DateTime?              @db.Timestamptz(6)
   sales_end_at         DateTime?              @db.Timestamptz(6)
   has_assigned_seating Boolean                @default(false)
   max_tickets_per_user Int                    @default(6) @db.SmallInt
-  cover_image_url      String?
   status               event_status           @default(DRAFT)
   created_at           DateTime               @default(now()) @db.Timestamptz(6)
   updated_at           DateTime               @default(now()) @db.Timestamptz(6)
@@ -87,6 +87,7 @@ model events {
   venues               venues                 @relation(fields: [venue_id], references: [id], onUpdate: NoAction, map: "fk_events_venue")
 
   @@index([category_id, status, starts_at], map: "idx_events_category_status_starts_at")
+  @@index([status, starts_at], map: "idx_events_status_starts_at")
   @@index([organizer_id, starts_at], map: "idx_events_organizer_starts_at")
   @@index([venue_id, starts_at], map: "idx_events_venue_starts_at")
   @@schema("ticketing")
@@ -125,25 +126,44 @@ model venues {
 }
 
 model users {
-  id              String        @id(map: "pk_users") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  first_name      String
-  last_name       String
-  email           String        @db.Citext
-  password_hash   String
-  wallet_address  String?       @unique
-  document_type   document_type
-  document_number String
-  phone           String?
-  role            user_role     @default(CUSTOMER)
-  is_active       Boolean       @default(true)
-  last_login_at   DateTime?     @db.Timestamptz(6)
-  created_at      DateTime      @default(now()) @db.Timestamptz(6)
-  updated_at      DateTime      @default(now()) @db.Timestamptz(6)
-  deleted_at      DateTime?     @db.Timestamptz(6)
-  carts           carts[]
-  orders          orders[]
-  tickets         tickets[]
+  id                  String                @id(map: "pk_users") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  first_name          String
+  last_name           String
+  email               String                @unique(map: "uq_users_email") @db.Citext
+  password_hash       String
+  wallet_address      String?               @unique
+  document_type       document_type
+  document_number     String
+  phone               String?
+  role                user_role             @default(CUSTOMER)
+  is_active           Boolean               @default(true)
+  last_login_at       DateTime?             @db.Timestamptz(6)
+  created_at          DateTime              @default(now()) @db.Timestamptz(6)
+  updated_at          DateTime              @default(now()) @db.Timestamptz(6)
+  deleted_at          DateTime?             @db.Timestamptz(6)
+  carts               carts[]
+  orders              orders[]
+  tickets             tickets[]
+  wallet_challenges   wallet_challenges[]
+  transaction_intents transaction_intents[]
+  checkins            checkins[]
 
+  @@schema("ticketing")
+}
+
+model wallet_challenges {
+  id             String    @id(map: "pk_wallet_challenges") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id        String    @db.Uuid
+  wallet_address String
+  nonce          String    @unique(map: "uq_wallet_challenges_nonce")
+  message        String
+  expires_at     DateTime  @db.Timestamptz(6)
+  consumed_at    DateTime? @db.Timestamptz(6)
+  created_at     DateTime  @default(now()) @db.Timestamptz(6)
+  users          users     @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_wallet_challenges_user")
+
+  @@index([user_id, wallet_address, consumed_at], map: "idx_wallet_challenges_user_wallet")
+  @@index([expires_at], map: "idx_wallet_challenges_expires_at")
   @@schema("ticketing")
 }
 
@@ -151,27 +171,49 @@ model tickets {
   id               String        @id(map: "pk_tickets") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   contract_address String?
   order_item_id    String?       @db.Uuid
-  owner_user_id String?       @db.Uuid
-  owner_wallet  String?
-  ticket_code   String?       @unique(map: "uq_tickets_ticket_code")
-  ticket_root_id Int?
-  version       Int?
-  is_for_sale   Boolean       @default(false)
-  resale_price  BigInt?
-  asset_code    String?       @unique(map: "tickets_asset_code_key")
-  nft_token_id  Int?
-  qr_payload    String?
-  status        ticket_status @default(ACTIVE)
-  issued_at     DateTime      @default(now()) @db.Timestamptz(6)
-  used_at       DateTime?     @db.Timestamptz(6)
-  cancelled_at  DateTime?     @db.Timestamptz(6)
-  created_at    DateTime      @default(now()) @db.Timestamptz(6)
-  updated_at    DateTime      @default(now()) @db.Timestamptz(6)
-  order_items   order_items?  @relation(fields: [order_item_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_tickets_order_item")
-  users         users?        @relation(fields: [owner_user_id], references: [id], onUpdate: NoAction, map: "fk_tickets_owner_user")
+  owner_user_id    String?       @db.Uuid
+  owner_wallet     String?
+  ticket_code      String?       @unique(map: "uq_tickets_ticket_code")
+  ticket_root_id   Int?
+  version          Int?
+  is_for_sale      Boolean       @default(false)
+  resale_price     BigInt?
+  asset_code       String?       @unique(map: "tickets_asset_code_key")
+  nft_token_id     Int?
+  qr_payload       String?
+  status           ticket_status @default(ACTIVE)
+  lifecycle_reason ticket_lifecycle_reason?
+  issued_at        DateTime      @default(now()) @db.Timestamptz(6)
+  used_at          DateTime?     @db.Timestamptz(6)
+  cancelled_at     DateTime?     @db.Timestamptz(6)
+  created_at       DateTime      @default(now()) @db.Timestamptz(6)
+  updated_at       DateTime      @default(now()) @db.Timestamptz(6)
+  order_items      order_items?  @relation(fields: [order_item_id], references: [id], onDelete: Restrict, onUpdate: NoAction, map: "fk_tickets_order_item")
+  users            users?        @relation(fields: [owner_user_id], references: [id], onUpdate: NoAction, map: "fk_tickets_owner_user")
+  checkins         checkins[]
 
   @@unique([contract_address, ticket_root_id, version])
   @@index([owner_user_id, status], map: "idx_tickets_owner_status")
+  @@index([contract_address, is_for_sale, status], map: "idx_tickets_marketplace_active")
+  @@index([contract_address, ticket_root_id, version(sort: Desc)], map: "idx_tickets_root_version_desc")
+  @@schema("ticketing")
+}
+
+model checkins {
+  id               String   @id(map: "pk_checkins") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  verifier_user_id String   @db.Uuid
+  ticket_id        String?  @db.Uuid
+  result           String
+  source           String   @default("db")
+  reason           String?
+  payload          Json?    @db.JsonB
+  created_at       DateTime @default(now()) @db.Timestamptz(6)
+  users            users    @relation(fields: [verifier_user_id], references: [id], onDelete: Restrict, onUpdate: NoAction, map: "fk_checkins_verifier_user")
+  tickets          tickets? @relation(fields: [ticket_id], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_checkins_ticket")
+
+  @@index([verifier_user_id, created_at(sort: Desc)], map: "idx_checkins_verifier_created_at")
+  @@index([ticket_id, created_at(sort: Desc)], map: "idx_checkins_ticket_created_at")
+  @@index([result, created_at(sort: Desc)], map: "idx_checkins_result_created_at")
   @@schema("ticketing")
 }
 
@@ -184,7 +226,7 @@ model cart_items {
   quantity                Int                   @default(1)
   unit_price_amount       Decimal               @db.Decimal(12, 2)
   service_fee_amount      Decimal               @default(0) @db.Decimal(12, 2)
-  line_total_amount       Decimal?              @default(dbgenerated("((unit_price_amount + service_fee_amount) * (quantity)::numeric)")) @db.Decimal(14, 2)
+  line_total_amount       Decimal?              @db.Decimal(14, 2)
   created_at              DateTime              @default(now()) @db.Timestamptz(6)
   updated_at              DateTime              @default(now()) @db.Timestamptz(6)
   carts                   carts                 @relation(fields: [cart_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_cart_items_cart")
@@ -241,11 +283,11 @@ model order_items {
   quantity                Int                   @default(1)
   unit_price_amount       Decimal               @db.Decimal(12, 2)
   service_fee_amount      Decimal               @default(0) @db.Decimal(12, 2)
-  line_total_amount       Decimal?              @default(dbgenerated("((unit_price_amount + service_fee_amount) * (quantity)::numeric)")) @db.Decimal(14, 2)
+  line_total_amount       Decimal?              @db.Decimal(14, 2)
   created_at              DateTime              @default(now()) @db.Timestamptz(6)
   updated_at              DateTime              @default(now()) @db.Timestamptz(6)
   event_seat_inventory    event_seat_inventory? @relation(fields: [event_seat_inventory_id], references: [id], onDelete: Restrict, onUpdate: NoAction, map: "fk_order_items_event_seat_inventory")
-  orders                  orders                @relation(fields: [order_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_order_items_order")
+  orders                  orders                @relation(fields: [order_id], references: [id], onDelete: Restrict, onUpdate: NoAction, map: "fk_order_items_order")
   event_ticket_types      event_ticket_types?   @relation(fields: [event_ticket_type_id], references: [id], onDelete: Restrict, onUpdate: NoAction, map: "fk_order_items_ticket_type")
   tickets                 tickets[]
 
@@ -445,6 +487,21 @@ enum ticket_status {
   @@schema("ticketing")
 }
 
+enum ticket_lifecycle_reason {
+  LISTED_FOR_RESALE
+  LISTING_CANCELLED
+  RESOLD_PREVIOUS_VERSION
+  PRIMARY_P2P_REPLACED
+  REDEEMED_DB_SCAN
+  REDEEMED_ONCHAIN
+  INVALIDATED_ONCHAIN
+  LEGACY_USED
+  LEGACY_CANCELLED
+  REFUNDED_PAYMENT
+
+  @@schema("ticketing")
+}
+
 enum venue_type {
   ARENA
   STADIUM
@@ -457,9 +514,50 @@ enum venue_type {
 }
 
 model indexer_state {
-  id            Int      @id @default(1)
-  last_ledger   Int      @default(0)
-  updated_at    DateTime @default(now()) @db.Timestamptz(6)
-  
+  id          Int      @id @default(1)
+  last_ledger Int      @default(0)
+  updated_at  DateTime @default(now()) @db.Timestamptz(6)
+
+  @@schema("ticketing")
+}
+
+model onchain_events {
+  id               String   @id(map: "pk_onchain_events") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tx_hash          String
+  ledger           Int
+  contract_address String
+  event_name       String
+  ticket_root_id   Int
+  version          Int
+  payload          Json
+  processed_at     DateTime @default(now()) @db.Timestamptz(6)
+  status           String   @default("PROCESSING")
+  created_at       DateTime @default(now()) @db.Timestamptz(6)
+
+  @@unique([tx_hash, ledger, contract_address, event_name, ticket_root_id, version], map: "uq_onchain_events_idempotency")
+  @@index([contract_address, event_name, ticket_root_id, version], map: "idx_onchain_events_ticket")
+  @@index([tx_hash], map: "idx_onchain_events_tx_hash")
+  @@schema("ticketing")
+}
+
+model transaction_intents {
+  id               String    @id(map: "pk_transaction_intents") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id          String    @db.Uuid
+  wallet_address   String
+  operation        String
+  contract_address String
+  ticket_root_id   Int
+  expected_version Int?
+  expected_price   BigInt?
+  xdr_hash         String    @unique(map: "uq_transaction_intents_xdr_hash")
+  status           String    @default("PENDING")
+  expires_at       DateTime  @db.Timestamptz(6)
+  submitted_at     DateTime? @db.Timestamptz(6)
+  tx_hash          String?
+  created_at       DateTime  @default(now()) @db.Timestamptz(6)
+  users            users     @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_transaction_intents_user")
+
+  @@index([user_id, status, expires_at], map: "idx_transaction_intents_user_status")
+  @@index([contract_address, ticket_root_id, operation], map: "idx_transaction_intents_ticket_operation")
   @@schema("ticketing")
 }

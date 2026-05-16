@@ -7,25 +7,23 @@ import { useAppContext } from "@/context/AppContext";
 import { Ticket, ShoppingBag, User, Settings, ArrowRightLeft } from "lucide-react";
 
 const Account = () => {
-  const { isLoggedIn, user, purchasedTickets, soldTickets, refreshTickets, refreshSoldTickets } = useAppContext();
-
-  // Refresca al entrar al dashboard y cada 8s; las compras P2P pueden tardar
-  // unos segundos en aparecer porque dependen del indexer (~5s polling).
+  const { isLoggedIn, authStatus, user, purchasedTickets, soldTickets, refreshTickets, refreshSoldTickets } = useAppContext();
   useEffect(() => {
     if (!isLoggedIn) return;
     refreshTickets().catch(() => {});
     refreshSoldTickets().catch(() => {});
-    const id = setInterval(() => {
+    const id = window.setInterval(() => {
       refreshTickets().catch(() => {});
       refreshSoldTickets().catch(() => {});
     }, 8000);
-    return () => clearInterval(id);
-  }, [isLoggedIn, refreshTickets, refreshSoldTickets]);
+    return () => window.clearInterval(id);
+  }, [isLoggedIn, refreshSoldTickets, refreshTickets]);
 
+  if (authStatus === "checking") {
+    return <div className="min-h-screen bg-background flex flex-col"><Header /><main className="flex-1 flex items-center justify-center px-4"><p className="text-sm font-bold text-muted-foreground">Cargando sesión...</p></main><Footer /></div>;
+  }
   if (!isLoggedIn) return <Navigate to="/login" replace />;
 
-  // "Mis Compras" cuenta tickets (incluye P2P, que no generan orders en DB),
-  // alineado con lo que muestra /mi-cuenta/compras.
   const purchasesCount = purchasedTickets.length;
 
   const cards = [

@@ -96,15 +96,14 @@ Patrón Factory: deploy de un event_contract independiente por evento.
 
 **Soroban (auth required):**
 - `POST /api/transactions/buy` — XDR builder unsigned
-- `POST /api/transactions/secure-ticket` — `crear_boleto` (organizer-signed); actualiza DB con `contract_address`, `ticket_root_id`, `version`, `owner_wallet` (user, no organizer); genera `asset_code` y devuelve `trustXdr`. Returns `{txHash, contractAddress, ticketRootId, trustXdr, assetCode}`.
+- `POST /api/transactions/secure-ticket` — `crear_boleto_para` (organizer-signed); actualiza DB con `contract_address`, `ticket_root_id`, `version`, `owner_wallet` (user, no organizer). Si el evento tiene `nft_contract_address`, intenta mintear NFT Soroban y devuelve `{txHash, contractAddress, ticketRootId, nftContractAddress, nftTokenId, nftMintTxHash}`. Si el mint falla, el ticket queda asegurado y el NFT queda pendiente/reintentable.
 - `POST /api/transactions/list-ticket` — `listar_boleto` (org-signed). Body `{ticketId, price}` (stroops). DB: `is_for_sale=true`, `resale_price`, `owner_wallet`.
 - `POST /api/transactions/cancel-listing` — `cancelar_venta` (org-signed). Body `{ticketId}`. DB: `is_for_sale=false`, `resale_price=null`.
 - `POST /api/transactions/build-buy-xdr` — XDR unsigned para `comprar_boleto` con buyer como source. User-friendly error en saldo insuficiente.
 - `POST /api/transactions/submit` — recibe XDR firmado por Freighter, submit a Soroban RPC, polls. Returns `{success, txHash}`.
-- `POST /api/transactions/mint-collectible` — PAYMENT 1 unidad (issuer=organizer). Idempotente (`alreadyMinted:true` si ya existe).
-- `POST /api/transactions/transfer-collectible` — clawback al vendedor + payment al comprador en una tx Horizon firmada por organizer.
-- `POST /api/transactions/build-trust-xdr` — CHANGE_TRUST limit=1 para asset_code.
-- `POST /api/transactions/submit-classic` — submit XDR clásico vía Horizon (NO Soroban RPC; ops clásicas no van por sorobanRpc).
+- `POST /api/transactions/mint-collectible` — legacy/no-op para el flujo Classic anterior. El flujo vigente usa NFT Soroban por evento.
+- `POST /api/transactions/submit-classic` — legacy para XDR clásico vía Horizon; el flujo vigente de NFT Soroban no requiere `CHANGE_TRUST`.
+- `POST /api/transactions/transfer-nft` — endpoint interno post-reventa verificada: requiere `txHash`, comprador, wallet y versión esperada; quema/remint NFT si aplica.
 
 **Auth (bcrypt + JWT):**
 - `POST /api/auth/login` — bcrypt.compare → JWT 7d + DTO
@@ -121,7 +120,7 @@ Patrón Factory: deploy de un event_contract independiente por evento.
 
 **Orders & tickets (auth):**
 - `GET /api/orders` — historial
-- `GET /api/tickets` — activos + Web3 fields (`isSecuredOnChain`, `contractAddress`, `ticketRootId`, `version`, `ownerWallet`, `assetCode`)
+- `GET /api/tickets` — activos + Web3 fields (`isSecuredOnChain`, `contractAddress`, `ticketRootId`, `version`, `ownerWallet`, `assetCode`, `nftContractAddress`, `nftTokenId`, `signedQrPayload`)
 - `GET /api/tickets/sold` — tickets vendidos P2P (CANCELLED + resale_price≠null); incluye `buyerWallet` (lookup en next version del mismo ticket_root_id), `resalePrice` (stroops)
 
 **Admin (ADMIN role):**
@@ -129,7 +128,7 @@ Patrón Factory: deploy de un event_contract independiente por evento.
 - `POST /api/admin/events` — crea + auto event_ticket_types + invalida cache
 - `POST /api/admin/events/:id/deploy` — corre deploy script, actualiza `contract_address`
 - `GET /api/admin/contracts` — `{factoryContractId (env), events[]}`
-- `POST /api/admin/scan` — **ADMIN o STAFF**: `{ticketId}` o `{contractAddress, ticketRootId, version?}` → CANCELLED en DB. Si `version` presente, valida contra versión ACTIVA (409 si QR vencido post-reventa). **DB-only** (sin `redimir_boleto` on-chain) para velocidad de puerta.
+- `POST /api/admin/scan` — **ADMIN o STAFF**: `{qrToken}` firmado con HMAC/JWS-like payload (`contractAddress`, `ticketRootId`, `version`, `eventId`, `exp`, `nonce`, `ownerWallet`). Marca `USED` + `used_at` + `lifecycle_reason=REDEEMED_DB_SCAN` y registra auditoría en `checkins`. El fallback legacy `{ticketId}` solo debe quedar habilitado explícitamente en demo/dev.
 
 **Cache:** helper `cached(key, ttlMs, fn)` (Map en memoria); `invalidateCache(prefix?)`. Live tickets NO cacheados. `connection_limit=5` en DATABASE_URL (era 1, causaba pool timeouts).
 
@@ -212,8 +211,8 @@ PostgreSQL schema `ticketing` en Supabase.
 
 **Web3:**
 - `ConnectWallet.tsx` — **solo si logged in**. Freighter v6 (objects: `{isConnected}`, `{address}`, `{signedTxXdr}`). Auto-link al backend (handle 409). Muestra XLM + COP (`useXlmPrice`). Refresh on `balanceVersion`. Lee `walletAddress` desde context (persistente entre navegaciones); solo invoca Freighter si no hay address en context.
-- `TicketCard.tsx` — "Asegurar en Blockchain" → `secure-ticket` → badge + Stellar Explorer + trust+mint del coleccionable. "Revender NFT" → `<Dialog>` shadcn (precio en COP, preview XLM en vivo via `useXlmPrice`) → `list-ticket` → badge "En Venta" + "Cancelar Reventa". Wallet guard alert si sin Freighter.
-- `EventDetail.tsx` — "Reventa P2P Segura" con precio XLM+COP. Si `walletAddress===sellerWallet` → "Cancelar Reventa". Else → "Comprar" → `buyResaleTicket(contractAddress, ticketRootId, buyerPk, assetCode?)` → trust + Soroban + transfer-collectible. Usa `ticketTypes` del detail (no extra call).
+- `TicketCard.tsx` — "Asegurar en Blockchain" → `secure-ticket` → badge + Stellar Explorer + modal con `nftContractAddress`/`tokenId` para agregar el NFT en Freighter. "Revender NFT" → `<Dialog>` shadcn (precio en COP, preview XLM en vivo via `useXlmPrice`) → `list-ticket` → badge "En Venta" + "Cancelar Reventa". Wallet guard con toast si sin Freighter.
+- `EventDetail.tsx` — "Reventa P2P Segura" con precio XLM+COP. Si `walletAddress===sellerWallet` → "Cancelar Reventa". Else → "Comprar" → `buyResaleTicket(contractAddress, ticketRootId, buyerPk)` → intención/XDR + firma Freighter + submit + `/transfer-nft` verificado. Muestra diálogo de éxito para compra/cancelación/listado.
 
 **Layout:** Header (nav + ConnectWallet + Admin/Scanner para ADMIN/STAFF), Footer, HeroSearch, CategorySection, AccountSidebar
 **UI:** EventCard, TicketCard, TicketSelector, SeatMap (VIP/Platea/General), BannerCarousel, FilterPanel, PromoStrip, CheckoutStepper
@@ -298,7 +297,7 @@ docs/
   - **AppContext refactor**: `mapTicketsResponse()` helper, `refreshTickets()` callback.
 - **Phase 4 (admin panel + scanner)** (2026-04-04):
   - **Admin Dashboard** (`/admin`, ADMIN): events con contract status, venues+sections, contracts panel (factory ID + Stellar Expert links). Crear eventos con venue/section + precio. "Deploy to Soroban" corre `deploy-contracts.ts` server-side.
-  - **QR Scanner** (`/escanear`, ADMIN+STAFF): `@yudiel/react-qr-scanner` (npm). QR `{ticketId: uuid}` → `/admin/scan` → CANCELLED en DB. Visual success/error. **DB-only** (sin on-chain) por velocidad.
+  - **QR Scanner** (`/escanear`, ADMIN+STAFF): `@yudiel/react-qr-scanner` (npm). QR firmado `{qrToken}` → `/admin/scan` → `USED` en DB + fila `checkins`. Rechaza firma inválida, QR expirado, versión vieja post-reventa y doble scan. **DB-only** (sin `redimir_boleto` on-chain) por velocidad de puerta.
   - **STAFF role**: añadido al enum `user_role`. STAFF accede Scanner pero no Admin.
   - **Header**: links Admin (amber) + Escáner (green) para ADMIN/STAFF.
   - **`apiFetch` expuesto**: en AppState interface, admin/scanner pages usan context.
@@ -321,9 +320,9 @@ docs/
   - **Goal**: el coleccionable que aparece en Freighter del comprador **es** el QR que el personal escanea en puerta. Antes salía como token genérico; ahora Freighter lo clasifica como Collectible (NFT).
   - **stellar.toml dinámico**: `GET /.well-known/stellar.toml` (servido desde Railway, expuesto vía Vercel rewrite a `https://stellar-ticket.vercel.app/.well-known/stellar.toml`). Incluye `[[CURRENCIES]]` por cada `asset_code` activo con `fixed_number=1`, `max_number=1`, `is_asset_anchored=false`, `name=<event title>`, `desc=<event + fecha>`, `image=<URL del QR PNG>`. Estos son los flags que Freighter usa para tratarlo como NFT.
   - **`home_domain` setup**: script `setup-issuer-home-domain.ts` (`SET_OPTIONS homeDomain=stellar-ticket.vercel.app`, 25 chars — Stellar limita a 32). Sin esto Freighter no descubre el toml. ENV `ISSUER_HOME_DOMAIN`.
-  - **QR PNG endpoint**: `GET /api/tickets/qr/:assetCode.png` genera con `qrcode` npm (size=512, level=M). Codifica `{contractAddress, ticketRootId, version}` (version = ACTIVE vigente). Cache keyed por `assetCode:vN`, `Cache-Control: max-age=60, must-revalidate`.
-  - **Scanner** acepta `{contractAddress, ticketRootId, version?}` (valida version si presente → 409 si vencido) o legacy `{ticketId}`.
-  - **TicketCard QR** codifica `{contractAddress, ticketRootId, version}` cuando asegurado → QR de app == QR de Freighter, y se invalida tras reventa.
+  - **QR PNG endpoint**: `GET /api/tickets/qr/:assetCode.png` genera con `qrcode` npm (size=512, level=M). Codifica un `qrToken` firmado con `{contractAddress, ticketRootId, version, eventId, exp, nonce, ownerWallet}`. Cache corta y versionada para no dejar válido el QR viejo tras reventa.
+  - **Scanner** acepta `qrToken` firmado y valida versión vigente + owner wallet. `{ticketId}` legacy queda deshabilitado salvo bandera explícita de demo/dev.
+  - **TicketCard QR** usa el mismo `qrToken` firmado cuando el ticket está asegurado, así el QR de la app y el QR del NFT siguen la misma política.
   - **Vercel rewrites** (`frontend/vercel.json`): `/.well-known/stellar.toml` y `/api/tickets/qr/:asset` proxy a Railway (`stellar-tickets-production.up.railway.app` = 41 chars, no cabe en home_domain).
   - **Bidireccionalidad**: el `asset_code` y por ende el QR persisten al revender. El indexer copia `order_item_id` y conserva `asset_code` (mismo coleccionable, distinto holder vía clawback+payment). El comprador anterior pierde la imagen en Freighter; el nuevo la gana.
   - **Deps backend**: `qrcode`, `@types/qrcode`. ENV nueva: `PUBLIC_BASE_URL` (def `https://stellar-ticket.vercel.app`) — usada en `image=` del toml.
@@ -357,10 +356,10 @@ docs/
   - **Backend `server.ts`**:
     - Nuevo helper `invokeSoroban(signer, contract, fn, args)` (simulate + assemble + sign + poll).
     - `/secure-ticket`: tras `crear_boleto_para`, llama `mint(buyerWallet, ticketRootId, metadataUrl)` en el ticket_nft_contract del evento, guarda `nft_token_id`, devuelve `{nftContractAddress, nftTokenId, nftMintTxHash}`. Quita el flujo `trustXdr`. Mint NFT falla → degrada gracefully (ticket sigue asegurado en Soroban).
-    - `/transfer-nft` (reemplaza `/transfer-collectible`): organizer llama `admin_transfer(token_id, buyerWallet)`. Una sola firma server-side, sin clawback Classic. Idempotente (`TransferenciaInvalida` si from==to → `alreadyTransferred:true`).
+    - `/transfer-nft` (reemplaza `/transfer-collectible`): solo después de `boleto_revendido` confirmado para `txHash`, comprador, wallet y versión. El backend quema el NFT anterior cuando existe y mintea un nuevo `nft_token_id` para el comprador; no acepta transferencia pública directa por simple petición del cliente.
     - `/mint-collectible`, `/build-trust-xdr`: deprecated (no-op idempotente o eliminado).
     - `GET /api/nft/metadata/:nftContractAddress/:tokenId` → JSON SEP-39 estilo `{name, description, image, attributes[]}`. Wallets compatibles lo descargan vía `token_uri`.
-    - `GET /api/nft/qr/:nftContractAddress/:tokenId.png` → PNG con QR codificando `{contractAddress, ticketRootId, version}`. Cache keyed `nft:contract:id:vN`, `max-age=60, must-revalidate`.
+    - `GET /api/nft/qr/:nftContractAddress/:tokenId.png` → PNG con `qrToken` firmado para el token/version vigente (`contractAddress`, `ticketRootId`, `version`, `eventId`, `exp`, `nonce`, `ownerWallet`). Cache corta, keyed por NFT/version/owner.
     - `GET /api/events/:slug` ahora devuelve `nftContractAddress` y `live_tickets[].nftTokenId`.
     - `GET /api/tickets` devuelve `nftContractAddress` (del evento) y `nftTokenId` (del ticket).
   - **Frontend**:
@@ -374,7 +373,7 @@ docs/
     - Reservas Stellar reducidas: ya no hay trustline Classic por boleto (~0.5 XLM). El NFT vive en storage del contrato Soroban, no en wallet del usuario.
     - 1 firma menos por compra (no más CHANGE_TRUST). 1 firma menos por reventa (sin trustline + sin clawback Classic).
     - Phase 4.3/4.4 Classic assets ya emitidos siguen en wallets de users — no se migran (documentado, complejidad innecesaria para tesis).
-    - QR incluye `{contractAddress, ticketRootId, version}` — scanner valida version; QR del vendedor post-reventa queda invalidado (409).
+    - QR del scanner usa `qrToken` firmado con versión y propietario; el QR del vendedor post-reventa queda inválido (409) y los intentos quedan auditados en `checkins`.
   - **Pasos one-shot prod**: (1) `ENV_FILE=.env.prod npx tsx scripts/add-nft-columns.ts`, (2) deploy backend con código nuevo + `ENV_FILE=.env.prod npx tsx scripts/deploy-nft-contracts.ts`, (3) deploy frontend.
 
 ### Pending — NEXT SESSION START HERE

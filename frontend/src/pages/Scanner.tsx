@@ -4,18 +4,24 @@ import { Header } from "@/components/layout/Header";
 import { Scanner, IDetectedBarcode } from "@yudiel/react-qr-scanner";
 import { CheckCircle2, XCircle, Loader2, ShieldCheck, Camera } from "lucide-react";
 import { useAppContext } from "@/context/AppContext";
+import { parseScannerPayload } from "@/lib/scannerPayload";
+
+const getErrorMessage = (error: unknown, fallback: string) =>
+  error instanceof Error ? error.message : fallback;
 
 export const ScannerPage = () => {
-  const { user, apiFetch } = useAppContext();
+  const { user, authStatus, apiFetch } = useAppContext();
   const navigate = useNavigate();
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<{ type: 'success'|'error'; message: string; submessage?: string } | null>(null);
+  const e2eScanEnabled = import.meta.env.VITE_E2E === "true";
 
   useEffect(() => {
+    if (authStatus === "checking") return;
     if (!user || !['ADMIN', 'STAFF'].includes(user.role)) {
       navigate("/");
     }
-  }, [user, navigate]);
+  }, [authStatus, user, navigate]);
 
   const handleScan = async (detectedCodes: IDetectedBarcode[]) => {
     if (loading || !detectedCodes || detectedCodes.length === 0) return;
@@ -25,28 +31,9 @@ export const ScannerPage = () => {
 
     try {
       setLoading(true);
-      // Attempt to parse JSON
-      const payload = JSON.parse(value);
+      const { body, label } = parseScannerPayload(value);
 
-      // New format (Freighter collectible QR): { contractAddress, ticketRootId }
-      // Legacy format (in-app QR): { ticketId, code? }
-      let body: Record<string, unknown>;
-      let label: string;
-      if (payload.contractAddress && payload.ticketRootId != null) {
-        body = {
-          contractAddress: payload.contractAddress,
-          ticketRootId: payload.ticketRootId,
-          ...(payload.version != null ? { version: payload.version } : {}),
-        };
-        label = `${payload.contractAddress.slice(0, 6)}…/#${payload.ticketRootId}${payload.version != null ? `v${payload.version}` : ''}`;
-      } else if (payload.ticketId) {
-        body = { ticketId: payload.ticketId };
-        label = payload.code || payload.ticketId.slice(0, 8);
-      } else {
-        throw new Error("QR No Reconocido");
-      }
-
-      const res = await apiFetch<any>("/api/admin/scan", {
+      const res = await apiFetch<{ success?: boolean }>("/api/admin/scan", {
         method: "POST",
         body: JSON.stringify(body)
       });
@@ -58,11 +45,11 @@ export const ScannerPage = () => {
           submessage: `Entrada validada: ${label}`
         });
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       setResult({
         type: "error",
         message: "Acceso Denegado",
-        submessage: err.message || "QR Inválido o ya fue escaneado."
+        submessage: getErrorMessage(err, "QR Inválido o ya fue escaneado.")
       });
     } finally {
       // Re-enable scanning after 3 seconds
@@ -73,9 +60,23 @@ export const ScannerPage = () => {
     }
   };
 
+  const simulateE2eScan = async () => {
+    const rawValue = window.localStorage.getItem("e2eScanPayload");
+    if (!rawValue) {
+      setResult({ type: "error", message: "Acceso Denegado", submessage: "Payload E2E no configurado." });
+      return;
+    }
+    await handleScan([{ rawValue } as IDetectedBarcode]);
+  };
+
   return (
     <div className="min-h-screen bg-background flex flex-col">
       <Header />
+      {authStatus === "checking" ? (
+        <main className="flex-1 flex items-center justify-center px-4">
+          <p className="text-sm font-bold text-muted-foreground">Cargando sesión...</p>
+        </main>
+      ) : (
       <main className="flex-1 flex flex-col items-center justify-start py-8 px-4 w-full max-w-lg mx-auto">
         <div className="w-full text-center mb-6">
           <h1 className="text-2xl font-black text-foreground flex items-center justify-center gap-2">
@@ -86,11 +87,21 @@ export const ScannerPage = () => {
 
         <div className="w-full aspect-square bg-black rounded-3xl overflow-hidden relative shadow-2xl border-4 border-border">
           {!result && !loading && (
+            e2eScanEnabled ? (
+              <button
+                type="button"
+                onClick={() => void simulateE2eScan()}
+                className="h-full w-full bg-slate-950 text-white font-black text-sm uppercase tracking-widest"
+              >
+                Simular escaneo QA
+              </button>
+            ) : (
             <Scanner 
               onScan={handleScan}
               formats={["qr_code"]}
               styles={{ container: { width: '100%', height: '100%' } }}
             />
+            )
           )}
 
           {/* Overlay scanning state */}
@@ -122,10 +133,11 @@ export const ScannerPage = () => {
         <div className="mt-8 bg-accent/10 p-4 rounded-xl flex items-start gap-3 w-full border border-accent/20">
           <ShieldCheck className="w-5 h-5 text-accent shrink-0 mt-0.5" />
           <p className="text-xs text-muted-foreground">
-            Los escaneos verifican la base de datos híbrida de Stellar Tickets de forma instantánea. Las validaciones asíncronas en cadena (Soroban) se ejecutarán en segundo plano.
+            Los escaneos validan la proyección operativa en PostgreSQL y marcan el boleto como usado. La redención Soroban se muestra solo cuando existe un evento on-chain indexado.
           </p>
         </div>
       </main>
+      )}
     </div>
   );
 };

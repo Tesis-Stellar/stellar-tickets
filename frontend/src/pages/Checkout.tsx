@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Navigate, useNavigate, Link, useLocation } from "react-router-dom";
+import { Navigate, Link, useLocation } from "react-router-dom";
 import { Header } from "@/components/layout/Header";
 import { Footer } from "@/components/layout/Footer";
 import { CheckoutStepper } from "@/components/ui/CheckoutStepper";
@@ -16,16 +16,24 @@ const Field = ({ label, name, type = "text", placeholder = "", value, onChange, 
 );
 
 const Checkout = () => {
-  const { cart, checkout, isLoggedIn } = useAppContext();
-  const navigate = useNavigate();
+  const { cart, checkout, isLoggedIn, authStatus } = useAppContext();
   const location = useLocation();
   const [step, setStep] = useState(1);
   const [form, setForm] = useState({ name: "", email: "", phone: "", document: "", docType: "CC", payMethod: "card", terms: false });
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [completedOrderId, setCompletedOrderId] = useState<string | null>(null);
 
   const subtotal = cart.reduce((s, c) => s + c.ticketType.price * c.quantity, 0);
   const fees = cart.reduce((s, c) => s + c.ticketType.serviceFee * c.quantity, 0);
   const total = subtotal + fees;
+
+  if (authStatus === "checking") {
+    return (
+      <div className="min-h-screen bg-background flex flex-col"><Header />
+        <main className="flex-1 flex items-center justify-center px-4"><p className="text-sm font-bold text-muted-foreground">Cargando sesión...</p></main>
+      <Footer /></div>
+    );
+  }
 
   if (!isLoggedIn) {
     return <Navigate to="/login" replace state={{ from: location.pathname, message: "Inicia sesión para finalizar la compra." }} />;
@@ -61,13 +69,14 @@ const Checkout = () => {
         pse: "PSE",
         nequi: "CASHPOINT",
       };
-      await checkout({
+      const order = await checkout({
         name: form.name,
         email: form.email,
         phone: form.phone,
         document: `${form.docType} ${form.document}`,
         paymentMethod: paymentMap[form.payMethod] ?? "CARD",
       });
+      setCompletedOrderId(order?.id ?? null);
       setStep(3);
     }
   };
@@ -83,10 +92,10 @@ const Checkout = () => {
         {step === 3 ? (
           <div className="max-w-md mx-auto bg-card rounded-2xl border border-border p-10 text-center space-y-5">
             <div className="w-16 h-16 bg-success/10 rounded-full flex items-center justify-center mx-auto"><ShieldCheck className="w-8 h-8 text-success" /></div>
-            <h1 className="text-2xl font-black text-foreground">¡Compra Exitosa!</h1>
-            <p className="text-sm text-muted-foreground">Tus boletos han sido confirmados.</p>
+            <h1 className="text-2xl font-black text-foreground">Compra Simulada Exitosa</h1>
+            <p className="text-sm text-muted-foreground">Tus boletos fueron emitidos en el entorno de demo. No se realizó ningún cargo real.</p>
             <div className="flex flex-col sm:flex-row gap-3">
-              <Link to="/confirmacion" className="flex-1 py-3 bg-primary text-primary-foreground font-bold rounded-lg text-center text-sm hover:bg-primary/90 transition-colors">Ver Confirmación</Link>
+              <Link to={completedOrderId ? `/confirmacion?orderId=${completedOrderId}` : "/confirmacion"} className="flex-1 py-3 bg-primary text-primary-foreground font-bold rounded-lg text-center text-sm hover:bg-primary/90 transition-colors">Ver Confirmación</Link>
               <Link to="/" className="flex-1 py-3 bg-secondary text-secondary-foreground font-bold rounded-lg text-center text-sm hover:bg-secondary/80 transition-colors">Seguir Comprando</Link>
             </div>
           </div>
@@ -116,9 +125,9 @@ const Checkout = () => {
               )}
               {step === 2 && (
                 <>
-                  <h2 className="font-black text-foreground uppercase tracking-tight">Método de Pago</h2>
+                  <h2 className="font-black text-foreground uppercase tracking-tight">Pago Simulado</h2>
                   <div className="space-y-3">
-                    {[{ id: "card", label: "Tarjeta de Crédito/Débito" }, { id: "pse", label: "PSE - Débito bancario" }, { id: "nequi", label: "Nequi" }].map((m) => (
+                    {[{ id: "card", label: "Tarjeta demo" }, { id: "pse", label: "PSE demo" }, { id: "nequi", label: "Nequi demo" }].map((m) => (
                       <label key={m.id} className={`flex items-center gap-3 p-4 rounded-lg border cursor-pointer transition-colors ${form.payMethod === m.id ? "border-primary bg-primary/5" : "border-border"}`}>
                         <input type="radio" name="pay" value={m.id} checked={form.payMethod === m.id} onChange={() => setForm((p) => ({ ...p, payMethod: m.id }))} className="accent-primary" />
                         <span className="text-sm font-medium text-foreground">{m.label}</span>
@@ -128,12 +137,14 @@ const Checkout = () => {
                   {form.payMethod === "card" && (
                     <div className="bg-secondary/50 rounded-lg p-4 space-y-3">
                       <div className="flex items-center gap-2 bg-card rounded-lg border border-border px-3 py-2.5"><CreditCard className="w-4 h-4 text-primary" /><span className="text-sm text-foreground font-medium">•••• •••• •••• 4242</span></div>
-                      <p className="text-xs text-muted-foreground">Pago simulado — no se realizará ningún cargo real.</p>
+                      <p className="text-xs text-muted-foreground">Pago simulado. No se contacta una pasarela fiat ni se realiza ningún cargo real.</p>
                     </div>
                   )}
                   <label className={`flex items-start gap-2 mt-4 ${errors.terms ? "text-destructive" : ""}`}>
                     <input type="checkbox" checked={form.terms} onChange={(e) => setForm((p) => ({ ...p, terms: e.target.checked }))} className="accent-primary mt-1" />
-                    <span className="text-xs text-muted-foreground">Acepto los <a href="#" className="text-primary hover:underline">términos y condiciones</a> y la <a href="#" className="text-primary hover:underline">política de privacidad</a>.</span>
+                    <span className="text-xs text-muted-foreground">
+                      Acepto los <span className="text-primary font-medium">términos y condiciones</span> y la <span className="text-primary font-medium">política de privacidad</span> de la demo.
+                    </span>
                   </label>
                   {errors.terms && <p className="text-xs text-destructive">{errors.terms}</p>}
                 </>
@@ -141,7 +152,7 @@ const Checkout = () => {
               <div className="flex gap-3 pt-4">
                 {step > 1 && <button onClick={() => setStep(step - 1)} className="px-6 py-3 bg-secondary text-secondary-foreground font-bold rounded-lg text-sm hover:bg-secondary/80 transition-colors">Anterior</button>}
                 <button onClick={handleNext} className="flex-1 py-3 bg-accent hover:bg-accent/90 text-accent-foreground font-black rounded-lg text-sm transition-colors">
-                  {step === 2 ? `Confirmar Compra — $${total.toLocaleString("es-CO")}` : "Continuar"}
+                  {step === 2 ? `Confirmar compra simulada — $${total.toLocaleString("es-CO")}` : "Continuar"}
                 </button>
               </div>
             </div>

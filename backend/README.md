@@ -86,6 +86,8 @@ Si la indexación continua se ejecuta por separado en tu despliegue, debe apunta
 | `DATABASE_URL`      | Sí         | URL de PostgreSQL (incluye `?schema=ticketing` si aplica). |
 | `PORT`              | No         | Puerto HTTP (por defecto `3000`). |
 | `JWT_SECRET`        | Sí en producción* | Firma de tokens JWT. Debe definirse explícitamente y ser fuerte en producción. |
+| `JWT_EXPIRES_IN`    | No         | Duración del JWT (`2h` en producción si no se define, `7d` en desarrollo). |
+| `CORS_ORIGINS`      | Recomendado | Lista separada por comas de orígenes permitidos. En desarrollo se agregan localhost automáticamente; en producción se usa solo esta lista. |
 | `SOROBAN_RPC_URL`   | No         | RPC Soroban (por defecto testnet público). |
 | `ORGANIZER_SECRET`  | No**       | Secret key del organizador para operaciones que construyen/envían transacciones desde el backend. |
 | `ORGANIZER_PUBLIC`  | No         | Clave pública del organizador usada en rutas admin/contratos si no quieres el valor por defecto del código. |
@@ -104,9 +106,9 @@ Todas las rutas REST bajo prefijo `/api` salvo `/` y `/health`.
 - **Catálogo**: `GET /api/events`, `GET /api/events/:slug`, tipos de boleto, relacionados, etc.
 - **Auth**: `POST /api/auth/login`, `POST /api/auth/register`, `GET/PATCH /api/users/me`, wallet del usuario.
 - **Transacciones**: compra, listado, cancelación, XDR para firma en cliente, submit, etc.
-- **Carrito y checkout**: carrito autenticado, preview y confirmación.
+- **Carrito y checkout**: carrito autenticado, preview y confirmación. El checkout usa pago simulado para demo academica (`paymentMode: SIMULATED`) y llaves de idempotencia para no duplicar ordenes/tickets en doble confirmacion.
 - **Pedidos y boletos**: órdenes, boletos del usuario, vendidos.
-- **Admin** (JWT + rol): venues, eventos, despliegue de contratos, escaneo, etc.
+- **Admin** (JWT + rol): venues, eventos, despliegue de contratos, escaneo, etc. El escaneo de puerta (`POST /api/admin/scan`) es DB-only en esta version: marca el boleto como `USED` con `used_at`; no llama `redimir_boleto` en Soroban.
 
 Para detalles de rutas, payloads y modelos, consulta la implementación actual del backend (`src/server.ts`) y la documentación técnica del monorepo.
 

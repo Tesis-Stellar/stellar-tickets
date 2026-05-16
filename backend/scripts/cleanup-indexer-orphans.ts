@@ -1,33 +1,42 @@
 /**
- * Borra filas de `tickets` huérfanas creadas por la carrera entre el indexer
- * y /secure-ticket: el indexer ve `boleto_creado` antes de que el endpoint
- * actualice la fila Web2 original, y crea una nueva fila sin order_item_id,
- * sin event, sin user — la "tarjeta vacía" que aparece en Mis Entradas.
+ * Finds orphan ticket rows that can be left by older indexer/secure-ticket race
+ * conditions. Dry-run by default.
  *
- * Una fila huérfana = tiene contract_address pero NO tiene order_item_id NI
- * owner_user_id (las legítimas siempre tienen una de las dos).
+ * A cleanup candidate is intentionally strict:
+ * - has on-chain identity
+ * - has no owner_user_id and no order_item_id
+ * - has no Web2 ticket_code or QR payload
+ * - has no checkin audit rows
  *
- * Uso:
- *   ENV_FILE=.env.prod npx tsx scripts/cleanup-indexer-orphans.ts          # dry-run
- *   ENV_FILE=.env.prod APPLY=1 npx tsx scripts/cleanup-indexer-orphans.ts  # borra
+ * Usage:
+ *   cd backend
+ *   npx tsx scripts/cleanup-indexer-orphans.ts
+ *   APPLY=1 MAX_DELETE=25 npx tsx scripts/cleanup-indexer-orphans.ts
  */
 import dotenv from 'dotenv';
 dotenv.config({ path: process.env.ENV_FILE || '.env', override: true });
 
 import { PrismaClient } from '@prisma/client';
 
-const prisma = new PrismaClient({ datasources: { db: { url: process.env.DATABASE_URL } } });
+const prisma = new PrismaClient();
+
+const apply = process.env.APPLY === '1';
+const maxDelete = Number(process.env.MAX_DELETE ?? 25);
 
 async function main() {
-  const apply = process.env.APPLY === '1';
-  console.log(`Target DB: ${process.env.DATABASE_URL?.split('@')[1]?.split('/')[0]}`);
-  console.log(`Mode: ${apply ? 'APPLY (will delete)' : 'DRY-RUN (no changes)'}`);
+  if (!Number.isInteger(maxDelete) || maxDelete < 1) {
+    throw new Error('MAX_DELETE debe ser un entero positivo');
+  }
 
-  const orphans = await prisma.tickets.findMany({
+  const rows = await prisma.tickets.findMany({
     where: {
       contract_address: { not: null },
+      ticket_root_id: { not: null },
+      version: { not: null },
       order_item_id: null,
       owner_user_id: null,
+      ticket_code: null,
+      qr_payload: null,
     },
     select: {
       id: true,
@@ -35,37 +44,50 @@ async function main() {
       ticket_root_id: true,
       version: true,
       owner_wallet: true,
+      status: true,
+      lifecycle_reason: true,
       created_at: true,
+      _count: { select: { checkins: true } },
     },
     orderBy: { created_at: 'desc' },
   });
 
-  console.log(`Found ${orphans.length} orphan ticket(s):`);
-  for (const t of orphans) {
-    console.log(
-      `  ${t.id}  contract=${t.contract_address?.slice(0, 8)}…  root=${t.ticket_root_id}  v=${t.version}  owner=${t.owner_wallet?.slice(0, 8) ?? '(null)'}…  ${t.created_at.toISOString()}`,
-    );
+  const candidates = rows.filter((ticket) => ticket._count.checkins === 0);
+
+  console.log(`Mode: ${apply ? 'APPLY' : 'DRY_RUN'}`);
+  console.log(`Candidates: ${candidates.length}`);
+
+  for (const ticket of candidates.slice(0, 50)) {
+    console.log(JSON.stringify({
+      id: ticket.id,
+      contractAddress: ticket.contract_address,
+      ticketRootId: ticket.ticket_root_id,
+      version: ticket.version,
+      ownerWallet: ticket.owner_wallet,
+      status: ticket.status,
+      lifecycleReason: ticket.lifecycle_reason,
+      createdAt: ticket.created_at,
+    }));
   }
 
-  if (!apply) {
-    console.log('\nDry-run. Re-run with APPLY=1 to delete.');
+  if (!apply || candidates.length === 0) {
     await prisma.$disconnect();
     return;
   }
-  if (orphans.length === 0) {
-    await prisma.$disconnect();
-    return;
+
+  const ids = candidates.slice(0, maxDelete).map((ticket) => ticket.id);
+  const result = await prisma.tickets.deleteMany({ where: { id: { in: ids } } });
+  console.log(`Deleted: ${result.count}`);
+
+  if (candidates.length > ids.length) {
+    console.log(`Remaining candidates not deleted due to MAX_DELETE=${maxDelete}: ${candidates.length - ids.length}`);
   }
 
-  const result = await prisma.tickets.deleteMany({
-    where: { id: { in: orphans.map((o) => o.id) } },
-  });
-  console.log(`\nDeleted ${result.count} ticket(s).`);
   await prisma.$disconnect();
 }
 
-main().catch(async (e) => {
-  console.error(e);
+main().catch(async (error) => {
+  console.error(error);
   await prisma.$disconnect();
   process.exit(1);
 });

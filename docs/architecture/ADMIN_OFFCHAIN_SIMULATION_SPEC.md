@@ -118,6 +118,12 @@ Debe mostrar:
 - ultimas redenciones
 - alertas de desincronizacion entre chain y base local
 
+### Escaneo De Puerta En La Demo
+
+El flujo actual de scanner es operativo sobre PostgreSQL. Al validar un QR, la API marca el boleto como `USED` y registra `used_at`; no ejecuta `redimir_boleto` en Soroban durante el escaneo. Si se presenta un QR de una version anterior luego de una reventa, o un boleto ya usado, la API debe responder `409`.
+
+La redencion on-chain queda representada por eventos `boleto_redimido` procesados por el indexador cuando exista un flujo Soroban explicito para ello.
+
 ## Responsabilidades Por Capa
 
 ### On-chain

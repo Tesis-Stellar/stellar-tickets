@@ -1,6 +1,8 @@
 import { createContext, useContext, useState, useCallback, useMemo, useEffect, type ReactNode } from "react";
 import type { EventData, TicketType } from "@/data/events";
 
+const STELLAR_TESTNET_PASSPHRASE = "Test SDF Network ; September 2015";
+
 /* ── Cart ── */
 export interface CartItem {
   id: string;
@@ -32,7 +34,97 @@ export interface PurchasedTicket {
   sectionName?: string | null;
   nftContractAddress?: string | null;
   nftTokenId?: number | null;
+  qrPayload?: string | null;
 }
+
+type TransactionIntentResponse = {
+  xdr: string;
+  networkPassphrase: string;
+  intentId: string;
+  intentExpiresAt?: string;
+};
+
+export type ResaleFlowStatus = "building_xdr" | "signing" | "submitted" | "reconciling" | "confirmed" | "failed";
+
+type ResaleFlowOptions = {
+  onStatus?: (status: ResaleFlowStatus) => void;
+};
+
+type TicketApiResponse = {
+  id: string;
+  ticketCode?: string;
+  purchasedAt?: string;
+  quantity: number;
+  seatIds?: string[];
+  ticketType?: { id: string; name: string; price: number; serviceFee: number };
+  event?: Partial<EventData>;
+  isSecuredOnChain?: boolean;
+  isForSale?: boolean;
+  contractAddress?: string;
+  ticketRootId?: number;
+  version?: number;
+  ownerWallet?: string;
+  resalePrice?: number | null;
+  acquiredViaResale?: boolean;
+  seatLabel?: string | null;
+  sectionName?: string | null;
+  nftContractAddress?: string | null;
+  nftTokenId?: number | null;
+  qrPayload?: string | null;
+};
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null;
+const getErrorMessage = (error: unknown, fallback: string) =>
+  error instanceof Error ? error.message : fallback;
+const hasFreighterError = (value: unknown) =>
+  isRecord(value) && isRecord(value.error);
+const getFreighterErrorMessage = (value: unknown, fallback: string) =>
+  isRecord(value) && isRecord(value.error) && typeof value.error.message === "string"
+    ? value.error.message
+    : fallback;
+const getFreighterAddress = (value: unknown) =>
+  typeof value === "string" ? value : isRecord(value) && typeof value.address === "string" ? value.address : "";
+const getFreighterFlag = (value: unknown, key: "isAllowed" | "isConnected") =>
+  typeof value === "boolean" ? value : isRecord(value) && typeof value[key] === "boolean" ? value[key] : false;
+const getSignedTxXdr = (value: unknown) =>
+  typeof value === "string" ? value : isRecord(value) && typeof value.signedTxXdr === "string" ? value.signedTxXdr : "";
+const getSignedMessagePayload = (value: unknown) => {
+  if (!isRecord(value)) return { signedMessage: undefined, signerAddress: undefined };
+  const signedMessage = value.signedMessage;
+  const signerAddress = typeof value.signerAddress === "string" ? value.signerAddress : undefined;
+  return { signedMessage, signerAddress };
+};
+const serializeSignedMessage = (value: unknown) => {
+  if (typeof value === "string") return value;
+  if (value instanceof Uint8Array) return btoa(String.fromCharCode(...Array.from(value)));
+  if (Array.isArray(value) && value.every((item): item is number => typeof item === "number")) {
+    return btoa(String.fromCharCode(...value));
+  }
+  return "";
+};
+
+type OrderApiResponse = {
+  id: string;
+  orderNumber?: string;
+  buyerEmail?: string;
+  buyerPhone?: string;
+  buyerDocument?: string;
+  createdAt?: string;
+  total?: number;
+  subtotal?: number;
+  serviceFees?: number;
+  status?: string;
+  items?: TicketApiResponse[];
+};
+
+type EventApiResponse = Omit<Partial<EventData>, "city" | "venue" | "organizer"> & {
+  posterImage?: string;
+  bannerImage?: string;
+  city?: string | { name?: unknown } | null;
+  venue?: string | { name?: unknown } | null;
+  organizer?: string | { name?: unknown } | null;
+};
 
 /* ── Sold ticket ── */
 export interface SoldTicket {
@@ -81,8 +173,10 @@ interface AppState {
   orders: OrderData[];
   purchasedTickets: PurchasedTicket[];
   soldTickets: SoldTicket[];
+  ticketsLoading: boolean;
   user: UserData | null;
   isLoggedIn: boolean;
+  authStatus: "checking" | "authenticated" | "unauthenticated";
   balanceVersion: number;
   addToCart: (item: Omit<CartItem, "id">) => Promise<void>;
   removeFromCart: (id: string) => Promise<void>;
@@ -93,10 +187,10 @@ interface AppState {
   register: (user: { name: string; email: string; phone: string; document: string; password: string }) => Promise<boolean>;
   logout: () => void;
   updateProfile: (data: Partial<UserData>) => Promise<void>;
-  secureTicketOnChain: (ticketId: string) => Promise<{ success: boolean; txHash?: string; nftContractAddress?: string | null; error?: string }>;
-  listTicketForSale: (ticketId: string, priceXLM: number) => Promise<{ success: boolean; txHash?: string; error?: string }>;
-  cancelResaleListing: (ticketId: string) => Promise<{ success: boolean; txHash?: string; error?: string }>;
-  buyResaleTicket: (contractAddress: string, ticketRootId: number, buyerPublicKey: string) => Promise<{ success: boolean; txHash?: string; error?: string }>;
+  secureTicketOnChain: (ticketId: string) => Promise<{ success: boolean; txHash?: string; nftContractAddress?: string | null; nftTokenId?: number | null; warning?: string; error?: string }>;
+  listTicketForSale: (ticketId: string, priceXLM: number, options?: ResaleFlowOptions) => Promise<{ success: boolean; txHash?: string; error?: string }>;
+  cancelResaleListing: (ticketId: string, options?: ResaleFlowOptions) => Promise<{ success: boolean; txHash?: string; error?: string }>;
+  buyResaleTicket: (contractAddress: string, ticketRootId: number, buyerPublicKey: string, currentVersion: number, options?: ResaleFlowOptions) => Promise<{ success: boolean; txHash?: string; error?: string }>;
   linkWallet: (walletAddress: string) => Promise<void>;
   refreshTickets: () => Promise<void>;
   refreshSoldTickets: () => Promise<void>;
@@ -104,16 +198,65 @@ interface AppState {
   setWalletAddress: (address: string | null) => void;
   lastOrder: OrderData | null;
   apiFetch: <T>(path: string, init?: RequestInit) => Promise<T>;
+  getOrderById: (orderId: string) => Promise<OrderData>;
 }
 
 const AppContext = createContext<AppState | null>(null);
 
-const normalizeEventData = (event?: Partial<EventData>): EventData =>
-  ({
+const textFromApiValue = (value: unknown, fallback: string) => {
+  if (typeof value === "string") return value;
+  if (value && typeof value === "object" && "name" in value) return String((value as { name?: unknown }).name ?? fallback);
+  return fallback;
+};
+
+const EVENT_MONTHS = ["ENE", "FEB", "MAR", "ABR", "MAY", "JUN", "JUL", "AGO", "SEP", "OCT", "NOV", "DIC"];
+
+const splitApiEventDate = (event?: EventApiResponse) => {
+  const rawDate = event?.eventDate ?? event?.startsAt ?? "";
+  const date = rawDate ? new Date(rawDate) : null;
+  if (!date || Number.isNaN(date.getTime())) {
+    return {
+      date: event?.date ?? "--",
+      month: event?.month ?? "---",
+      year: event?.year ?? "----",
+      time: event?.time ?? "--:--",
+    };
+  }
+
+  return {
+    date: event?.date ?? String(date.getDate()).padStart(2, "0"),
+    month: event?.month ?? EVENT_MONTHS[date.getMonth()],
+    year: event?.year ?? String(date.getFullYear()),
+    time: event?.time ?? date.toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit" }),
+  };
+};
+
+const normalizeEventData = (event?: EventApiResponse): EventData => {
+  const dateParts = splitApiEventDate(event);
+  return ({
     ...event,
-    image: (event as any)?.posterImage || (event as any)?.bannerImage || event?.image || "https://placehold.co/800x500?text=Evento",
-    bannerImage: (event as any)?.bannerImage || (event as any)?.posterImage || event?.bannerImage || "https://placehold.co/1200x400?text=Evento",
+    ...dateParts,
+    title: event?.title ?? "Evento por confirmar",
+    category: event?.categoryLabel ?? event?.category ?? "General",
+    description: event?.description ?? "",
+    city: textFromApiValue(event?.city, "Ciudad por confirmar"),
+    venue: textFromApiValue(event?.venue, "Venue por confirmar"),
+    organizer: textFromApiValue(event?.organizer, "Organizador por confirmar"),
+    image: event?.posterImage || event?.bannerImage || event?.image || "https://placehold.co/800x500?text=Evento",
+    bannerImage: event?.bannerImage || event?.posterImage || "https://placehold.co/1200x400?text=Evento",
+    featured: event?.featured ?? event?.isFeatured ?? false,
+    hasSeatSelection: event?.hasSeatSelection ?? event?.hasAssignedSeating ?? false,
+    ticketTypes: event?.ticketTypes ?? [],
+    recommendations: event?.recommendations ?? [],
+    relatedEventIds: event?.relatedEventIds ?? [],
+    price: event?.price ?? "",
   }) as EventData;
+};
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const RESALE_RECONCILE_ATTEMPTS = 6;
+const RESALE_RECONCILE_DELAY_MS = 2500;
 
 class ApiRequestError extends Error {
   status: number;
@@ -136,9 +279,13 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   const [cart, setCart] = useState<CartItem[]>([]);
   const [orders, setOrders] = useState<OrderData[]>([]);
   const [purchasedTickets, setPurchasedTickets] = useState<PurchasedTicket[]>([]);
+  const [ticketsLoading, setTicketsLoading] = useState(false);
   const [user, setUser] = useState<UserData | null>(null);
   const [lastOrder, setLastOrder] = useState<OrderData | null>(null);
   const [token, setToken] = useState<string | null>(() => localStorage.getItem("authToken"));
+  const [authStatus, setAuthStatus] = useState<"checking" | "authenticated" | "unauthenticated">(() =>
+    localStorage.getItem("authToken") ? "checking" : "unauthenticated"
+  );
   const [walletAddress, setWalletAddress] = useState<string | null>(null);
   const [soldTickets, setSoldTickets] = useState<SoldTicket[]>([]);
   const [balanceVersion, setBalanceVersion] = useState(0);
@@ -155,7 +302,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         const rawMessage = await response.text();
         let message = rawMessage;
         try {
-          const parsed = JSON.parse(rawMessage) as { error?: string; message?: string };
+          const parsed = JSON.parse(rawMessage) as { error?: string; message?: string; code?: string; requestId?: string };
           message = parsed.error ?? parsed.message ?? rawMessage;
         } catch {
           // Keep the plain response body when it is not JSON.
@@ -207,24 +354,30 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       }>("/api/users/me");
       setUser(normalizeUser(profile));
       if (profile.walletAddress) setWalletAddress(profile.walletAddress);
+      setAuthStatus("authenticated");
     } catch {
       setUser(null);
       setToken(null);
+      setAuthStatus("unauthenticated");
       localStorage.removeItem("authToken");
     }
   }, [apiFetch, normalizeUser, setWalletAddress]);
 
   useEffect(() => {
-    if (!token) return;
+    if (!token) {
+      setAuthStatus("unauthenticated");
+      return;
+    }
+    setAuthStatus("checking");
     void refreshUserData();
   }, [refreshUserData, token]);
 
   const mapTicketsResponse = useCallback(
-    (ticketsData: Array<{ id: string; purchasedAt?: string; quantity: number; seatIds?: string[]; ticketType?: { id: string; name: string; price: number; serviceFee: number }; event?: Partial<EventData>; isSecuredOnChain?: boolean; isForSale?: boolean; contractAddress?: string; ticketRootId?: number; version?: number; ownerWallet?: string; resalePrice?: number | null }>): PurchasedTicket[] =>
+    (ticketsData: TicketApiResponse[]): PurchasedTicket[] =>
       ticketsData.map((ticket) => ({
         id: ticket.id,
         event: normalizeEventData(ticket.event),
-        ticketCode: (ticket as any)?.ticketCode,
+        ticketCode: ticket.ticketCode,
         ticketType: {
           id: ticket.ticketType?.id ?? "unknown",
           name: ticket.ticketType?.name ?? "Boleta",
@@ -243,19 +396,75 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         version: ticket.version,
         ownerWallet: ticket.ownerWallet,
         resalePrice: ticket.resalePrice ?? undefined,
-        acquiredViaResale: (ticket as any).acquiredViaResale ?? false,
-        seatLabel: (ticket as any).seatLabel ?? null,
-        sectionName: (ticket as any).sectionName ?? null,
-        nftContractAddress: (ticket as any).nftContractAddress ?? null,
-        nftTokenId: (ticket as any).nftTokenId ?? null,
+        acquiredViaResale: ticket.acquiredViaResale ?? false,
+        seatLabel: ticket.seatLabel ?? null,
+        sectionName: ticket.sectionName ?? null,
+        nftContractAddress: ticket.nftContractAddress ?? null,
+        nftTokenId: ticket.nftTokenId ?? null,
+        qrPayload: ticket.qrPayload ?? null,
       })),
     []
   );
 
-  const refreshTickets = useCallback(async () => {
-    const ticketsData = await apiFetch<Array<{ id: string; purchasedAt?: string; quantity: number; seatIds?: string[]; ticketType?: { id: string; name: string; price: number; serviceFee: number }; event?: Partial<EventData>; isSecuredOnChain?: boolean; isForSale?: boolean; contractAddress?: string; ticketRootId?: number; version?: number; ownerWallet?: string; resalePrice?: number | null }>>("/api/tickets");
-    setPurchasedTickets(mapTicketsResponse(ticketsData));
+  const mapOrderResponse = useCallback(
+    (order: OrderApiResponse, fallbackBuyer?: { name?: string; email?: string; phone?: string; document?: string }): OrderData => ({
+      id: order.id,
+      orderNumber: order.orderNumber ?? `ORD-${order.id.slice(-6).toUpperCase()}`,
+      items: mapTicketsResponse(order.items ?? []),
+      buyerName: fallbackBuyer?.name ?? user?.name ?? "",
+      buyerEmail: order.buyerEmail ?? fallbackBuyer?.email ?? user?.email ?? "",
+      buyerPhone: order.buyerPhone ?? fallbackBuyer?.phone ?? user?.phone ?? "",
+      buyerDocument: order.buyerDocument ?? fallbackBuyer?.document ?? user?.document ?? "",
+      subtotal: order.subtotal ?? order.total ?? 0,
+      serviceFees: order.serviceFees ?? 0,
+      total: order.total ?? 0,
+      createdAt: order.createdAt ?? new Date().toISOString(),
+      status: order.status?.toLowerCase() === "pending" ? "pending" : "confirmed",
+    }),
+    [mapTicketsResponse, user]
+  );
+
+  const getOrderById = useCallback(
+    async (orderId: string) => {
+      const order = await apiFetch<OrderApiResponse>(`/api/orders/${orderId}`);
+      const mapped = mapOrderResponse(order);
+      setLastOrder(mapped);
+      return mapped;
+    },
+    [apiFetch, mapOrderResponse]
+  );
+
+  const fetchPurchasedTicketsSnapshot = useCallback(async () => {
+    setTicketsLoading(true);
+    try {
+      const ticketsData = await apiFetch<TicketApiResponse[]>("/api/tickets");
+      const mapped = mapTicketsResponse(ticketsData);
+      setPurchasedTickets(mapped);
+      return mapped;
+    } finally {
+      setTicketsLoading(false);
+    }
   }, [apiFetch, mapTicketsResponse]);
+
+  const refreshTickets = useCallback(async () => {
+    await fetchPurchasedTicketsSnapshot();
+  }, [fetchPurchasedTicketsSnapshot]);
+
+  const waitForTicketReconciliation = useCallback(
+    async (
+      predicate: (tickets: PurchasedTicket[]) => boolean,
+      onStatus?: (status: ResaleFlowStatus) => void
+    ) => {
+      onStatus?.("reconciling");
+      for (let attempt = 0; attempt < RESALE_RECONCILE_ATTEMPTS; attempt += 1) {
+        await sleep(RESALE_RECONCILE_DELAY_MS);
+        const snapshot = await fetchPurchasedTicketsSnapshot();
+        if (predicate(snapshot)) return true;
+      }
+      return false;
+    },
+    [fetchPurchasedTicketsSnapshot]
+  );
 
   const refreshSoldTickets = useCallback(async () => {
     const data = await apiFetch<Array<{ id: string; soldAt: string; resalePrice: number; contractAddress?: string; ticketRootId?: number; version?: number; ticketType?: { id: string; name: string; price: number }; event?: Partial<EventData> }>>("/api/tickets/sold");
@@ -271,8 +480,10 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       setOrders([]);
       setPurchasedTickets([]);
       setSoldTickets([]);
+      setTicketsLoading(false);
       return;
     }
+    setTicketsLoading(true);
     void (async () => {
       const load = async <T,>(label: string, request: () => Promise<T>): Promise<T | null> => {
         try {
@@ -308,7 +519,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       }
 
       const ordersData = await load("órdenes", () =>
-        apiFetch<Array<{ id: string; orderNumber?: string; createdAt: string; total: number; subtotal?: number; serviceFees?: number; status?: string }>>("/api/orders")
+        apiFetch<OrderApiResponse[]>("/api/orders")
       );
       if (ordersData) {
         setOrders(
@@ -320,10 +531,10 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
             buyerEmail: user?.email ?? "",
             buyerPhone: user?.phone ?? "",
             buyerDocument: user?.document ?? "",
-            subtotal: order.subtotal ?? order.total,
+            subtotal: order.subtotal ?? order.total ?? 0,
             serviceFees: order.serviceFees ?? 0,
-            total: order.total,
-            createdAt: order.createdAt,
+            total: order.total ?? 0,
+            createdAt: order.createdAt ?? new Date().toISOString(),
             status: order.status?.toLowerCase() === "pending" ? "pending" : "confirmed",
           }))
         );
@@ -332,13 +543,14 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       }
 
       const ticketsData = await load("tickets", () =>
-        apiFetch<Array<{ id: string; purchasedAt?: string; quantity: number; seatIds?: string[]; ticketType?: { id: string; name: string; price: number; serviceFee: number }; event?: Partial<EventData>; isSecuredOnChain?: boolean; isForSale?: boolean; contractAddress?: string; ticketRootId?: number; version?: number; ownerWallet?: string; resalePrice?: number | null }>>("/api/tickets")
+        apiFetch<TicketApiResponse[]>("/api/tickets")
       );
       if (ticketsData) {
         setPurchasedTickets(mapTicketsResponse(ticketsData));
       } else {
         setPurchasedTickets([]);
       }
+      setTicketsLoading(false);
 
       const soldData = await load("ventas", () =>
         apiFetch<Array<{ id: string; soldAt: string; resalePrice: number; contractAddress?: string; ticketRootId?: number; version?: number; ticketType?: { id: string; name: string; price: number }; event?: Partial<EventData> }>>("/api/tickets/sold")
@@ -426,61 +638,37 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
 
   const checkout = useCallback(
     async (buyerInfo: { name: string; email: string; phone: string; document: string; paymentMethod: "CARD" | "PSE" | "CASHPOINT" }): Promise<OrderData | null> => {
+      const idempotencyKey = `checkout:${cart
+        .map((item) => `${item.id}:${item.quantity}`)
+        .sort()
+        .join("|")}`;
       await apiFetch("/api/checkout/preview", {
         method: "POST",
         body: JSON.stringify({ buyerEmail: buyerInfo.email, buyerPhone: buyerInfo.phone }),
       });
-      const orderResponse = await apiFetch<{ id?: string; orderNumber?: string; total?: number; subtotal?: number; serviceFees?: number }>("/api/checkout/confirm", {
+      const orderResponse = await apiFetch<OrderApiResponse & { paymentMode?: "SIMULATED"; idempotentReplay?: boolean }>("/api/checkout/confirm", {
         method: "POST",
+        headers: { "Idempotency-Key": idempotencyKey },
         body: JSON.stringify({
           buyerEmail: buyerInfo.email,
           buyerPhone: buyerInfo.phone,
           paymentMethod: buyerInfo.paymentMethod,
+          idempotencyKey,
         }),
       });
-      const subtotal = cart.reduce((s, c) => s + c.ticketType.price * c.quantity, 0);
-      const serviceFees = cart.reduce((s, c) => s + c.ticketType.serviceFee * c.quantity, 0);
-      const order: OrderData = {
-        id: orderResponse.id ?? `order-${Date.now()}`,
-        orderNumber: orderResponse.orderNumber ?? `EY-${Date.now().toString().slice(-8)}`,
-        items: [],
-        buyerName: buyerInfo.name,
-        buyerEmail: buyerInfo.email,
-        buyerPhone: buyerInfo.phone,
-        buyerDocument: buyerInfo.document,
-        subtotal: orderResponse.subtotal ?? subtotal,
-        serviceFees: orderResponse.serviceFees ?? serviceFees,
-        total: orderResponse.total ?? subtotal + serviceFees,
-        createdAt: new Date().toISOString(),
-        status: "confirmed",
-      };
+      const order = mapOrderResponse(orderResponse, buyerInfo);
       setLastOrder(order);
       setCart([]);
 
       // Refresh real tickets and orders from API to get DB UUIDs
-      const ordersData = await apiFetch<Array<{ id: string; orderNumber?: string; createdAt: string; total: number; subtotal?: number; serviceFees?: number; status?: string }>>("/api/orders");
+      const ordersData = await apiFetch<OrderApiResponse[]>("/api/orders");
       await refreshTickets();
 
-      setOrders(
-        ordersData.map((o) => ({
-          id: o.id,
-          orderNumber: o.orderNumber ?? `ORD-${o.id.slice(-6).toUpperCase()}`,
-          items: [],
-          buyerName: user?.name ?? "",
-          buyerEmail: user?.email ?? "",
-          buyerPhone: user?.phone ?? "",
-          buyerDocument: user?.document ?? "",
-          subtotal: o.subtotal ?? o.total,
-          serviceFees: o.serviceFees ?? 0,
-          total: o.total,
-          createdAt: o.createdAt,
-          status: o.status?.toLowerCase() === "pending" ? "pending" : "confirmed",
-        }))
-      );
+      setOrders(ordersData.map((o) => mapOrderResponse(o)));
 
       return order;
     },
-    [apiFetch, cart]
+    [apiFetch, cart, mapOrderResponse, refreshTickets]
   );
 
   const login = useCallback(
@@ -503,6 +691,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       setToken(response.accessToken);
       localStorage.setItem("authToken", response.accessToken);
       setUser(normalizeUser(response.user));
+      setAuthStatus("authenticated");
       return true;
     },
     [apiFetch, normalizeUser]
@@ -538,6 +727,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       setToken(response.accessToken);
       localStorage.setItem("authToken", response.accessToken);
       setUser(normalizeUser(response.user));
+      setAuthStatus("authenticated");
       return true;
     },
     [apiFetch, normalizeUser]
@@ -546,6 +736,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   const logout = useCallback(() => {
     setUser(null);
     setToken(null);
+    setAuthStatus("unauthenticated");
     setCart([]);
     setOrders([]);
     setPurchasedTickets([]);
@@ -586,22 +777,36 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   const ensureFreighterReady = useCallback(async (expectedAddress?: string): Promise<string> => {
     const api = await import("@stellar/freighter-api");
     const connectedRes = await api.isConnected();
-    const connected = (connectedRes as any)?.isConnected ?? connectedRes;
+    const connected = getFreighterFlag(connectedRes, "isConnected");
     if (!connected) {
       throw new Error("Freighter no está disponible en este navegador. Instala la extensión y desbloquéala.");
     }
     const allowedRes = await api.isAllowed();
-    const allowed = (allowedRes as any)?.isAllowed ?? allowedRes;
+    const allowed = getFreighterFlag(allowedRes, "isAllowed");
+    let accessAddress = "";
     if (!allowed) {
       const accessRes = await api.requestAccess();
-      if ((accessRes as any)?.error) {
+      if (hasFreighterError(accessRes)) {
         throw new Error("Freighter rechazó la conexión. Acepta el permiso para este sitio y vuelve a intentar.");
       }
+      accessAddress = getFreighterAddress(accessRes);
     }
-    const addrRes = await api.getAddress();
-    const active = (addrRes as any)?.address ?? (typeof addrRes === "string" ? addrRes : "");
+    let active = accessAddress;
+    try {
+      const addrRes = await api.getAddress();
+      active = getFreighterAddress(addrRes) || active;
+    } catch {
+      // requestAccess already gives us the selected address on supported Freighter versions.
+    }
     if (!active) {
-      throw new Error("Freighter no devolvió una dirección. Desbloquea la extensión e intenta de nuevo.");
+      const accessRes = await api.requestAccess();
+      if (hasFreighterError(accessRes)) {
+        throw new Error("Freighter rechazó la conexión. Acepta el permiso para este sitio y vuelve a intentar.");
+      }
+      active = getFreighterAddress(accessRes);
+    }
+    if (!active) {
+      throw new Error("Freighter no pudo confirmar la cuenta activa. Abre la extensión, desbloquéala y vuelve a intentar.");
     }
     if (expectedAddress && active !== expectedAddress) {
       throw new Error(`La cuenta activa en Freighter (${active.slice(0, 8)}…) no coincide con la wallet vinculada a tu cuenta (${expectedAddress.slice(0, 8)}…). Cambia la cuenta activa en Freighter.`);
@@ -610,7 +815,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   }, []);
 
   const secureTicketOnChain = useCallback(
-    async (ticketId: string): Promise<{ success: boolean; txHash?: string; nftContractAddress?: string | null; error?: string }> => {
+    async (ticketId: string): Promise<{ success: boolean; txHash?: string; nftContractAddress?: string | null; nftTokenId?: number | null; warning?: string; error?: string }> => {
       try {
         const result = await apiFetch<{
           success: boolean;
@@ -645,9 +850,17 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         );
         setBalanceVersion((v) => v + 1);
 
-        return { success: true, txHash: result.txHash, nftContractAddress: result.nftContractAddress };
-      } catch (error: any) {
-        const msg = error.message || "Error asegurando ticket en blockchain";
+        return {
+          success: true,
+          txHash: result.txHash,
+          nftContractAddress: result.nftContractAddress,
+          nftTokenId: result.nftTokenId ?? null,
+          warning: result.nftContractAddress && result.nftTokenId == null
+            ? "La boleta quedó asegurada en blockchain, pero el NFT coleccionable no se pudo mintear todavía."
+            : undefined,
+        };
+      } catch (error: unknown) {
+        const msg = getErrorMessage(error, "Error asegurando ticket en blockchain");
         return { success: false, error: msg };
       }
     },
@@ -655,151 +868,207 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   );
 
   const listTicketForSale = useCallback(
-    async (ticketId: string, priceXLM: number): Promise<{ success: boolean; txHash?: string; error?: string }> => {
+    async (ticketId: string, priceXLM: number, options?: ResaleFlowOptions): Promise<{ success: boolean; txHash?: string; error?: string }> => {
       try {
         await ensureFreighterReady(walletAddress ?? undefined);
         const priceStroops = Math.round(priceXLM * 10_000_000);
-        const { xdr, networkPassphrase } = await apiFetch<{ xdr: string; networkPassphrase: string }>("/api/transactions/list-ticket", {
+        options?.onStatus?.("building_xdr");
+        const { xdr, networkPassphrase, intentId } = await apiFetch<TransactionIntentResponse>("/api/transactions/list-ticket", {
           method: "POST",
           body: JSON.stringify({ ticketId, price: priceStroops }),
         });
+        options?.onStatus?.("signing");
         const { signTransaction } = await import("@stellar/freighter-api");
         const signResult = await signTransaction(xdr, { networkPassphrase });
-        const signedXdr = typeof signResult === "string" ? signResult : (signResult as any)?.signedTxXdr ?? "";
-        if (!signedXdr) return { success: false, error: "Firma cancelada por el usuario" };
+        const signedXdr = getSignedTxXdr(signResult);
+        if (!signedXdr) {
+          options?.onStatus?.("failed");
+          return { success: false, error: "Firma cancelada por el usuario" };
+        }
 
         const result = await apiFetch<{ success: boolean; txHash: string }>("/api/transactions/submit", {
           method: "POST",
-          body: JSON.stringify({ signedXdr }),
+          body: JSON.stringify({ signedXdr, intentId }),
         });
-        setPurchasedTickets((prev) =>
-          prev.map((t) => (t.id === ticketId ? { ...t, isForSale: true, resalePrice: priceStroops } : t))
+        options?.onStatus?.("submitted");
+        const confirmed = await waitForTicketReconciliation(
+          (tickets) => tickets.some((t) => t.id === ticketId && t.isForSale === true && t.resalePrice === priceStroops),
+          options?.onStatus
         );
+        if (!confirmed) {
+          options?.onStatus?.("failed");
+          return { success: false, txHash: result.txHash, error: "Transaccion enviada, pero el indexer aun no confirma el listado." };
+        }
         setBalanceVersion((v) => v + 1);
+        options?.onStatus?.("confirmed");
         return { success: true, txHash: result.txHash };
-      } catch (error: any) {
-        return { success: false, error: error.message || "Error listando ticket" };
+      } catch (error: unknown) {
+        options?.onStatus?.("failed");
+        return { success: false, error: getErrorMessage(error, "Error listando ticket") };
       }
     },
-    [apiFetch, ensureFreighterReady, walletAddress]
+    [apiFetch, ensureFreighterReady, waitForTicketReconciliation, walletAddress]
   );
 
   const cancelResaleListing = useCallback(
-    async (ticketId: string): Promise<{ success: boolean; txHash?: string; error?: string }> => {
+    async (ticketId: string, options?: ResaleFlowOptions): Promise<{ success: boolean; txHash?: string; error?: string }> => {
       try {
         await ensureFreighterReady(walletAddress ?? undefined);
-        const { xdr, networkPassphrase } = await apiFetch<{ xdr: string; networkPassphrase: string }>("/api/transactions/cancel-listing", {
+        options?.onStatus?.("building_xdr");
+        const { xdr, networkPassphrase, intentId } = await apiFetch<TransactionIntentResponse>("/api/transactions/cancel-listing", {
           method: "POST",
           body: JSON.stringify({ ticketId }),
         });
+        options?.onStatus?.("signing");
         const { signTransaction } = await import("@stellar/freighter-api");
         const signResult = await signTransaction(xdr, { networkPassphrase });
-        const signedXdr = typeof signResult === "string" ? signResult : (signResult as any)?.signedTxXdr ?? "";
-        if (!signedXdr) return { success: false, error: "Firma cancelada por el usuario" };
+        const signedXdr = getSignedTxXdr(signResult);
+        if (!signedXdr) {
+          options?.onStatus?.("failed");
+          return { success: false, error: "Firma cancelada por el usuario" };
+        }
 
         const result = await apiFetch<{ success: boolean; txHash: string }>("/api/transactions/submit", {
           method: "POST",
-          body: JSON.stringify({ signedXdr }),
+          body: JSON.stringify({ signedXdr, intentId }),
         });
-        setPurchasedTickets((prev) =>
-          prev.map((t) => (t.id === ticketId ? { ...t, isForSale: false, resalePrice: undefined } : t))
+        options?.onStatus?.("submitted");
+        const confirmed = await waitForTicketReconciliation(
+          (tickets) => tickets.some((t) => t.id === ticketId && t.isForSale !== true),
+          options?.onStatus
         );
+        if (!confirmed) {
+          options?.onStatus?.("failed");
+          return { success: false, txHash: result.txHash, error: "Transaccion enviada, pero el indexer aun no confirma la cancelacion." };
+        }
         setBalanceVersion((v) => v + 1);
+        options?.onStatus?.("confirmed");
         return { success: true, txHash: result.txHash };
-      } catch (error: any) {
-        return { success: false, error: error.message || "Error cancelando listado" };
+      } catch (error: unknown) {
+        options?.onStatus?.("failed");
+        return { success: false, error: getErrorMessage(error, "Error cancelando listado") };
       }
     },
-    [apiFetch, ensureFreighterReady, walletAddress]
+    [apiFetch, ensureFreighterReady, waitForTicketReconciliation, walletAddress]
   );
 
   const buyResaleTicket = useCallback(
     async (
       contractAddress: string,
       ticketRootId: number,
-      buyerPublicKey: string
+      buyerPublicKey: string,
+      currentVersion: number,
+      options?: ResaleFlowOptions
     ): Promise<{ success: boolean; txHash?: string; error?: string }> => {
       try {
         await ensureFreighterReady(buyerPublicKey);
         const { signTransaction } = await import("@stellar/freighter-api");
 
         // 1. XDR sin firmar para comprar_boleto
-        const { xdr, networkPassphrase } = await apiFetch<{ xdr: string; networkPassphrase: string }>("/api/transactions/build-buy-xdr", {
+        options?.onStatus?.("building_xdr");
+        const { xdr, networkPassphrase, intentId } = await apiFetch<TransactionIntentResponse>("/api/transactions/build-buy-xdr", {
           method: "POST",
           body: JSON.stringify({ contractAddress, ticketRootId, buyerPublicKey }),
         });
 
         // 2. Firma + submit del comprar_boleto
+        options?.onStatus?.("signing");
         const signResult = await signTransaction(xdr, { networkPassphrase });
-        const signedXdr = typeof signResult === "string" ? signResult : (signResult as any)?.signedTxXdr ?? "";
-        if (!signedXdr) return { success: false, error: "Firma cancelada por el usuario" };
+        const signedXdr = getSignedTxXdr(signResult);
+        if (!signedXdr) {
+          options?.onStatus?.("failed");
+          return { success: false, error: "Firma cancelada por el usuario" };
+        }
 
         const submitResult = await apiFetch<{ success: boolean; txHash: string }>("/api/transactions/submit", {
           method: "POST",
-          body: JSON.stringify({ signedXdr }),
+          body: JSON.stringify({ signedXdr, intentId }),
         });
+        options?.onStatus?.("submitted");
 
-        // 3. Refresh inmediato del saldo (Horizon refleja la tx en 3-5s) y un
-        //    refresh temprano de tickets a los 3s para que la boleta aparezca
-        //    en "Mis Entradas" sin esperar al transfer-nft. El transfer-nft
-        //    corre en background con polling más ajustado.
+        // 3. Tras ~7s (indexer aplica boleto_revendido), pedir la transferencia
+        //    del collectible NFT solo si el backend puede verificar txHash/comprador/version.
+        options?.onStatus?.("reconciling");
         setBalanceVersion((v) => v + 1);
-        void (async () => {
-          await new Promise((r) => setTimeout(r, 3000));
-          await refreshTickets().catch(() => {});
-          await refreshSoldTickets().catch(() => {});
-          setBalanceVersion((v) => v + 1);
-        })();
-        void (async () => {
-          // Empezamos antes (3s) y reintentamos cada 2s. Total ≤ 11s en peor caso.
-          const delays = [3000, 2000, 2000, 2000];
-          let transferred = false;
-          for (const ms of delays) {
-            await new Promise((r) => setTimeout(r, ms));
-            try {
-              await apiFetch("/api/transactions/transfer-nft", {
-                method: "POST",
-                body: JSON.stringify({
-                  contractAddress,
-                  ticketRootId,
-                  buyerWallet: buyerPublicKey,
-                }),
-              });
-              transferred = true;
-              break;
-            } catch (e: any) {
-              const msg = String(e?.message ?? "");
-              if (!msg.includes("indexer aún no procesa")) {
-                console.warn("[nft] transfer failed:", msg);
-                break;
-              }
-            }
-          }
-          if (!transferred) {
-            console.warn("[nft] transfer no completó tras 4 intentos");
-          }
-          // Segundo refresh: ahora con nftTokenId del comprador y saldo final.
-          await refreshTickets().catch(() => {});
-          await refreshSoldTickets().catch(() => {});
-          setBalanceVersion((v) => v + 1);
-        })();
+        await sleep(7000);
+        try {
+          await apiFetch("/api/transactions/transfer-nft", {
+            method: "POST",
+            body: JSON.stringify({
+              contractAddress,
+              ticketRootId,
+              buyerWallet: buyerPublicKey,
+              txHash: submitResult.txHash,
+              expectedVersion: currentVersion + 1,
+            }),
+          });
+        } catch (e: unknown) {
+          console.warn("[nft] verified transfer skipped:", getErrorMessage(e, "transfer failed"));
+        }
+        const confirmed = await waitForTicketReconciliation(
+          (tickets) =>
+            tickets.some((t) =>
+              t.contractAddress === contractAddress &&
+              t.ticketRootId === ticketRootId &&
+              t.version === currentVersion + 1
+            ),
+          options?.onStatus
+        );
+        await refreshSoldTickets().catch(() => {});
+        setBalanceVersion((v) => v + 1);
+        if (!confirmed) {
+          options?.onStatus?.("failed");
+          return { success: false, txHash: submitResult.txHash, error: "Transaccion enviada, pero el indexer aun no confirma la compra." };
+        }
 
+        options?.onStatus?.("confirmed");
         return { success: true, txHash: submitResult.txHash };
-      } catch (error: any) {
-        return { success: false, error: error.message || "Error comprando ticket" };
+      } catch (error: unknown) {
+        options?.onStatus?.("failed");
+        return { success: false, error: getErrorMessage(error, "Error comprando ticket") };
       }
     },
-    [apiFetch, refreshTickets, refreshSoldTickets, ensureFreighterReady]
+    [apiFetch, refreshSoldTickets, ensureFreighterReady, waitForTicketReconciliation]
   );
 
   const linkWallet = useCallback(
     async (walletAddress: string) => {
-      await apiFetch("/api/users/me/wallet", {
-        method: "PATCH",
+      const challenge = await apiFetch<{
+        challengeId: string;
+        message: string;
+        expiresAt: string;
+      }>("/api/wallet/challenge", {
+        method: "POST",
         body: JSON.stringify({ walletAddress }),
       });
+
+      const { signMessage } = await import("@stellar/freighter-api");
+      const signed = await signMessage(challenge.message, {
+        networkPassphrase: STELLAR_TESTNET_PASSPHRASE,
+        address: walletAddress,
+      });
+      if (hasFreighterError(signed)) {
+        throw new Error(getFreighterErrorMessage(signed, "Freighter no pudo firmar el challenge de wallet"));
+      }
+
+      const { signedMessage, signerAddress } = getSignedMessagePayload(signed);
+      if (signerAddress && signerAddress !== walletAddress) {
+        throw new Error("La firma no corresponde a la wallet seleccionada en Freighter");
+      }
+
+      const signature = serializeSignedMessage(signedMessage);
+
+      await apiFetch("/api/users/me/wallet", {
+        method: "PATCH",
+        body: JSON.stringify({
+          walletAddress,
+          challengeId: challenge.challengeId,
+          signature,
+        }),
+      });
+      setWalletAddress(walletAddress);
     },
-    [apiFetch]
+    [apiFetch, setWalletAddress]
   );
 
   return (
@@ -809,8 +1078,10 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         orders,
         purchasedTickets,
         soldTickets,
+        ticketsLoading,
         user,
         isLoggedIn,
+        authStatus,
         balanceVersion,
         addToCart,
         removeFromCart,
@@ -832,6 +1103,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         setWalletAddress,
         lastOrder,
         apiFetch,
+        getOrderById,
       }}
     >
       {children}

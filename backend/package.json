@@ -6,13 +6,19 @@
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "start": "tsx src/server.ts",
+    "test": "VERCEL=1 RUN_INDEXER=false node --import tsx --test src/**/*.test.ts",
     "build": "tsc --noEmitOnError false || true",
     "postinstall": "prisma generate",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:deploy": "prisma migrate deploy",
+    "prisma:seed": "prisma db seed",
+    "reconcile:onchain-db": "tsx scripts/reconcile-onchain-db.ts",
     "env:test": "bash scripts/switch-env.sh test",
     "env:prod": "bash scripts/switch-env.sh prod"
+  },
+  "prisma": {
+    "seed": "tsx prisma/seed.ts"
   },
   "dependencies": {
     "@prisma/client": "^6.9.0",
@@ -31,7 +37,9 @@
     "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^22.15.0",
     "@types/qrcode": "^1.5.6",
+    "@types/supertest": "^7.2.0",
     "prisma": "^6.9.0",
+    "supertest": "^7.2.2",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0"
   }

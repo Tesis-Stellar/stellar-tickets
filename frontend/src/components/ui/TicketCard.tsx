@@ -1,6 +1,6 @@
-import { QrCode, MapPin, Calendar, ShieldCheck, Lock, ExternalLink, Tag } from "lucide-react";
+import { QrCode, MapPin, Calendar, ShieldCheck, Lock, ExternalLink, Tag, CheckCircle2 } from "lucide-react";
 import { QRCodeCanvas } from "qrcode.react";
-import type { PurchasedTicket } from "@/context/AppContext";
+import type { PurchasedTicket, ResaleFlowStatus } from "@/context/AppContext";
 import { useAppContext } from "@/context/AppContext";
 import { useXlmPrice, formatCOP } from "@/hooks/useXlmPrice";
 import { useState } from "react";
@@ -14,9 +14,11 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { useToast } from "@/hooks/use-toast";
 
 export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
   const { secureTicketOnChain, listTicketForSale, cancelResaleListing, walletAddress } = useAppContext();
+  const { toast } = useToast();
   const xlmCopPrice = useXlmPrice();
   const [isMinting, setIsMinting] = useState(false);
   const [isMinted, setIsMinted] = useState(ticket.isSecuredOnChain ?? false);
@@ -28,24 +30,37 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
   const [resalePriceInput, setResalePriceInput] = useState("");
   const [nftDialogOpen, setNftDialogOpen] = useState(false);
   const [justMintedNftAddress, setJustMintedNftAddress] = useState<string | null>(null);
+  const [justMintedNftTokenId, setJustMintedNftTokenId] = useState<number | null>(null);
+  const [resaleFlowStatus, setResaleFlowStatus] = useState<ResaleFlowStatus | null>(null);
+  const [resaleSuccessDialog, setResaleSuccessDialog] = useState<{ kind: "list" | "cancel"; txHash?: string } | null>(null);
 
   const parsedPriceCOP = Number(resalePriceInput.replace(/[^\d]/g, ""));
   const previewXLM = xlmCopPrice && parsedPriceCOP > 0 ? parsedPriceCOP / xlmCopPrice : 0;
-
-  // Comisiones del event_contract en reventa (ver inicializar): organizador 5%, plataforma 3%.
-  const ORGANIZER_FEE_PCT = 5;
-  const PLATFORM_FEE_PCT = 3;
-  const SELLER_PCT = 100 - ORGANIZER_FEE_PCT - PLATFORM_FEE_PCT;
-  const organizerFeeCOP = (parsedPriceCOP * ORGANIZER_FEE_PCT) / 100;
-  const platformFeeCOP = (parsedPriceCOP * PLATFORM_FEE_PCT) / 100;
+  const organizerFeePct = 5;
+  const platformFeePct = 3;
+  const sellerPct = 100 - organizerFeePct - platformFeePct;
+  const organizerFeeCOP = (parsedPriceCOP * organizerFeePct) / 100;
+  const platformFeeCOP = (parsedPriceCOP * platformFeePct) / 100;
   const sellerNetCOP = parsedPriceCOP - organizerFeeCOP - platformFeeCOP;
-  const organizerFeeXLM = (previewXLM * ORGANIZER_FEE_PCT) / 100;
-  const platformFeeXLM = (previewXLM * PLATFORM_FEE_PCT) / 100;
+  const organizerFeeXLM = (previewXLM * organizerFeePct) / 100;
+  const platformFeeXLM = (previewXLM * platformFeePct) / 100;
   const sellerNetXLM = previewXLM - organizerFeeXLM - platformFeeXLM;
+  const resaleStatusLabel: Record<ResaleFlowStatus, string> = {
+    building_xdr: "Preparando XDR...",
+    signing: "Esperando firma...",
+    submitted: "Enviada a Soroban...",
+    reconciling: "Confirmando indexer...",
+    confirmed: "Confirmado",
+    failed: "Falló",
+  };
 
   const claimTicket = async () => {
     if (!walletAddress) {
-      alert("Debes conectar tu wallet de Freighter antes de asegurar el boleto en blockchain. Haz clic en \"Conectar Wallet\" en la parte superior de la página.");
+      toast({
+        title: "Conecta tu wallet",
+        description: "Necesitas Freighter conectado desde el header antes de asegurar el boleto en blockchain.",
+        variant: "destructive",
+      });
       return;
     }
     try {
@@ -54,16 +69,31 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
       if (result.success) {
         setIsMinted(true);
         setTxHash(result.txHash ?? null);
-        if (result.nftContractAddress) {
-          setJustMintedNftAddress(result.nftContractAddress);
+        const nftAddr = result.nftContractAddress ?? null;
+        if (nftAddr && result.nftTokenId != null) {
+          setJustMintedNftAddress(nftAddr);
+          setJustMintedNftTokenId(result.nftTokenId);
           setNftDialogOpen(true);
+        } else if (result.warning) {
+          toast({
+            title: "Boleto asegurado",
+            description: result.warning,
+          });
         }
       } else {
-        alert(`Error: ${result.error}`);
+        toast({
+          title: "No se pudo asegurar el boleto",
+          description: result.error ?? "Intenta nuevamente en unos segundos.",
+          variant: "destructive",
+        });
       }
     } catch (e) {
       console.error(e);
-      alert("Error al asegurar en blockchain");
+      toast({
+        title: "No se pudo asegurar el boleto",
+        description: "Ocurrió un error al registrar el boleto en blockchain.",
+        variant: "destructive",
+      });
     } finally {
       setIsMinting(false);
     }
@@ -71,11 +101,19 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
 
   const openResaleDialog = () => {
     if (!walletAddress) {
-      alert("Debes conectar tu wallet de Freighter antes de poner el boleto en reventa. Haz clic en \"Conectar Wallet\" en la parte superior de la página.");
+      toast({
+        title: "Conecta tu wallet",
+        description: "Necesitas Freighter conectado desde el header antes de publicar una reventa.",
+        variant: "destructive",
+      });
       return;
     }
     if (!xlmCopPrice) {
-      alert("No se pudo obtener la cotización XLM/COP. Intenta de nuevo en unos segundos.");
+      toast({
+        title: "Cotización no disponible",
+        description: "No pudimos obtener XLM/COP. Intenta de nuevo en unos segundos.",
+        variant: "destructive",
+      });
       return;
     }
     setResalePriceInput("");
@@ -88,16 +126,26 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
     setResaleDialogOpen(false);
     try {
       setIsListing(true);
-      const result = await listTicketForSale(ticket.id, priceXLM);
+      setResaleFlowStatus("building_xdr");
+      const result = await listTicketForSale(ticket.id, priceXLM, { onStatus: setResaleFlowStatus });
       if (result.success) {
         setIsListed(true);
         setTxHash(result.txHash ?? txHash);
+        setResaleSuccessDialog({ kind: "list", txHash: result.txHash ?? txHash ?? undefined });
       } else {
-        alert(`Error: ${result.error}`);
+        toast({
+          title: "No se pudo publicar la reventa",
+          description: result.error ?? "La operación no fue confirmada.",
+          variant: "destructive",
+        });
       }
     } catch (e) {
       console.error(e);
-      alert("Error al listar en blockchain");
+      toast({
+        title: "No se pudo publicar la reventa",
+        description: "Ocurrió un error al listar el boleto en blockchain.",
+        variant: "destructive",
+      });
     } finally {
       setIsListing(false);
     }
@@ -126,7 +174,7 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
         </div>
         <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
           <MapPin className="w-3.5 h-3.5" />
-          <span>{typeof ticket.event.venue === 'object' ? (ticket.event.venue as any)?.name : ticket.event.venue}, {ticket.event.city}</span>
+          <span>{typeof ticket.event.venue === "object" ? ticket.event.venue?.name : ticket.event.venue}, {ticket.event.city}</span>
         </div>
         <div className="flex items-center gap-2 mt-1">
           <span className="px-2 py-0.5 bg-primary/10 text-primary text-[10px] font-bold rounded-full">
@@ -156,16 +204,26 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
                     onClick={async () => {
                       try {
                         setIsCancelling(true);
-                        const result = await cancelResaleListing(ticket.id);
+                        setResaleFlowStatus("building_xdr");
+                        const result = await cancelResaleListing(ticket.id, { onStatus: setResaleFlowStatus });
                         if (result.success) {
                           setIsListed(false);
                           setTxHash(result.txHash ?? txHash);
+                          setResaleSuccessDialog({ kind: "cancel", txHash: result.txHash ?? txHash ?? undefined });
                         } else {
-                          alert(`Error: ${result.error}`);
+                          toast({
+                            title: "No se pudo cancelar la reventa",
+                            description: result.error ?? "La operación no fue confirmada.",
+                            variant: "destructive",
+                          });
                         }
                       } catch (e) {
                         console.error(e);
-                        alert("Error al cancelar reventa");
+                        toast({
+                          title: "No se pudo cancelar la reventa",
+                          description: "Ocurrió un error al retirar el boleto del mercado.",
+                          variant: "destructive",
+                        });
                       } finally {
                         setIsCancelling(false);
                       }
@@ -173,7 +231,7 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
                     disabled={isCancelling}
                     className={`inline-flex items-center gap-1 px-3 py-1 text-xs font-black rounded-lg transition-colors w-fit ${isCancelling ? "bg-muted text-muted-foreground" : "bg-red-600 hover:bg-red-700 text-white shadow-md shadow-red-900/20"}`}
                   >
-                    {isCancelling ? "Cancelando..." : "Cancelar Reventa"}
+                    {isCancelling && resaleFlowStatus ? resaleStatusLabel[resaleFlowStatus] : isCancelling ? "Cancelando..." : "Cancelar Reventa"}
                   </button>
                 </>
               )}
@@ -187,15 +245,27 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
                   <ExternalLink className="w-3 h-3" /> Ver en Stellar Explorer
                 </a>
               )}
-              {ticket.nftContractAddress && (
+              {ticket.nftContractAddress && ticket.nftTokenId != null && (
                 <button
                   onClick={() => {
                     setJustMintedNftAddress(ticket.nftContractAddress ?? null);
+                    setJustMintedNftTokenId(ticket.nftTokenId ?? null);
                     setNftDialogOpen(true);
                   }}
                   className="inline-flex items-center gap-1 px-2 py-1 text-[10px] text-purple-400 hover:text-purple-300 transition-colors"
                 >
                   Ver NFT en Freighter
+                </button>
+              )}
+              {ticket.nftContractAddress && ticket.nftTokenId == null && (
+                <button
+                  onClick={claimTicket}
+                  disabled={isMinting}
+                  className={`inline-flex items-center gap-1 px-2 py-1 text-[10px] transition-colors ${
+                    isMinting ? "text-muted-foreground" : "text-purple-400 hover:text-purple-300"
+                  }`}
+                >
+                  {isMinting ? "Creando NFT..." : "Crear NFT en Freighter"}
                 </button>
               )}
             </div>
@@ -205,9 +275,12 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
                 disabled={isListing}
                 className={`inline-flex items-center gap-1 px-3 py-1 text-xs font-black rounded-lg transition-colors shadow-md shadow-blue-900/20 w-fit ${isListing ? "bg-muted text-muted-foreground" : "bg-blue-600 hover:bg-blue-700 text-white"}`}
               >
-                {isListing ? "Listando en Soroban..." : "Vender boleta"}
+                {isListing && resaleFlowStatus ? resaleStatusLabel[resaleFlowStatus] : isListing ? "Listando en Soroban..." : "Vender boleta"}
               </button>
             )}
+            {(isListing || isCancelling) && resaleFlowStatus ? (
+              <p className="text-[11px] text-muted-foreground">{resaleStatusLabel[resaleFlowStatus]}</p>
+            ) : null}
           </div>
         ) : (
           <button
@@ -220,57 +293,24 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
           </button>
         )}
       </div>
-      {/* QR de entrada — incluye ownerWallet para que el scanner valide contra
-          el dueño on-chain actual. Si el ticket fue revendido, la wallet del
-          QR cacheado por Freighter ya no coincide con el dueño en DB y el
-          scanner lo rechaza. Mientras el ticket está listado en reventa,
-          ocultamos el QR para evitar confusión visual. */}
-      <div className="flex flex-col items-center justify-center sm:border-l sm:border-border sm:pl-4 min-w-[140px] max-w-[180px]">
-        {isMinted && !isListed ? (
-          <>
-            <div className="p-2 bg-white rounded-lg shadow-sm">
-              <QRCodeCanvas
-                value={JSON.stringify({
-                  contractAddress: ticket.contractAddress,
-                  ticketRootId: ticket.ticketRootId,
-                  version: ticket.version ?? 1,
-                  ownerWallet: ticket.ownerWallet ?? walletAddress ?? null,
-                })}
-                size={80}
-                level={"H"}
-                bgColor={"#ffffff"}
-                fgColor={"#000000"}
-              />
-            </div>
-            <span className="text-[10px] text-muted-foreground font-bold mt-2 uppercase tracking-tight text-center">
-              QR Válido
-            </span>
-          </>
-        ) : isMinted && isListed ? (
-          <div className="flex flex-col items-center text-center gap-1.5 px-2">
-            <div className="w-16 h-16 rounded-lg bg-amber-500/10 border border-amber-500/30 flex items-center justify-center">
-              <Tag className="w-7 h-7 text-amber-500" />
-            </div>
-            <span className="text-[10px] text-amber-600 dark:text-amber-400 font-black uppercase tracking-tight">
-              QR Suspendido
-            </span>
-            <span className="text-[10px] text-muted-foreground leading-tight">
-              Boleta publicada en reventa P2P. Cancela la reventa para recuperar tu QR.
-            </span>
-          </div>
-        ) : (
-          <div className="flex flex-col items-center text-center gap-1.5 px-2">
-            <div className="w-16 h-16 rounded-lg bg-muted border border-border flex items-center justify-center">
-              <QrCode className="w-7 h-7 text-muted-foreground" />
-            </div>
-            <span className="text-[10px] text-muted-foreground font-black uppercase tracking-tight">
-              QR no disponible
-            </span>
-            <span className="text-[10px] text-muted-foreground leading-tight">
-              Asegura tu boleta en blockchain para liberar tu QR de entrada.
-            </span>
-          </div>
-        )}
+      {/* Real QR — once secured on-chain, this matches the QR baked into the
+          Freighter Collectible (encodes contractAddress + ticketRootId). */}
+      <div className="flex flex-col items-center justify-center sm:border-l sm:border-border sm:pl-4 min-w-[120px]">
+        <div className="p-2 bg-white rounded-lg shadow-sm">
+          <QRCodeCanvas
+            value={
+              ticket.qrPayload ??
+              JSON.stringify({ ticketId: ticket.id, code: ticket.ticketCode || ticket.id })
+            }
+            size={80}
+            level={"H"}
+            bgColor={"#ffffff"}
+            fgColor={"#000000"}
+          />
+        </div>
+        <span className="text-[10px] text-muted-foreground font-bold mt-2 uppercase tracking-tight">
+          {isMinted ? "EN TU WALLET" : ticket.ticketCode?.slice(0, 10) || "QR-CODE"}
+        </span>
       </div>
     </div>
 
@@ -290,7 +330,7 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
           <ol className="text-xs text-muted-foreground list-decimal pl-4 space-y-1">
             <li>Abre Freighter → pestaña <b>Collectibles</b></li>
             <li>"Add Collectible" → pega la dirección de arriba</li>
-            <li>Token ID: <span className="font-mono">{ticket.nftTokenId ?? "pendiente…"}</span></li>
+            <li>Token ID: <span className="font-mono">{justMintedNftTokenId ?? ticket.nftTokenId}</span></li>
           </ol>
         </div>
         <DialogFooter className="gap-2 sm:gap-0">
@@ -351,16 +391,15 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
             </div>
           </div>
 
-          {/* Desglose de comisiones (event_contract: 5% org + 3% plat). */}
           <div className="rounded-lg border border-border p-3 space-y-2 text-sm">
             <p className="text-xs font-bold uppercase tracking-wide text-muted-foreground">
               Desglose de comisiones
             </p>
 
             <div className="space-y-1">
-              <div className="flex justify-between items-baseline">
+              <div className="flex justify-between items-baseline gap-3">
                 <span className="text-muted-foreground">
-                  Organizador <span className="text-xs">({ORGANIZER_FEE_PCT}%)</span>
+                  Organizador <span className="text-xs">({organizerFeePct}%)</span>
                 </span>
                 <div className="text-right">
                   <span className="font-mono font-semibold text-foreground">
@@ -372,9 +411,9 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
                 </div>
               </div>
 
-              <div className="flex justify-between items-baseline">
+              <div className="flex justify-between items-baseline gap-3">
                 <span className="text-muted-foreground">
-                  Plataforma <span className="text-xs">({PLATFORM_FEE_PCT}%)</span>
+                  Plataforma <span className="text-xs">({platformFeePct}%)</span>
                 </span>
                 <div className="text-right">
                   <span className="font-mono font-semibold text-foreground">
@@ -387,9 +426,9 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
               </div>
             </div>
 
-            <div className="border-t border-border pt-2 flex justify-between items-baseline">
+            <div className="border-t border-border pt-2 flex justify-between items-baseline gap-3">
               <span className="font-bold text-foreground">
-                Recibirás <span className="text-xs font-normal text-muted-foreground">({SELLER_PCT}%)</span>
+                Recibirás <span className="text-xs font-normal text-muted-foreground">({sellerPct}%)</span>
               </span>
               <div className="text-right">
                 <span className="font-mono font-bold text-green-600">
@@ -402,7 +441,7 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
             </div>
 
             <p className="text-[10px] text-muted-foreground pt-1">
-              Comisiones liquidadas on-chain en la red Stellar. La tarifa de transacción la paga el comprador (~0.00001 XLM, despreciable).
+              Comisiones liquidadas on-chain en Stellar. La tarifa de red la paga el comprador y es despreciable para la demo.
             </p>
           </div>
         </div>
@@ -417,6 +456,44 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
             className="bg-blue-600 hover:bg-blue-700 text-white"
           >
             Listar por {parsedPriceCOP > 0 ? formatCOP(parsedPriceCOP) : "—"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+
+    <Dialog open={!!resaleSuccessDialog} onOpenChange={(open) => !open && setResaleSuccessDialog(null)}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <CheckCircle2 className="w-5 h-5 text-green-600" />
+            {resaleSuccessDialog?.kind === "cancel" ? "Reventa cancelada" : "Boleto publicado en reventa"}
+          </DialogTitle>
+          <DialogDescription>
+            {resaleSuccessDialog?.kind === "cancel"
+              ? "Tu boleto se retiró del mercado P2P y vuelve a quedar disponible en Mis Entradas."
+              : "Tu boleto quedó publicado en el mercado P2P del evento."}
+          </DialogDescription>
+        </DialogHeader>
+
+        {resaleSuccessDialog?.txHash ? (
+          <div className="rounded-lg bg-muted/50 p-3 space-y-1 text-xs">
+            <div className="text-muted-foreground">Transaction hash</div>
+            <div className="font-mono break-all text-foreground">{resaleSuccessDialog.txHash}</div>
+            <a
+              href={`https://stellar.expert/explorer/testnet/tx/${resaleSuccessDialog.txHash}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1 text-purple-600 hover:text-purple-700 font-semibold mt-1"
+            >
+              <ExternalLink className="w-3 h-3" />
+              Ver en Stellar Explorer
+            </a>
+          </div>
+        ) : null}
+
+        <DialogFooter>
+          <Button onClick={() => setResaleSuccessDialog(null)} className="bg-purple-600 hover:bg-purple-700 text-white">
+            Listo
           </Button>
         </DialogFooter>
       </DialogContent>

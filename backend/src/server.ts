@@ -1,6 +1,6 @@
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
-import { PrismaClient } from '@prisma/client';
+import { Prisma, PrismaClient } from '@prisma/client';
 import dotenv from 'dotenv';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
@@ -20,6 +20,18 @@ import {
 } from '@stellar/stellar-sdk';
 import { rpc as SorobanRpc } from '@stellar/stellar-sdk';
 import { runIndexer } from './indexer';
+import { authorizeVerifiedNftTransfer } from './nftTransferPolicy';
+import { authorizeScannerRole, evaluateScanTicket, parseScanRequest } from './scannerPolicy';
+import { buildCheckinPayloadSummary, summarizeScanRequest, type CheckinResult } from './checkinPolicy';
+import { buildSimulatedOrderNumber, normalizeIdempotencyKey } from './checkoutPolicy';
+import { deriveChainEventId, parseSorobanU32ReturnValue } from './secureTicketPolicy';
+import { createWalletChallenge, verifyWalletChallengeSignature } from './walletChallengePolicy';
+import { signTicketQr } from './qrPolicy';
+import { authorizeTransactionIntentCurrentState, authorizeTransactionIntentSubmit, buildTransactionIntentExpiry } from './transactionIntentPolicy';
+import { authorizeSingleEventDeploy } from './deployEventPolicy';
+import { codeForStatus, requestIdMiddleware, sendApiError } from './apiError';
+import { evaluateRateLimit, isCorsOriginAllowed, isJwtSecretStrong, parseCorsOrigins, type RateLimitBucket } from './securityPolicy';
+import { buildSeatHoldExpiration, isSeatReservable } from './seatHoldPolicy';
 import { exec } from 'child_process';
 import util from 'util';
 import QRCode from 'qrcode';
@@ -43,12 +55,23 @@ const configuredJwtSecret = process.env.JWT_SECRET;
 if (!configuredJwtSecret && isProduction) {
   throw new Error('Missing required environment variable: JWT_SECRET');
 }
+if (isProduction && !isJwtSecretStrong(configuredJwtSecret)) {
+  throw new Error('JWT_SECRET must be at least 32 characters in production');
+}
 
 const EFFECTIVE_JWT_SECRET = configuredJwtSecret || 'stellar-tickets-dev-secret-change-in-prod';
 if (!configuredJwtSecret) {
   console.warn('[WARN] JWT_SECRET is not set. Using insecure development fallback; do not use this in shared, demo, or production environments.');
 }
-const JWT_EXPIRES_IN = '7d';
+const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || (isProduction ? '2h' : '7d');
+const QR_SIGNING_SECRET = process.env.QR_SIGNING_SECRET || EFFECTIVE_JWT_SECRET;
+const ALLOW_LEGACY_TICKET_ID_SCAN = process.env.ALLOW_LEGACY_TICKET_ID_SCAN === 'true';
+const configuredCorsOrigins = parseCorsOrigins(process.env.CORS_ORIGINS);
+const developmentCorsOrigins = ['http://localhost:5173', 'http://localhost:8080', 'http://localhost:3000'];
+const CORS_ORIGINS = Array.from(new Set([
+  ...configuredCorsOrigins,
+  ...(!isProduction ? developmentCorsOrigins : []),
+]));
 
 // Soroban / Stellar config
 const SOROBAN_RPC_URL = process.env.SOROBAN_RPC_URL || 'https://soroban-testnet.stellar.org';
@@ -68,7 +91,16 @@ async function invokeSoroban(
   fnName: string,
   args: xdr.ScVal[],
 ): Promise<SorobanRpc.Api.GetTransactionResponse> {
-  const accResp = await sorobanServer.getAccount(signer.publicKey());
+  let accResp: Awaited<ReturnType<typeof sorobanServer.getAccount>>;
+  try {
+    accResp = await sorobanServer.getAccount(signer.publicKey());
+  } catch (error: any) {
+    const message = String(error?.message ?? error);
+    if (message.includes('Account not found')) {
+      throw new Error(`Cuenta ORGANIZER_SECRET no existe o no esta fondeada en testnet: ${signer.publicKey()}`);
+    }
+    throw error;
+  }
   const account = new Account(accResp.accountId(), accResp.sequenceNumber());
   const tx = new TransactionBuilder(account, {
     fee: '10000000',
@@ -92,7 +124,15 @@ async function invokeSoroban(
     res = await sorobanServer.getTransaction(send.hash);
     attempts++;
   } while (res.status === 'NOT_FOUND' && attempts < 30);
-  if (res.status !== 'SUCCESS') throw new Error(`Soroban tx failed: ${res.status}`);
+  if (res.status !== 'SUCCESS') {
+    let diagnostics = '';
+    try {
+      diagnostics = JSON.stringify((res as any).diagnosticEvents ?? (res as any).resultXdr ?? '');
+    } catch {
+      diagnostics = '';
+    }
+    throw new Error(`Soroban tx failed: ${res.status}${diagnostics ? ` diagnostics=${diagnostics.slice(0, 500)}` : ''}`);
+  }
   return res;
 }
 
@@ -122,22 +162,66 @@ function toUserDto(user: { id: string; first_name: string; last_name: string; em
 }
 
 // Auth middleware: extracts user from JWT
-function authMiddleware(req: Request, res: Response, next: NextFunction) {
+async function authMiddleware(req: Request, res: Response, next: NextFunction) {
   const header = req.headers.authorization;
   if (!header?.startsWith('Bearer ')) {
-    res.status(401).json({ error: 'Token requerido' });
+    sendApiError(req, res, 401, 'UNAUTHORIZED', 'Token requerido');
     return;
   }
   try {
     const payload = jwt.verify(header.slice(7), EFFECTIVE_JWT_SECRET) as { userId: string };
     (req as any).userId = payload.userId;
+    const user = await prisma.users.findUnique({
+      where: { id: payload.userId },
+      select: { is_active: true },
+    });
+    if (user && !user.is_active) {
+      sendApiError(req, res, 403, 'USER_INACTIVE', 'Usuario inactivo');
+      return;
+    }
     next();
   } catch {
-    res.status(401).json({ error: 'Token inválido o expirado' });
+    sendApiError(req, res, 401, 'UNAUTHORIZED', 'Token inválido o expirado');
   }
 }
 
-app.use(cors());
+const rateLimitBuckets = new Map<string, RateLimitBucket>();
+
+function rateLimit(options: { key: string; windowMs: number; max: number }) {
+  return (req: Request, res: Response, next: NextFunction) => {
+    const identity = req.ip || req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown';
+    const bucketKey = `${options.key}:${identity}`;
+    const decision = evaluateRateLimit({
+      bucket: rateLimitBuckets.get(bucketKey),
+      now: Date.now(),
+      windowMs: options.windowMs,
+      max: options.max,
+    });
+    rateLimitBuckets.set(bucketKey, decision.bucket);
+    if (!decision.allowed) {
+      res.setHeader('Retry-After', String(decision.retryAfterSeconds));
+      sendApiError(req, res, 429, 'RATE_LIMITED', 'Demasiadas solicitudes, intenta de nuevo mas tarde');
+      return;
+    }
+    next();
+  };
+}
+
+const authRateLimit = rateLimit({ key: 'auth', windowMs: 60_000, max: 20 });
+const scannerRateLimit = rateLimit({ key: 'scanner', windowMs: 60_000, max: 60 });
+const transactionRateLimit = rateLimit({ key: 'transactions', windowMs: 60_000, max: 30 });
+const walletRateLimit = rateLimit({ key: 'wallet', windowMs: 60_000, max: 20 });
+
+app.use(requestIdMiddleware);
+app.use(cors({
+  origin(origin, callback) {
+    if (isCorsOriginAllowed(origin, CORS_ORIGINS)) {
+      callback(null, true);
+      return;
+    }
+    callback(new Error('CORS origin not allowed'));
+  },
+}));
 app.use(express.json({ limit: '8mb' }));
 
 // ── In-memory cache (avoids repeated Supabase round-trips ~150ms each) ──
@@ -150,6 +234,25 @@ function cached<T>(key: string, ttlMs: number, fn: () => Promise<T>): Promise<T>
 function invalidateCache(prefix?: string) {
   if (!prefix) { cache.clear(); return; }
   for (const key of cache.keys()) { if (key.startsWith(prefix)) cache.delete(key); }
+}
+
+async function recordCheckin(input: {
+  verifierUserId: string;
+  ticketId?: string | null;
+  result: CheckinResult;
+  reason?: string;
+  payload?: Record<string, unknown>;
+}) {
+  return prisma.checkins.create({
+    data: {
+      verifier_user_id: input.verifierUserId,
+      ticket_id: input.ticketId ?? null,
+      result: input.result,
+      source: 'db',
+      reason: input.reason ?? null,
+      payload: input.payload as any,
+    },
+  });
 }
 
 // ── Stellar TOML + QR collectible images ────────────────────────────────────
@@ -181,34 +284,267 @@ async function buildTicketQrPng(payload: object): Promise<Buffer> {
   });
 }
 
+function buildSignedTicketQrPayload(input: {
+  contractAddress: string;
+  ticketRootId: number;
+  version: number;
+  eventId: string;
+  ownerWallet?: string | null;
+}): { qrToken: string } {
+  return {
+    qrToken: signTicketQr({
+      secret: QR_SIGNING_SECRET,
+      contractAddress: input.contractAddress,
+      ticketRootId: input.ticketRootId,
+      version: input.version,
+      eventId: input.eventId,
+      ownerWallet: input.ownerWallet,
+    }),
+  };
+}
+
+function transactionHashHex(tx: { hash: () => Buffer }): string {
+  return tx.hash().toString('hex');
+}
+
+async function createTransactionIntent(input: {
+  userId: string;
+  walletAddress: string;
+  operation: string;
+  contractAddress: string;
+  ticketRootId: number;
+  expectedVersion?: number | null;
+  expectedPrice?: bigint | number | null;
+  xdrHash: string;
+}) {
+  return prisma.transaction_intents.create({
+    data: {
+      user_id: input.userId,
+      wallet_address: input.walletAddress,
+      operation: input.operation,
+      contract_address: input.contractAddress,
+      ticket_root_id: input.ticketRootId,
+      expected_version: input.expectedVersion ?? null,
+      expected_price: input.expectedPrice != null ? BigInt(input.expectedPrice) : null,
+      xdr_hash: input.xdrHash,
+      expires_at: buildTransactionIntentExpiry(),
+    },
+    select: { id: true, expires_at: true },
+  });
+}
+
+async function mintTicketNftWithBump(input: {
+  nftContractAddress: string;
+  contractAddress: string;
+  ticketRootId: number;
+  buyerWallet: string;
+}): Promise<{ nftTokenId: number; nftMintTxHash: string | null }> {
+  if (!organizerKeypair) {
+    throw new Error('Blockchain no configurada');
+  }
+
+  const attemptMint = async (tokenId: number) => {
+    const tokenUri = `${PUBLIC_BASE_URL}/api/nft/metadata/${input.nftContractAddress}/${tokenId}`;
+    const result = await invokeSoroban(
+      organizerKeypair,
+      input.nftContractAddress,
+      'mint',
+      [
+        new Address(input.buyerWallet).toScVal(),
+        nativeToScVal(tokenId, { type: 'u32' }),
+        nativeToScVal(tokenUri, { type: 'string' }),
+      ],
+    );
+    return (result as any).txHash ?? null;
+  };
+
+  try {
+    return {
+      nftTokenId: input.ticketRootId,
+      nftMintTxHash: await attemptMint(input.ticketRootId),
+    };
+  } catch (mintErr: any) {
+    const msg = String(mintErr?.message ?? '');
+    if (!msg.includes('TokenYaExiste') && !msg.includes('#3')) {
+      throw mintErr;
+    }
+
+    const maxAgg = await prisma.tickets.aggregate({
+      where: { contract_address: input.contractAddress } as any,
+      _max: { nft_token_id: true } as any,
+    });
+    const maxId = ((maxAgg as any)._max?.nft_token_id as number | null) ?? 0;
+    const bumped = Math.max(maxId, input.ticketRootId) + 1;
+
+    return {
+      nftTokenId: bumped,
+      nftMintTxHash: await attemptMint(bumped),
+    };
+  }
+}
+
+async function burnAndMintResaleNft(input: {
+  nftContractAddress: string;
+  contractAddress: string;
+  ticketRootId: number;
+  buyerWallet: string;
+}): Promise<{
+  burnTxHash: string | null;
+  mintTxHash: string | null;
+  nftTokenId: number;
+  alreadyTransferred?: boolean;
+}> {
+  if (!organizerKeypair) {
+    throw new Error('Blockchain no configurada');
+  }
+
+  const oldRow = await prisma.tickets.findFirst({
+    where: {
+      contract_address: input.contractAddress,
+      ticket_root_id: input.ticketRootId,
+      status: 'CANCELLED',
+    } as any,
+    orderBy: { version: 'desc' },
+    select: { nft_token_id: true } as any,
+  });
+  const oldNftTokenId = ((oldRow as any)?.nft_token_id as number | null) ?? input.ticketRootId;
+
+  const newRow = await prisma.tickets.findFirst({
+    where: {
+      contract_address: input.contractAddress,
+      ticket_root_id: input.ticketRootId,
+      status: 'ACTIVE',
+      owner_wallet: input.buyerWallet,
+    } as any,
+    orderBy: { version: 'desc' },
+    select: { id: true, nft_token_id: true } as any,
+  });
+  if (!newRow) {
+    const err = new Error('El indexer aun no procesa la reventa. Espera unos segundos e intenta de nuevo.');
+    (err as any).status = 409;
+    throw err;
+  }
+
+  const existingNewTokenId = (newRow as any).nft_token_id as number | null;
+  if (existingNewTokenId != null && existingNewTokenId !== oldNftTokenId) {
+    return {
+      burnTxHash: null,
+      mintTxHash: null,
+      nftTokenId: existingNewTokenId,
+      alreadyTransferred: true,
+    };
+  }
+
+  const allocateTokenId = async () => {
+    const maxAgg = await prisma.tickets.aggregate({
+      where: { contract_address: input.contractAddress } as any,
+      _max: { nft_token_id: true } as any,
+    });
+    const maxId = ((maxAgg as any)._max?.nft_token_id as number | null) ?? 0;
+    return Math.max(maxId, input.ticketRootId) + 1;
+  };
+
+  const adminScVal = new Address(organizerKeypair.publicKey()).toScVal();
+  let burnTxHash: string | null = null;
+  try {
+    const burnResult = await invokeSoroban(
+      organizerKeypair,
+      input.nftContractAddress,
+      'burn',
+      [adminScVal, nativeToScVal(oldNftTokenId, { type: 'u32' })],
+    );
+    burnTxHash = (burnResult as any).txHash ?? null;
+    console.log(`[NFT] burned token=${oldNftTokenId} on ${input.nftContractAddress.slice(0, 8)}...`);
+  } catch (error: any) {
+    const msg = String(error?.message ?? '');
+    if (msg.includes('TokenNoEncontrado') || msg.includes('#4')) {
+      console.log(`[NFT] burn skipped (token=${oldNftTokenId} already gone)`);
+    } else {
+      throw error;
+    }
+  }
+
+  const attemptMint = async (tokenId: number) => {
+    const tokenUri = `${PUBLIC_BASE_URL}/api/nft/metadata/${input.nftContractAddress}/${tokenId}`;
+    const mintResult = await invokeSoroban(
+      organizerKeypair,
+      input.nftContractAddress,
+      'mint',
+      [
+        new Address(input.buyerWallet).toScVal(),
+        nativeToScVal(tokenId, { type: 'u32' }),
+        nativeToScVal(tokenUri, { type: 'string' }),
+      ],
+    );
+    return (mintResult as any).txHash ?? null;
+  };
+
+  let nftTokenId = await allocateTokenId();
+  let mintTxHash: string | null = null;
+  try {
+    mintTxHash = await attemptMint(nftTokenId);
+  } catch (error: any) {
+    const msg = String(error?.message ?? '');
+    if (!msg.includes('TokenYaExiste') && !msg.includes('#3')) {
+      throw error;
+    }
+    nftTokenId = await allocateTokenId();
+    mintTxHash = await attemptMint(nftTokenId);
+  }
+
+  await prisma.tickets.update({
+    where: { id: (newRow as any).id },
+    data: { nft_token_id: nftTokenId } as any,
+  });
+
+  return { burnTxHash, mintTxHash, nftTokenId };
+}
+
 // GET /api/tickets/qr/:assetCode.png — public PNG referenced by stellar.toml.
-// QR encodes { contractAddress, ticketRootId } so the door scanner can resolve
-// the live ticket version regardless of resale history.
+// QR encodes a signed token bound to contract, root, version, event and owner,
+// so stale or transferred ticket images are rejected by the scanner.
 app.get('/api/tickets/qr/:assetCode.png', async (req, res) => {
-  // Endpoint público referenciado por stellar.toml (Freighter Classic).
-  // Devuelve el QR escaneable de la versión vigente. Si el dueño anterior
-  // tiene un screenshot/cache de un QR de versión anterior, el scanner lo
-  // rechaza por version mismatch.
   try {
     const assetCode = req.params.assetCode.replace(/\.png$/i, '');
     if (!/^T[0-9A-F]{1,11}$/.test(assetCode)) {
       res.status(400).type('text/plain').send('Invalid asset code');
       return;
     }
+
     const ticket = await prisma.tickets.findFirst({
       where: { asset_code: assetCode, contract_address: { not: null } },
-      select: { contract_address: true, ticket_root_id: true } as any,
+      select: {
+        contract_address: true,
+        ticket_root_id: true,
+        owner_wallet: true,
+        order_items: {
+          select: {
+            event_ticket_types: {
+              select: { event_id: true },
+            },
+          },
+        },
+      } as any,
     });
     if (!ticket?.contract_address || (ticket as any).ticket_root_id == null) {
       res.status(404).type('text/plain').send('Ticket not found');
       return;
     }
-    // Resolve owner_wallet on the fly: scanner validates wallet_qr == owner_db.
-    // On resale the new version has a fresh owner_wallet, so a Freighter-cached
-    // image (with the previous owner baked in) will be rejected at the door.
+    let eventId = (ticket as any).order_items?.event_ticket_types?.event_id as string | undefined;
+    if (!eventId) {
+      const event = await prisma.events.findFirst({
+        where: { contract_address: ticket.contract_address } as any,
+        select: { id: true } as any,
+      });
+      eventId = (event as any)?.id;
+    }
+    if (!eventId) {
+      res.status(404).type('text/plain').send('Event not found');
+      return;
+    }
     const live = await prisma.tickets.findFirst({
       where: {
-        contract_address: ticket.contract_address,
+        contract_address: String(ticket.contract_address),
         ticket_root_id: (ticket as any).ticket_root_id,
         status: 'ACTIVE',
       },
@@ -216,20 +552,24 @@ app.get('/api/tickets/qr/:assetCode.png', async (req, res) => {
       select: { version: true, owner_wallet: true } as any,
     });
     const version = (live as any)?.version ?? 1;
-    const ownerWallet = (live as any)?.owner_wallet ?? null;
+    const ownerWallet = (live as any)?.owner_wallet ?? (ticket as any).owner_wallet ?? null;
     const cacheKey = `${assetCode}:v${version}:w${ownerWallet ?? '-'}`;
+
     if (!qrCache.has(cacheKey)) {
-      const buf = await buildTicketQrPng({
-        contractAddress: ticket.contract_address,
+      const buf = await buildTicketQrPng(buildSignedTicketQrPayload({
+        contractAddress: String(ticket.contract_address),
         ticketRootId: (ticket as any).ticket_root_id,
         version,
+        eventId,
         ownerWallet,
-      });
+      }));
       qrCache.set(cacheKey, buf);
     }
-    res.setHeader('Cache-Control', 'public, max-age=30, must-revalidate');
+
+    const png = qrCache.get(cacheKey)!;
+    res.setHeader('Cache-Control', 'public, max-age=60, must-revalidate');
     res.setHeader('Content-Type', 'image/png');
-    res.send(qrCache.get(cacheKey)!);
+    res.send(png);
   } catch (err: any) {
     console.error('[qr] error:', err?.message);
     res.status(500).type('text/plain').send('Error generating QR');
@@ -384,57 +724,84 @@ const eventIncludes = {
   event_ticket_types: { where: { is_active: true } },
 };
 
-// GET /api/events - List published events (supports ?search=&category=&city=&sort=)
+const EVENT_LIST_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function normalizeEventSearchText(value: unknown): string {
+  return String(value ?? '')
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+    .toLowerCase()
+    .trim();
+}
+
+function eventMatchesSearch(event: ReturnType<typeof toEventDto>, search: string): boolean {
+  const needle = normalizeEventSearchText(search);
+  if (!needle) return true;
+  if (EVENT_LIST_UUID_RE.test(search) && event.id === search) return true;
+
+  const haystack = normalizeEventSearchText([
+    event.title,
+    event.description,
+    event.categoryLabel,
+    event.city,
+    event.organizer,
+    event.venue?.name,
+  ].join(' '));
+  return haystack.includes(needle);
+}
+
+function buildPublishedEventsWhere(category: string, city: string): Prisma.eventsWhereInput {
+  const where: Prisma.eventsWhereInput = { status: 'PUBLISHED' };
+  if (category) {
+    where.event_categories = { display_name: { equals: category, mode: 'insensitive' } };
+  }
+  if (city) {
+    where.venues = { cities: { city_name: { equals: city, mode: 'insensitive' } } };
+  }
+  return where;
+}
+
+// GET /api/events - List published events (optional query: search, category, city, sort)
 app.get('/api/events', async (req, res) => {
   try {
-    const { search, category, city, sort } = req.query as Record<string, string | undefined>;
+    const search = String(req.query.search ?? '').trim();
+    const category = String(req.query.category ?? '').trim();
+    const city = String(req.query.city ?? '').trim();
+    const sort = String(req.query.sort ?? '').trim();
+    const hasFilters = Boolean(search || category || city || sort);
 
-    let events = await cached('events:all', 60_000, () =>
-      prisma.events.findMany({ where: { status: 'PUBLISHED' }, include: eventIncludes, orderBy: { starts_at: 'asc' } })
+    if (!hasFilters) {
+      const events = await cached('events:all', 60_000, () =>
+        prisma.events.findMany({ where: { status: 'PUBLISHED' }, include: eventIncludes, orderBy: { starts_at: 'asc' } })
+      );
+      res.json(events.map(toEventDto));
+      return;
+    }
+
+    const cacheKey = `events:filter:${encodeURIComponent(search)}:${encodeURIComponent(category)}:${encodeURIComponent(city)}:${encodeURIComponent(sort)}`;
+    const rows = await cached(cacheKey, 30_000, () =>
+      prisma.events.findMany({
+        where: buildPublishedEventsWhere(category, city),
+        include: eventIncludes,
+        orderBy: { starts_at: 'asc' },
+      })
     );
 
-    if (search) {
-      const q = search.toLowerCase();
-      events = events.filter(e =>
-        (e.title ?? '').toLowerCase().includes(q) ||
-        (e.description ?? '').toLowerCase().includes(q)
-      );
-    }
-
-    if (category) {
-      const cat = category.toLowerCase();
-      events = events.filter(e =>
-        ((e as any).event_categories?.display_name ?? '').toLowerCase() === cat ||
-        ((e as any).event_categories?.code ?? '').toLowerCase() === cat
-      );
-    }
-
-    if (city) {
-      const c = city.toLowerCase();
-      events = events.filter(e =>
-        ((e as any).venues?.cities?.city_name ?? '').toLowerCase() === c
-      );
-    }
-
+    let dtoList = rows.map(toEventDto).filter((event) => eventMatchesSearch(event, search));
     if (sort === 'price_asc' || sort === 'price_desc') {
-      events = [...events].sort((a, b) => {
-        const minPrice = (ev: typeof a) => {
-          const prices = ((ev as any).event_ticket_types ?? []).map((t: any) => Number(t.price_amount)).filter((p: number) => p > 0);
-          return prices.length ? Math.min(...prices) : Infinity;
-        };
-        const diff = minPrice(a) - minPrice(b);
-        return sort === 'price_asc' ? diff : -diff;
+      const dir = sort === 'price_asc' ? 1 : -1;
+      dtoList = [...dtoList].sort((a, b) => {
+        const pa = Number((a as { minPrice?: number }).minPrice ?? 0);
+        const pb = Number((b as { minPrice?: number }).minPrice ?? 0);
+        if (pa !== pb) return (pa - pb) * dir;
+        return String(a.title ?? '').localeCompare(String(b.title ?? ''), 'es');
       });
-    } else if (sort === 'date_asc') {
-      events = [...events].sort((a, b) =>
-        new Date((a as any).starts_at ?? 0).getTime() - new Date((b as any).starts_at ?? 0).getTime()
-      );
     }
 
-    res.json(events.map(toEventDto));
+    res.json(dtoList);
   } catch (error: any) {
     console.error(error);
-    res.status(500).json({ error: error.message });
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error obteniendo eventos');
   }
 });
 
@@ -447,7 +814,7 @@ app.get('/api/events/featured', async (req, res) => {
     res.json(events.map(toEventDto));
   } catch (error: any) {
     console.error(error);
-    res.status(500).json({ error: error.message });
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error obteniendo eventos destacados');
   }
 });
 
@@ -464,7 +831,7 @@ app.get('/api/events/:slug', async (req, res) => {
     );
 
     if (!event) {
-      res.status(404).json({ error: 'Evento no encontrado' });
+      sendApiError(req, res, 404, 'NOT_FOUND', 'Evento no encontrado');
       return;
     }
 
@@ -509,7 +876,7 @@ app.get('/api/events/:slug', async (req, res) => {
     });
   } catch (error: any) {
     console.error(error);
-    res.status(500).json({ error: error.message });
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error obteniendo evento');
   }
 });
 
@@ -522,7 +889,7 @@ app.get('/api/events/:id/ticket-types', async (req, res) => {
     res.json(types);
   } catch (error: any) {
     console.error(error);
-    res.status(500).json({ error: error.message });
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error obteniendo tipos de boleto');
   }
 });
 
@@ -530,6 +897,7 @@ app.get('/api/events/:id/ticket-types', async (req, res) => {
 app.get('/api/events/:id/seats', async (req, res) => {
   try {
     const eventId = req.params.id;
+    await releaseExpiredSeatHolds();
 
     const event = await prisma.events.findUnique({
       where: { id: eventId },
@@ -550,12 +918,12 @@ app.get('/api/events/:id/seats', async (req, res) => {
     });
 
     if (!event) {
-      res.status(404).json({ error: 'Evento no encontrado' });
+      sendApiError(req, res, 404, 'NOT_FOUND', 'Evento no encontrado');
       return;
     }
 
     if (!event.has_assigned_seating) {
-      res.status(400).json({ error: 'Este evento no tiene selección de asientos' });
+      sendApiError(req, res, 400, 'BAD_REQUEST', 'Este evento no tiene selección de asientos');
       return;
     }
 
@@ -620,7 +988,7 @@ app.get('/api/events/:id/seats', async (req, res) => {
     });
   } catch (error: any) {
     console.error(error);
-    res.status(500).json({ error: error.message });
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error obteniendo asientos');
   }
 });
 
@@ -641,7 +1009,7 @@ app.get('/api/events/:id/related', async (req, res) => {
     res.json(result);
   } catch (error: any) {
     console.error(error);
-    res.status(500).json({ error: error.message });
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error obteniendo eventos relacionados');
   }
 });
 
@@ -655,7 +1023,7 @@ app.post('/api/transactions/buy', async (req, res) => {
     
     const event = await prisma.events.findFirst({ where: { slug: event_slug } });
     if (!event || !event.contract_address) {
-      res.status(404).json({ error: 'Evento no válido o sin contrato asignado' });
+      sendApiError(req, res, 404, 'NOT_FOUND', 'Evento no válido o sin contrato asignado');
       return;
     }
 
@@ -678,7 +1046,7 @@ app.post('/api/transactions/buy', async (req, res) => {
     res.json(payload);
   } catch (error: any) {
     console.error(error);
-    res.status(500).json({ error: error.message });
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error preparando compra');
   }
 });
 
@@ -687,13 +1055,13 @@ app.post('/api/transactions/buy', async (req, res) => {
 app.post('/api/transactions/secure-ticket', authMiddleware, async (req, res) => {
   try {
     if (!organizerKeypair) {
-      res.status(503).json({ error: 'Blockchain no configurada (falta ORGANIZER_SECRET)' });
+      sendApiError(req, res, 503, 'BLOCKCHAIN_NOT_CONFIGURED', 'Blockchain no configurada');
       return;
     }
 
     const { ticketId } = req.body;
     if (!ticketId) {
-      res.status(400).json({ error: 'ticketId es requerido' });
+      sendApiError(req, res, 400, 'BAD_REQUEST', 'ticketId es requerido');
       return;
     }
 
@@ -719,41 +1087,88 @@ app.post('/api/transactions/secure-ticket', authMiddleware, async (req, res) => 
     });
 
     if (!ticket) {
-      res.status(404).json({ error: 'Ticket no encontrado' });
+      sendApiError(req, res, 404, 'NOT_FOUND', 'Ticket no encontrado');
       return;
     }
     if (ticket.owner_user_id !== (req as any).userId) {
-      res.status(403).json({ error: 'No autorizado' });
+      sendApiError(req, res, 403, 'FORBIDDEN', 'No autorizado');
       return;
     }
-    if (ticket.contract_address) {
-      res.status(409).json({ error: 'Ticket ya asegurado en blockchain', txHash: ticket.contract_address });
-      return;
-    }
-
     const ownerUser = await prisma.users.findUnique({
       where: { id: (req as any).userId },
       select: { wallet_address: true },
     });
     if (!ownerUser?.wallet_address) {
-      res.status(400).json({ error: 'Debes vincular una wallet antes de asegurar el ticket en blockchain' });
+      sendApiError(req, res, 400, 'BAD_REQUEST', 'Debes vincular una wallet antes de asegurar el ticket en blockchain');
       return;
     }
 
     const ticketType = ticket.order_items?.event_ticket_types ?? ticket.order_items?.event_seat_inventory?.event_ticket_types;
     const event = ticketType?.events;
+    if (ticket.contract_address && ticket.nft_token_id == null && ticket.ticket_root_id != null && ticket.owner_wallet) {
+      const eventForNft = event?.nft_contract_address
+        ? event
+        : await prisma.events.findFirst({
+            where: { contract_address: ticket.contract_address },
+            select: { id: true, nft_contract_address: true },
+          });
+
+      if (!eventForNft?.nft_contract_address) {
+        sendApiError(req, res, 400, 'BAD_REQUEST', 'Evento sin nft_contract_address (NFT no desplegado)');
+        return;
+      }
+
+      try {
+        const minted = await mintTicketNftWithBump({
+          nftContractAddress: eventForNft.nft_contract_address,
+          contractAddress: ticket.contract_address,
+          ticketRootId: ticket.ticket_root_id,
+          buyerWallet: ticket.owner_wallet,
+        });
+        await prisma.tickets.update({
+          where: { id: ticketId },
+          data: { nft_token_id: minted.nftTokenId } as any,
+        });
+        res.json({
+          success: true,
+          txHash: minted.nftMintTxHash,
+          contractAddress: ticket.contract_address,
+          ticketRootId: ticket.ticket_root_id,
+          chainEventId: deriveChainEventId(eventForNft.id),
+          nftContractAddress: eventForNft.nft_contract_address,
+          nftTokenId: minted.nftTokenId,
+          nftMintTxHash: minted.nftMintTxHash,
+          networkPassphrase: NETWORK_PASSPHRASE,
+          network: 'TESTNET',
+          completedPendingNft: true,
+        });
+        return;
+      } catch (mintErr: any) {
+        const detail = String(mintErr?.message ?? 'Error desconocido');
+        console.warn('[NFT] pending mint retry failed:', detail);
+        sendApiError(req, res, 502, 'SOROBAN_FAILED', `Ticket asegurado, pero no fue posible mintear el NFT pendiente: ${detail.slice(0, 180)}`);
+        return;
+      }
+    }
+
     if (!event?.contract_address) {
-      res.status(400).json({ error: 'Evento sin contrato desplegado' });
+      sendApiError(req, res, 400, 'BAD_REQUEST', 'Evento sin contrato desplegado');
+      return;
+    }
+
+    if (ticket.contract_address) {
+      sendApiError(req, res, 409, 'CONFLICT', 'Ticket ya asegurado en blockchain');
       return;
     }
 
     const contractAddress = event.contract_address;
+    const chainEventId = deriveChainEventId(event.id);
     // Use at least 1 stroop — price=0 is rejected by the contract (PrecioInvalido)
     // The price stored in DB may use different units (cents, etc.) — here we just
     // record the ticket's monetary value on-chain for commission math.
     const rawPrice = Number(ticketType?.price_amount || 0);
     const price = rawPrice > 0 ? rawPrice : 1_000_000; // fallback: 1 XLM in stroops
-    console.log(`[SOROBAN] Contract: ${contractAddress.slice(0,8)}, price=${price}`);
+    console.log(`[SOROBAN] Contract: ${contractAddress.slice(0,8)}, chain_event_id=${chainEventId}, price=${price}`);
 
     // Build and submit crear_boleto_para transaction
     // We use crear_boleto_para with es_reventa=true because the real primary
@@ -762,7 +1177,7 @@ app.post('/api/transactions/secure-ticket', authMiddleware, async (req, res) => 
     // that any future secondary sale correctly distributes commissions.
     const buyerWallet = ownerUser?.wallet_address;
     if (!buyerWallet) {
-      res.status(400).json({ error: 'El usuario no tiene wallet vinculada. Vincula tu wallet primero.' });
+      sendApiError(req, res, 400, 'BAD_REQUEST', 'El usuario no tiene wallet vinculada. Vincula tu wallet primero.');
       return;
     }
 
@@ -779,7 +1194,7 @@ app.post('/api/transactions/secure-ticket', authMiddleware, async (req, res) => 
         contract: contractAddress,
         function: 'crear_boleto_para',
         args: [
-          nativeToScVal(1, { type: 'u32' }),                      // id_evento
+          nativeToScVal(chainEventId, { type: 'u32' }),           // id_evento derivado del evento DB
           new Address(buyerWallet).toScVal(),                     // propietario = buyer
           nativeToScVal(price, { type: 'i128' }),                 // precio
           nativeToScVal(true, { type: 'bool' }),                  // es_reventa = true
@@ -792,7 +1207,7 @@ app.post('/api/transactions/secure-ticket', authMiddleware, async (req, res) => 
     const simResponse = await sorobanServer.simulateTransaction(tx);
     if (SorobanRpc.Api.isSimulationError(simResponse)) {
       console.error('[SOROBAN] Simulation failed:', (simResponse as any).error);
-      res.status(500).json({ error: 'Error en simulación blockchain' });
+      sendApiError(req, res, 400, 'SOROBAN_SIMULATION_FAILED', 'No fue posible preparar la transaccion blockchain');
       return;
     }
     // Warn if contract entries need restoration (TTL expired)
@@ -808,7 +1223,7 @@ app.post('/api/transactions/secure-ticket', authMiddleware, async (req, res) => 
     const sendResponse = await sorobanServer.sendTransaction(assembled);
     if (sendResponse.status === 'ERROR') {
       console.error('[SOROBAN] Send failed:', sendResponse);
-      res.status(500).json({ error: 'Error enviando transacción a la red' });
+      sendApiError(req, res, 400, 'SOROBAN_REJECTED', 'La red rechazo la transaccion');
       return;
     }
 
@@ -878,26 +1293,70 @@ app.post('/api/transactions/secure-ticket', authMiddleware, async (req, res) => 
       console.error('[SOROBAN] result XDR base64:', resB64);
       console.error('[SOROBAN] Diagnostic events:', diagnosticSummary.length ? diagnosticSummary : '(vacío)');
 
-      res.status(500).json({
-        error: 'Transacción blockchain fallida',
-        detail: getResponse.status,
-        diagnostics: diagnosticSummary,
-        metaXdr: metaB64,
-      });
+      sendApiError(req, res, 400, 'SOROBAN_FAILED', `Transaccion blockchain fallida: ${getResponse.status}`);
       return;
     }
 
-    // Extract ticket_root_id from return value
+    // Extract ticket_root_id from return value. Root id 0 is valid in the
+    // contract, so never use 0 as a fallback when parsing fails.
     const returnValue = (getResponse as any).returnValue;
-    let ticketRootId = 0;
+    let ticketRootId: number | null = null;
     if (returnValue) {
       try {
-        // Result<u32, ErrorContrato> — unwrap the Ok variant
-        const val = returnValue.value?.();
-        ticketRootId = typeof val === 'number' ? val : Number(val);
+        ticketRootId = parseSorobanU32ReturnValue(scValToNative(returnValue));
       } catch {
-        console.warn('[SOROBAN] Could not parse return value, using 0');
+        ticketRootId = null;
       }
+    }
+    if (ticketRootId === null) {
+      ticketRootId = parseSorobanU32ReturnValue(returnValue);
+    }
+    if (ticketRootId === null) {
+      console.error('[SOROBAN] Could not parse crear_boleto_para return value:', returnValue?.toString?.() ?? returnValue);
+      sendApiError(req, res, 502, 'SOROBAN_BAD_RESPONSE', 'No fue posible leer el identificador on-chain del boleto');
+      return;
+    }
+
+    const existingOnChainTicket = await prisma.tickets.findFirst({
+      where: {
+        contract_address: contractAddress,
+        ticket_root_id: ticketRootId,
+        version: 0,
+      },
+      select: { id: true },
+    });
+    if (existingOnChainTicket && existingOnChainTicket.id !== ticketId) {
+      console.error(`[SOROBAN] Duplicate on-chain ticket identity contract=${contractAddress} root=${ticketRootId} version=0 current=${ticketId} existing=${existingOnChainTicket.id}`);
+      sendApiError(req, res, 409, 'CONFLICT', 'La identidad on-chain del boleto ya está asociada a otro ticket');
+      return;
+    }
+
+    // Persist the on-chain identity before minting the NFT. This keeps retries
+    // from minting a collectible for a ticket identity already owned by another
+    // row if the DB unique constraint detects a race or duplicate projection.
+    try {
+      await prisma.tickets.update({
+        where: { id: ticketId },
+        data: {
+          contract_address: contractAddress,
+          ticket_root_id: ticketRootId,
+          version: 0,
+          owner_wallet: ownerUser.wallet_address,
+        },
+      });
+    } catch (updateErr: any) {
+      if (
+        updateErr?.code === 'P2002' &&
+        Array.isArray(updateErr?.meta?.target) &&
+        updateErr.meta.target.includes('contract_address') &&
+        updateErr.meta.target.includes('ticket_root_id') &&
+        updateErr.meta.target.includes('version')
+      ) {
+        console.error(`[SOROBAN] Duplicate on-chain ticket identity on update contract=${contractAddress} root=${ticketRootId} version=0 current=${ticketId}`);
+        sendApiError(req, res, 409, 'CONFLICT', 'La identidad on-chain del boleto ya está asociada a otro ticket');
+        return;
+      }
+      throw updateErr;
     }
 
     // Mint el NFT en el ticket_nft_contract del evento (Phase 4.5).
@@ -907,84 +1366,29 @@ app.post('/api/transactions/secure-ticket', authMiddleware, async (req, res) => 
     let nftMintTxHash: string | null = null;
     let nftTokenId: number | null = null;
     if (nftContractAddress) {
-      // Estrategia: intentar mint con id=ticket_root_id (lo natural cuando el
-      // contrato NFT está fresco). Si colisiona con un token preexistente
-      // (Teatro Noir y otros eventos con tests viejos dejaron tokens vivos
-      // que no se quemaron), buscar el siguiente id libre vía MAX+1 sobre las
-      // filas de DB del mismo evento y reintentar. Sin esto el ticket queda
-      // con nft_token_id=null y el flujo de reventa hereda filas cruzadas.
-      const attemptMint = async (id: number) => {
-        const tokenUri = `${PUBLIC_BASE_URL}/api/nft/metadata/${nftContractAddress}/${id}`;
-        const r = await invokeSoroban(
-          organizerKeypair,
-          nftContractAddress,
-          'mint',
-          [
-            new Address(buyerWallet).toScVal(),
-            nativeToScVal(id, { type: 'u32' }),
-            nativeToScVal(tokenUri, { type: 'string' }),
-          ],
-        );
-        return (r as any).txHash ?? null;
-      };
       try {
-        nftMintTxHash = await attemptMint(ticketRootId);
-        nftTokenId = ticketRootId;
-        console.log(`[NFT] Minted token_id=${ticketRootId} on ${nftContractAddress.slice(0,8)}… to ${buyerWallet.slice(0,8)}…`);
+        const minted = await mintTicketNftWithBump({
+          nftContractAddress,
+          contractAddress,
+          ticketRootId,
+          buyerWallet,
+        });
+        nftMintTxHash = minted.nftMintTxHash;
+        nftTokenId = minted.nftTokenId;
+        console.log(`[NFT] Minted token_id=${nftTokenId} on ${nftContractAddress.slice(0,8)}… to ${buyerWallet.slice(0,8)}…`);
       } catch (mintErr: any) {
-        const msg = String(mintErr?.message ?? '');
-        if (msg.includes('TokenYaExiste') || msg.includes('#3')) {
-          try {
-            const maxAgg = await prisma.tickets.aggregate({
-              where: { contract_address: contractAddress } as any,
-              _max: { nft_token_id: true } as any,
-            });
-            const maxId = ((maxAgg as any)._max?.nft_token_id as number | null) ?? 0;
-            const bumped = Math.max(maxId, ticketRootId) + 1;
-            nftMintTxHash = await attemptMint(bumped);
-            nftTokenId = bumped;
-            console.log(`[NFT] root_id=${ticketRootId} colisión, mint con token_id=${bumped} OK`);
-          } catch (retryErr: any) {
-            console.warn('[NFT] mint retry failed (graceful degradation):', retryErr?.message);
-          }
-        } else {
-          console.warn('[NFT] mint failed (graceful degradation, ticket still secured):', msg);
-        }
+        console.warn('[NFT] mint failed (graceful degradation, ticket still secured):', mintErr?.message);
       }
     } else {
       console.warn(`[NFT] event ${event.id} has no nft_contract_address — skipping NFT mint`);
     }
 
-    // Update DB with on-chain data (idempotent).
-    // Race: el indexer puede haber creado una fila huérfana con
-    // (contract_address, ticket_root_id, version=0) antes de que llegáramos aquí
-    // (poll cada 5s, mientras el mint NFT tarda varios segundos). Si existe y no
-    // es el mismo ticket, la borramos para liberar el unique constraint —
-    // preservamos el ticket Web2 original con sus order_item_id, event, etc.
-    const orphan = await prisma.tickets.findFirst({
-      where: {
-        contract_address: contractAddress,
-        ticket_root_id: ticketRootId,
-        version: 0,
-        NOT: { id: ticketId },
-      },
-      select: { id: true },
-    });
-    if (orphan) {
-      console.log(`[SOROBAN] Removing indexer orphan ticket ${orphan.id} (collision on ${contractAddress.slice(0,8)}/root=${ticketRootId})`);
-      await prisma.tickets.delete({ where: { id: orphan.id } });
+    if (nftTokenId != null) {
+      await prisma.tickets.update({
+        where: { id: ticketId },
+        data: { nft_token_id: nftTokenId } as any,
+      });
     }
-
-    await prisma.tickets.update({
-      where: { id: ticketId },
-      data: {
-        contract_address: contractAddress,
-        ticket_root_id: ticketRootId,
-        version: 0,
-        owner_wallet: ownerUser.wallet_address,
-        ...(nftTokenId != null ? ({ nft_token_id: nftTokenId } as any) : {}),
-      },
-    });
 
     console.log(`[SOROBAN] Ticket secured on-chain! root_id=${ticketRootId}, tx=${sendResponse.hash}`);
 
@@ -993,6 +1397,7 @@ app.post('/api/transactions/secure-ticket', authMiddleware, async (req, res) => 
       txHash: sendResponse.hash,
       contractAddress,
       ticketRootId,
+      chainEventId,
       nftContractAddress,
       nftTokenId,
       nftMintTxHash,
@@ -1001,7 +1406,7 @@ app.post('/api/transactions/secure-ticket', authMiddleware, async (req, res) => 
     });
   } catch (error: any) {
     console.error('[SOROBAN] secure-ticket error:', error);
-    res.status(500).json({ error: error.message });
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error asegurando ticket en blockchain');
   }
 });
 
@@ -1018,23 +1423,23 @@ app.post('/api/transactions/list-ticket', authMiddleware, async (req, res) => {
   try {
     const { ticketId, price } = req.body; // price in XLM stroops (1 XLM = 10_000_000)
     if (!ticketId || !price || price <= 0) {
-      res.status(400).json({ error: 'ticketId y price son requeridos' });
+      sendApiError(req, res, 400, 'BAD_REQUEST', 'ticketId y price son requeridos');
       return;
     }
 
     const user = await prisma.users.findUnique({ where: { id: (req as any).userId }, select: { wallet_address: true } });
     if (!user?.wallet_address) {
-      res.status(400).json({ error: 'Debes vincular una wallet antes de listar un ticket' });
+      sendApiError(req, res, 400, 'BAD_REQUEST', 'Debes vincular una wallet antes de listar un ticket');
       return;
     }
 
     const ticket = await prisma.tickets.findUnique({ where: { id: ticketId } });
-    if (!ticket) { res.status(404).json({ error: 'Ticket no encontrado' }); return; }
-    if (ticket.owner_user_id !== (req as any).userId) { res.status(403).json({ error: 'No autorizado' }); return; }
-    if (!ticket.contract_address || ticket.ticket_root_id === null) { res.status(400).json({ error: 'Ticket no registrado en blockchain' }); return; }
-    if (ticket.is_for_sale) { res.status(409).json({ error: 'Ticket ya está en venta' }); return; }
+    if (!ticket) { sendApiError(req, res, 404, 'NOT_FOUND', 'Ticket no encontrado'); return; }
+    if (ticket.owner_user_id !== (req as any).userId) { sendApiError(req, res, 403, 'FORBIDDEN', 'No autorizado'); return; }
+    if (!ticket.contract_address || ticket.ticket_root_id === null) { sendApiError(req, res, 400, 'BAD_REQUEST', 'Ticket no registrado en blockchain'); return; }
+    if (ticket.is_for_sale) { sendApiError(req, res, 409, 'CONFLICT', 'Ticket ya está en venta'); return; }
     if (!ticket.owner_wallet || ticket.owner_wallet !== user.wallet_address) {
-      res.status(403).json({ error: 'La wallet vinculada no coincide con el propietario on-chain registrado' });
+      sendApiError(req, res, 403, 'FORBIDDEN', 'La wallet vinculada no coincide con el propietario on-chain registrado');
       return;
     }
 
@@ -1062,15 +1467,25 @@ app.post('/api/transactions/list-ticket', authMiddleware, async (req, res) => {
     if (SorobanRpc.Api.isSimulationError(simResponse)) {
       const simError = (simResponse as any).error || 'desconocido';
       console.error('[SOROBAN] List simulation failed:', simError);
-      res.status(400).json({ error: 'No fue posible preparar la firma de reventa: ' + simError });
+      sendApiError(req, res, 400, 'SOROBAN_SIMULATION_FAILED', 'No fue posible preparar la firma de reventa');
       return;
     }
 
     const assembled = SorobanRpc.assembleTransaction(tx, simResponse).build();
-    res.json({ xdr: assembled.toXDR(), networkPassphrase: NETWORK_PASSPHRASE });
+    const intent = await createTransactionIntent({
+      userId: (req as any).userId,
+      walletAddress: user.wallet_address,
+      operation: 'listar_boleto',
+      contractAddress: ticket.contract_address,
+      ticketRootId: ticket.ticket_root_id,
+      expectedVersion: ticket.version,
+      expectedPrice: price,
+      xdrHash: transactionHashHex(assembled),
+    });
+    res.json({ xdr: assembled.toXDR(), networkPassphrase: NETWORK_PASSPHRASE, intentId: intent.id, intentExpiresAt: intent.expires_at });
   } catch (error: any) {
     console.error('[SOROBAN] list-ticket error:', error);
-    res.status(500).json({ error: error.message });
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error preparando reventa');
   }
 });
 
@@ -1079,23 +1494,23 @@ app.post('/api/transactions/cancel-listing', authMiddleware, async (req, res) =>
   try {
     const { ticketId } = req.body;
     if (!ticketId) {
-      res.status(400).json({ error: 'ticketId es requerido' });
+      sendApiError(req, res, 400, 'BAD_REQUEST', 'ticketId es requerido');
       return;
     }
 
     const user = await prisma.users.findUnique({ where: { id: (req as any).userId }, select: { wallet_address: true } });
     if (!user?.wallet_address) {
-      res.status(400).json({ error: 'Debes vincular una wallet antes de cancelar una reventa' });
+      sendApiError(req, res, 400, 'BAD_REQUEST', 'Debes vincular una wallet antes de cancelar una reventa');
       return;
     }
 
     const ticket = await prisma.tickets.findUnique({ where: { id: ticketId } });
-    if (!ticket) { res.status(404).json({ error: 'Ticket no encontrado' }); return; }
-    if (ticket.owner_user_id !== (req as any).userId) { res.status(403).json({ error: 'No autorizado' }); return; }
-    if (!ticket.contract_address || ticket.ticket_root_id === null) { res.status(400).json({ error: 'Ticket no registrado en blockchain' }); return; }
-    if (!ticket.is_for_sale) { res.status(409).json({ error: 'Ticket no está en venta' }); return; }
+    if (!ticket) { sendApiError(req, res, 404, 'NOT_FOUND', 'Ticket no encontrado'); return; }
+    if (ticket.owner_user_id !== (req as any).userId) { sendApiError(req, res, 403, 'FORBIDDEN', 'No autorizado'); return; }
+    if (!ticket.contract_address || ticket.ticket_root_id === null) { sendApiError(req, res, 400, 'BAD_REQUEST', 'Ticket no registrado en blockchain'); return; }
+    if (!ticket.is_for_sale) { sendApiError(req, res, 409, 'CONFLICT', 'Ticket no está en venta'); return; }
     if (!ticket.owner_wallet || ticket.owner_wallet !== user.wallet_address) {
-      res.status(403).json({ error: 'La wallet vinculada no coincide con el propietario on-chain registrado' });
+      sendApiError(req, res, 403, 'FORBIDDEN', 'La wallet vinculada no coincide con el propietario on-chain registrado');
       return;
     }
 
@@ -1122,15 +1537,24 @@ app.post('/api/transactions/cancel-listing', authMiddleware, async (req, res) =>
     if (SorobanRpc.Api.isSimulationError(simResponse)) {
       const simError = (simResponse as any).error || 'desconocido';
       console.error('[SOROBAN] Cancel listing simulation failed:', simError);
-      res.status(400).json({ error: 'No fue posible preparar la firma de cancelación: ' + simError });
+      sendApiError(req, res, 400, 'SOROBAN_SIMULATION_FAILED', 'No fue posible preparar la firma de cancelación');
       return;
     }
 
     const assembled = SorobanRpc.assembleTransaction(tx, simResponse).build();
-    res.json({ xdr: assembled.toXDR(), networkPassphrase: NETWORK_PASSPHRASE });
+    const intent = await createTransactionIntent({
+      userId: (req as any).userId,
+      walletAddress: user.wallet_address,
+      operation: 'cancelar_venta',
+      contractAddress: ticket.contract_address,
+      ticketRootId: ticket.ticket_root_id,
+      expectedVersion: ticket.version,
+      xdrHash: transactionHashHex(assembled),
+    });
+    res.json({ xdr: assembled.toXDR(), networkPassphrase: NETWORK_PASSPHRASE, intentId: intent.id, intentExpiresAt: intent.expires_at });
   } catch (error: any) {
     console.error('[SOROBAN] cancel-listing error:', error);
-    res.status(500).json({ error: error.message });
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error preparando cancelacion de reventa');
   }
 });
 
@@ -1140,17 +1564,17 @@ app.post('/api/transactions/build-buy-xdr', authMiddleware, async (req, res) => 
     const userId = (req as any).userId;
     const { contractAddress, ticketRootId, buyerPublicKey } = req.body;
     if (!contractAddress || ticketRootId === undefined || !buyerPublicKey) {
-      res.status(400).json({ error: 'contractAddress, ticketRootId y buyerPublicKey son requeridos' });
+      sendApiError(req, res, 400, 'BAD_REQUEST', 'contractAddress, ticketRootId y buyerPublicKey son requeridos');
       return;
     }
 
     const user = await prisma.users.findUnique({ where: { id: userId }, select: { wallet_address: true } });
     if (!user?.wallet_address) {
-      res.status(400).json({ error: 'Debes vincular una wallet antes de construir una transacción' });
+      sendApiError(req, res, 400, 'BAD_REQUEST', 'Debes vincular una wallet antes de construir una transacción');
       return;
     }
     if (buyerPublicKey !== user.wallet_address) {
-      res.status(403).json({ error: 'buyerPublicKey no coincide con la wallet vinculada al usuario' });
+      sendApiError(req, res, 403, 'FORBIDDEN', 'buyerPublicKey no coincide con la wallet vinculada al usuario');
       return;
     }
 
@@ -1159,7 +1583,7 @@ app.post('/api/transactions/build-buy-xdr', authMiddleware, async (req, res) => 
       where: { contract_address: contractAddress, ticket_root_id: ticketRootId, is_for_sale: true, status: 'ACTIVE' },
     });
     if (!ticket) {
-      res.status(404).json({ error: 'Ticket no está en venta' });
+      sendApiError(req, res, 404, 'NOT_FOUND', 'Ticket no está en venta');
       return;
     }
 
@@ -1190,59 +1614,137 @@ app.post('/api/transactions/build-buy-xdr', authMiddleware, async (req, res) => 
       console.error('[SOROBAN] Buy simulation failed:', simError);
       // Parse common errors for user-friendly messages
       if (simError.includes('not within the allowed range') || simError.includes('balance')) {
-        res.status(400).json({ error: 'Saldo insuficiente en tu billetera Stellar. Necesitas más XLM para completar la compra. Puedes obtener XLM de prueba en friendbot.stellar.org' });
+        sendApiError(req, res, 400, 'BAD_REQUEST', 'Saldo insuficiente en tu billetera Stellar. Necesitas más XLM para completar la compra.');
         return;
       }
       if (simError.includes('#8')) {
-        res.status(400).json({ error: 'No puedes comprar tu propio boleto' });
+        sendApiError(req, res, 400, 'BAD_REQUEST', 'No puedes comprar tu propio boleto');
         return;
       }
-      res.status(500).json({ error: 'Error en simulación: ' + simError });
+      sendApiError(req, res, 400, 'SOROBAN_SIMULATION_FAILED', 'No fue posible preparar la firma de compra');
       return;
     }
 
     // Assemble but do NOT sign — frontend signs with Freighter
     const assembled = SorobanRpc.assembleTransaction(tx, simResponse).build();
     const xdrBase64 = assembled.toXDR();
+    const intent = await createTransactionIntent({
+      userId,
+      walletAddress: buyerPublicKey,
+      operation: 'comprar_boleto',
+      contractAddress: String(contractAddress),
+      ticketRootId: Number(ticketRootId),
+      expectedVersion: ticket.version,
+      expectedPrice: ticket.resale_price,
+      xdrHash: transactionHashHex(assembled),
+    });
 
     console.log(`[SOROBAN] XDR built for buy, ${xdrBase64.length} chars`);
-    res.json({ xdr: xdrBase64, networkPassphrase: NETWORK_PASSPHRASE });
+    res.json({ xdr: xdrBase64, networkPassphrase: NETWORK_PASSPHRASE, intentId: intent.id, intentExpiresAt: intent.expires_at });
   } catch (error: any) {
     console.error('[SOROBAN] build-buy-xdr error:', error);
-    res.status(500).json({ error: error.message });
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error preparando compra de reventa');
   }
 });
 
 // POST /api/transactions/submit — Submit Freighter-signed XDR to Soroban
-app.post('/api/transactions/submit', authMiddleware, async (req, res) => {
+app.post('/api/transactions/submit', transactionRateLimit, authMiddleware, async (req, res) => {
   try {
     const userId = (req as any).userId;
-    const { signedXdr } = req.body;
-    if (!signedXdr) {
-      res.status(400).json({ error: 'signedXdr es requerido' });
+    const { signedXdr, intentId } = req.body;
+    if (!signedXdr || !intentId) {
+      sendApiError(req, res, 400, 'BAD_REQUEST', 'signedXdr e intentId son requeridos');
       return;
     }
 
     const user = await prisma.users.findUnique({ where: { id: userId }, select: { wallet_address: true } });
     if (!user?.wallet_address) {
-      res.status(400).json({ error: 'Debes vincular una wallet antes de enviar una transacción' });
+      sendApiError(req, res, 400, 'BAD_REQUEST', 'Debes vincular una wallet antes de enviar una transaccion');
       return;
     }
 
     const tx = TransactionBuilder.fromXDR(signedXdr, NETWORK_PASSPHRASE);
     if (tx instanceof FeeBumpTransaction) {
-      res.status(400).json({ error: 'Las transacciones fee-bump no están soportadas en este endpoint' });
+      sendApiError(req, res, 400, 'BAD_REQUEST', 'Las transacciones fee-bump no estan soportadas en este endpoint');
       return;
     }
     if (tx.source !== user.wallet_address) {
-      res.status(403).json({ error: 'La transacción firmada no corresponde a la wallet vinculada al usuario' });
+      sendApiError(req, res, 403, 'FORBIDDEN', 'La transaccion firmada no corresponde a la wallet vinculada al usuario');
+      return;
+    }
+
+    const intent = await prisma.transaction_intents.findUnique({
+      where: { id: String(intentId) },
+      select: {
+        id: true,
+        user_id: true,
+        wallet_address: true,
+        operation: true,
+        contract_address: true,
+        ticket_root_id: true,
+        expected_version: true,
+        expected_price: true,
+        xdr_hash: true,
+        status: true,
+        expires_at: true,
+        submitted_at: true,
+      },
+    });
+    const intentDecision = authorizeTransactionIntentSubmit({
+      intent,
+      userId,
+      walletAddress: user.wallet_address,
+      signedXdrHash: transactionHashHex(tx),
+    });
+    if (!intentDecision.ok) {
+      if (intentDecision.markExpired && intent) {
+        await prisma.transaction_intents.update({
+          where: { id: intent.id },
+          data: { status: 'EXPIRED' },
+        });
+      }
+      sendApiError(req, res, intentDecision.status, codeForStatus(intentDecision.status), intentDecision.error);
+      return;
+    }
+    if (!intent) {
+      sendApiError(req, res, 400, 'BAD_REQUEST', 'Intencion de transaccion no encontrada');
+      return;
+    }
+
+    const currentTicket = await prisma.tickets.findFirst({
+      where: {
+        contract_address: intent.contract_address,
+        ticket_root_id: intent.ticket_root_id,
+        version: intent.expected_version,
+      },
+      select: {
+        contract_address: true,
+        ticket_root_id: true,
+        version: true,
+        owner_wallet: true,
+        status: true,
+        is_for_sale: true,
+        resale_price: true,
+      },
+    });
+    const currentStateDecision = authorizeTransactionIntentCurrentState({
+      intent,
+      ticket: currentTicket,
+      walletAddress: user.wallet_address,
+    });
+    if (!currentStateDecision.ok) {
+      sendApiError(req, res, currentStateDecision.status, codeForStatus(currentStateDecision.status), currentStateDecision.error);
       return;
     }
 
     const sendResponse = await sorobanServer.sendTransaction(tx);
     if (sendResponse.status === 'ERROR') {
       console.error('[SOROBAN] Submit failed:', sendResponse);
-      res.status(400).json({ error: 'La red rechazó la transacción firmada' });
+      await prisma.transaction_intents.update({
+        where: { id: String(intentId) },
+        data: { status: 'FAILED' },
+      });
+      sendApiError(req, res, 400, 'SOROBAN_REJECTED', 'La red rechazo la transaccion firmada');
       return;
     }
 
@@ -1255,194 +1757,125 @@ app.post('/api/transactions/submit', authMiddleware, async (req, res) => {
     } while (getResponse.status === 'NOT_FOUND' && attempts < 30);
 
     if (getResponse.status !== 'SUCCESS') {
-      res.status(400).json({ error: 'Transacción fallida: ' + getResponse.status });
+      await prisma.transaction_intents.update({
+        where: { id: String(intentId) },
+        data: { status: 'FAILED', tx_hash: sendResponse.hash },
+      });
+      sendApiError(req, res, 400, 'SOROBAN_FAILED', `Transaccion fallida: ${getResponse.status}`);
       return;
     }
+
+    await prisma.transaction_intents.update({
+      where: { id: String(intentId) },
+      data: { status: 'SUBMITTED', submitted_at: new Date(), tx_hash: sendResponse.hash },
+    });
 
     console.log(`[SOROBAN] Signed tx submitted! hash=${sendResponse.hash}`);
     res.json({ success: true, txHash: sendResponse.hash });
   } catch (error: any) {
     console.error('[SOROBAN] submit error:', error);
-    res.status(500).json({ error: error.message });
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error enviando transaccion');
   }
 });
 
-// POST /api/transactions/transfer-nft — Tras una reventa P2P (comprar_boleto OK),
-// el organizer (admin del NFT contract) hace BURN del nft_token_id viejo y
-// MINT con un nft_token_id NUEVO al comprador. La asignación de un token_id
-// distinto es crítica: la URL del snapshot QR del seller (token viejo) sigue
-// sirviendo su imagen vieja inmutable — scanner la rechaza por version/wallet
-// mismatch. El buyer hace "Add Collectible" con el nuevo token_id, Freighter
-// fetchea SU snapshot fresco — scanner acepta. Ambas Freighters validan
-// correctamente y el problema del endpoint dinámico desaparece.
-app.post('/api/transactions/transfer-nft', authMiddleware, async (req, res) => {
+// POST /api/transactions/transfer-nft — transferencia del collectible NFT
+// solo despues de una reventa confirmada por el indexer/onchain_events.
+app.post('/api/transactions/transfer-nft', transactionRateLimit, authMiddleware, async (req, res) => {
   try {
     if (!organizerKeypair) {
-      res.status(503).json({ error: 'Blockchain no configurada' }); return;
+      sendApiError(req, res, 503, 'BLOCKCHAIN_NOT_CONFIGURED', 'Blockchain no configurada'); return;
     }
-    const { contractAddress, ticketRootId, buyerWallet } = req.body;
-    if (!contractAddress || ticketRootId === undefined || !buyerWallet) {
-      res.status(400).json({ error: 'contractAddress, ticketRootId, buyerWallet son requeridos' }); return;
+    const userId = (req as any).userId;
+    const { contractAddress, ticketRootId, buyerWallet, txHash, expectedVersion } = req.body;
+    if (!contractAddress || ticketRootId === undefined || !buyerWallet || !txHash || expectedVersion === undefined) {
+      sendApiError(req, res, 400, 'BAD_REQUEST', 'contractAddress, ticketRootId, buyerWallet, txHash y expectedVersion son requeridos'); return;
     }
 
-    const event = await prisma.events.findFirst({
-      where: { contract_address: String(contractAddress) },
-      select: { nft_contract_address: true } as any,
-    });
-    const nftContractAddress = (event as any)?.nft_contract_address as string | null | undefined;
-    if (!nftContractAddress) {
-      res.status(400).json({ error: 'Evento sin nft_contract_address (NFT no desplegado)' });
+    const authorization = await authorizeVerifiedNftTransfer(
+      {
+        userId,
+        contractAddress: String(contractAddress),
+        ticketRootId: Number(ticketRootId),
+        buyerWallet: String(buyerWallet),
+        txHash: String(txHash),
+        expectedVersion: Number(expectedVersion),
+      },
+      {
+        getUserWallet: async (id) => {
+          const user = await prisma.users.findUnique({ where: { id }, select: { wallet_address: true } });
+          return user?.wallet_address ?? null;
+        },
+        getNftContractAddress: async (address) => {
+          const event = await prisma.events.findFirst({
+            where: { contract_address: address },
+            select: { nft_contract_address: true } as any,
+          });
+          return ((event as any)?.nft_contract_address as string | null | undefined) ?? null;
+        },
+        getActiveTicketVersion: async (input) => {
+          const ticket = await prisma.tickets.findFirst({
+            where: {
+              contract_address: input.contractAddress,
+              ticket_root_id: input.ticketRootId,
+              owner_wallet: input.ownerWallet,
+              status: 'ACTIVE',
+              version: input.version,
+            },
+            select: { version: true },
+          });
+          return ticket?.version ?? null;
+        },
+        getProcessedResaleEvent: async (input) => {
+          const resaleEvent = await prisma.onchain_events.findFirst({
+            where: {
+              tx_hash: input.txHash,
+              contract_address: input.contractAddress,
+              event_name: 'boleto_revendido',
+              ticket_root_id: input.ticketRootId,
+              version: input.version,
+              status: 'PROCESSED',
+            },
+            orderBy: { processed_at: 'desc' },
+            select: { payload: true },
+          });
+          return resaleEvent ? { payload: resaleEvent.payload as any } : null;
+        },
+      },
+    );
+    if (!authorization.ok) {
+      sendApiError(req, res, authorization.status, codeForStatus(authorization.status), authorization.error);
       return;
     }
 
-    const rootIdNum = Number(ticketRootId);
-
-    // 1. Find the seller's CANCELLED row (just cancelled by indexer) → has the
-    //    old nft_token_id we need to burn. Fallback: ticket_root_id (for the
-    //    first resale, pre-Phase-4.6 behavior where nft_token_id == root_id).
-    const oldRow = await prisma.tickets.findFirst({
-      where: {
-        contract_address: String(contractAddress),
-        ticket_root_id: rootIdNum,
-        status: 'CANCELLED',
-      } as any,
-      orderBy: { version: 'desc' },
-      select: { nft_token_id: true } as any,
-    });
-    const oldNftTokenId = ((oldRow as any)?.nft_token_id as number | null) ?? rootIdNum;
-
-    // 2. Find the buyer's new ACTIVE row. Filtered by owner_wallet=buyerWallet
-    //    para evitar la race: si el indexer aún no procesó boleto_revendido,
-    //    la única fila ACTIVE para este root_id es la del seller con su
-    //    owner_wallet — no matchea y devolvemos 409 para que el front reintente.
-    const newRow = await prisma.tickets.findFirst({
-      where: {
-        contract_address: String(contractAddress),
-        ticket_root_id: rootIdNum,
-        status: 'ACTIVE',
-        owner_wallet: String(buyerWallet),
-      } as any,
-      orderBy: { version: 'desc' },
-      select: { id: true, nft_token_id: true } as any,
-    });
-    if (!newRow) {
-      res.status(409).json({ error: 'El indexer aún no procesa la reventa. Espera unos segundos e intenta de nuevo.' });
-      return;
-    }
-
-    // Idempotency: if the buyer's row already has a new nft_token_id assigned,
-    // burn+mint already ran on a previous attempt.
-    const existingNewTokenId = (newRow as any).nft_token_id as number | null;
-    if (existingNewTokenId != null && existingNewTokenId !== oldNftTokenId) {
+    try {
+      const result = await burnAndMintResaleNft({
+        nftContractAddress: authorization.nftContractAddress,
+        contractAddress: String(contractAddress),
+        ticketRootId: Number(ticketRootId),
+        buyerWallet: String(buyerWallet),
+      });
+      console.log(
+        `[NFT] verified burn+mint root=${ticketRootId} v${authorization.version} token=${result.nftTokenId} -> ${String(buyerWallet).slice(0, 8)}...`
+      );
       res.json({
         success: true,
-        alreadyTransferred: true,
-        nftTokenId: existingNewTokenId,
-        nftContractAddress,
+        alreadyTransferred: result.alreadyTransferred ?? false,
+        burnTxHash: result.burnTxHash,
+        mintTxHash: result.mintTxHash,
+        txHash: result.mintTxHash,
+        nftTokenId: result.nftTokenId,
+        nftContractAddress: authorization.nftContractAddress,
       });
-      return;
-    }
-
-    // 3. Allocate a fresh nft_token_id. Take MAX across all tickets in this
-    //    event and add 1. Guarantees no collision with previous mints in the
-    //    same NFT contract.
-    const maxAgg = await prisma.tickets.aggregate({
-      where: { contract_address: String(contractAddress) } as any,
-      _max: { nft_token_id: true } as any,
-    });
-    const maxId = ((maxAgg as any)._max?.nft_token_id as number | null) ?? 0;
-    const newNftTokenId = Math.max(maxId, rootIdNum) + 1;
-
-    const adminScVal = new Address(organizerKeypair.publicKey()).toScVal();
-    const buyerAddrScVal = new Address(String(buyerWallet)).toScVal();
-
-    // 4. Burn old token_id. TokenNoEncontrado = already burned, tolerate.
-    let burnTxHash: string | null = null;
-    try {
-      const burnRes = await invokeSoroban(
-        organizerKeypair,
-        nftContractAddress,
-        'burn',
-        [adminScVal, nativeToScVal(oldNftTokenId, { type: 'u32' })],
-      );
-      burnTxHash = (burnRes as any).txHash ?? null;
-      console.log(`[NFT] burned token=${oldNftTokenId} on ${nftContractAddress.slice(0, 8)}…`);
     } catch (e: any) {
-      const msg = String(e?.message ?? '');
-      if (msg.includes('TokenNoEncontrado') || msg.includes('#4')) {
-        console.log(`[NFT] burn skipped (token=${oldNftTokenId} already gone)`);
-      } else {
-        throw e;
-      }
-    }
-
-    // 5. Mint new token_id to buyer with token_uri pointing at its own snapshot.
-    const tokenUri = `${PUBLIC_BASE_URL}/api/nft/metadata/${nftContractAddress}/${newNftTokenId}`;
-    let mintTxHash: string | null = null;
-    try {
-      const mintRes = await invokeSoroban(
-        organizerKeypair,
-        nftContractAddress,
-        'mint',
-        [
-          buyerAddrScVal,
-          nativeToScVal(newNftTokenId, { type: 'u32' }),
-          nativeToScVal(tokenUri, { type: 'string' }),
-        ],
-      );
-      mintTxHash = (mintRes as any).txHash ?? null;
-      console.log(`[NFT] minted token=${newNftTokenId} → ${String(buyerWallet).slice(0, 8)}…`);
-    } catch (e: any) {
-      const msg = String(e?.message ?? '');
-      if (msg.includes('TokenYaExiste') || msg.includes('#3')) {
-        // Collision on token_id. Bump and retry once.
-        const bumped = newNftTokenId + 1;
-        const tokenUri2 = `${PUBLIC_BASE_URL}/api/nft/metadata/${nftContractAddress}/${bumped}`;
-        const retry = await invokeSoroban(
-          organizerKeypair,
-          nftContractAddress,
-          'mint',
-          [
-            buyerAddrScVal,
-            nativeToScVal(bumped, { type: 'u32' }),
-            nativeToScVal(tokenUri2, { type: 'string' }),
-          ],
-        );
-        mintTxHash = (retry as any).txHash ?? null;
-        await prisma.tickets.update({
-          where: { id: (newRow as any).id },
-          data: { nft_token_id: bumped } as any,
-        });
-        res.json({
-          success: true,
-          burnTxHash,
-          mintTxHash,
-          txHash: mintTxHash,
-          nftTokenId: bumped,
-          nftContractAddress,
-        });
+      if (e?.status === 409) {
+        sendApiError(req, res, 409, 'CONFLICT', e.message);
         return;
       }
       throw e;
     }
-
-    // 6. Persist new nft_token_id on the buyer's ACTIVE row.
-    await prisma.tickets.update({
-      where: { id: (newRow as any).id },
-      data: { nft_token_id: newNftTokenId } as any,
-    });
-
-    res.json({
-      success: true,
-      burnTxHash,
-      mintTxHash,
-      txHash: mintTxHash,
-      nftTokenId: newNftTokenId,
-      nftContractAddress,
-    });
   } catch (error: any) {
-    console.error('[NFT] transfer (burn+mint) error:', error?.message ?? error);
-    res.status(500).json({ error: error.message ?? 'Error transfiriendo NFT' });
+    console.error('[NFT] transfer burn+mint error:', error?.message ?? error);
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error transfiriendo NFT');
   }
 });
 
@@ -1458,7 +1891,7 @@ app.get('/api/nft/metadata/:nftContractAddress/:tokenId', async (req, res) => {
       select: { title: true, starts_at: true, contract_address: true, slug: true } as any,
     });
     if (!event) {
-      res.status(404).json({ error: 'NFT contract no encontrado' });
+      sendApiError(req, res, 404, 'NOT_FOUND', 'NFT contract no encontrado');
       return;
     }
     const evAny = event as any;
@@ -1479,44 +1912,31 @@ app.get('/api/nft/metadata/:nftContractAddress/:tokenId', async (req, res) => {
     });
   } catch (error: any) {
     console.error('[NFT metadata] error:', error?.message);
-    res.status(500).json({ error: 'Error generando metadata' });
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error generando metadata');
   }
 });
 
 // GET /api/nft/qr/:contractAddress/:tokenId.png — PNG estático por nft_token_id.
-//
-// Cada nft_token_id es único e inmutable: asignado al momento de mint (compra
-// inicial o reventa P2P). El snapshot del QR se genera UNA SOLA VEZ con los
-// valores (ticket_root_id, version, owner_wallet) de la fila de tickets que
-// posee ese nft_token_id, y se cachea forever. Como cada reventa burn-mintea
-// un token_id NUEVO, la URL del seller (token_id viejo) sigue sirviendo SU
-// snapshot viejo — scanner lo rechaza porque version/wallet no matchean la
-// fila ACTIVE actual. La URL del buyer (token_id nuevo) sirve SU snapshot
-// fresco — scanner acepta.
+// El QR queda ligado al snapshot de versión y owner_wallet que recibió ese NFT.
 app.get('/api/nft/qr/:nftContractAddress/:tokenIdRaw', async (req, res) => {
   try {
     const { nftContractAddress, tokenIdRaw } = req.params;
     const tokenId = Number(tokenIdRaw.replace(/\.png$/i, ''));
     if (!Number.isFinite(tokenId) || tokenId < 0) {
-      res.status(400).type('text/plain').send('Invalid tokenId');
+      sendApiError(req, res, 400, 'BAD_REQUEST', 'tokenId invalido');
       return;
     }
     const cacheKey = `nft:${nftContractAddress}:${tokenId}`;
     if (!qrCache.has(cacheKey)) {
       const event = await prisma.events.findFirst({
         where: { nft_contract_address: nftContractAddress } as any,
-        select: { contract_address: true } as any,
+        select: { id: true, contract_address: true } as any,
       });
       const eventContract = (event as any)?.contract_address as string | null | undefined;
       if (!eventContract) {
-        res.status(404).type('text/plain').send('Not found');
+        sendApiError(req, res, 404, 'NOT_FOUND', 'NFT contract no encontrado');
         return;
       }
-      // Query by nft_token_id (unique per mint). Returns ACTIVE or CANCELLED
-      // row, whichever owns this token_id — we want the snapshot of THIS mint,
-      // not of the current active version. After resale the OLD row is
-      // CANCELLED but its nft_token_id stays — so seller's QR keeps showing
-      // the OLD owner/version which the scanner rejects.
       const ticket = await prisma.tickets.findFirst({
         where: {
           contract_address: eventContract,
@@ -1524,49 +1944,48 @@ app.get('/api/nft/qr/:nftContractAddress/:tokenIdRaw', async (req, res) => {
         } as any,
         select: { ticket_root_id: true, version: true, owner_wallet: true } as any,
       });
-      if (!ticket) {
-        res.status(404).type('text/plain').send('Token not found');
+      if (!ticket || (ticket as any).ticket_root_id == null || (ticket as any).version == null) {
+        sendApiError(req, res, 404, 'NOT_FOUND', 'NFT token no encontrado');
         return;
       }
-      const buf = await buildTicketQrPng({
+      const buf = await buildTicketQrPng(buildSignedTicketQrPayload({
         contractAddress: eventContract,
         ticketRootId: (ticket as any).ticket_root_id,
         version: (ticket as any).version,
-        ownerWallet: (ticket as any).owner_wallet,
-      });
+        eventId: (event as any).id,
+        ownerWallet: (ticket as any).owner_wallet ?? null,
+      }));
       qrCache.set(cacheKey, buf);
     }
-    // Strong cache: snapshot is immutable per token_id (token_id is burned on
-    // resale, never reused). Freighter can cache aggressively without risk.
     res.setHeader('Cache-Control', 'public, max-age=86400, immutable');
     res.setHeader('Content-Type', 'image/png');
     res.send(qrCache.get(cacheKey)!);
   } catch (err: any) {
     console.error('[NFT qr] error:', err?.message);
-    res.status(500).type('text/plain').send('Error generating QR');
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error generando QR');
   }
 });
 
 // POST /api/transactions/submit-classic — Submit a Freighter-signed CLASSIC tx
 // (e.g. CHANGE_TRUST for the collectible) to Horizon, not Soroban RPC.
-app.post('/api/transactions/submit-classic', authMiddleware, async (req, res) => {
+app.post('/api/transactions/submit-classic', transactionRateLimit, authMiddleware, async (req, res) => {
   try {
     const userId = (req as any).userId;
     const { signedXdr } = req.body;
-    if (!signedXdr) { res.status(400).json({ error: 'signedXdr es requerido' }); return; }
+    if (!signedXdr) { sendApiError(req, res, 400, 'BAD_REQUEST', 'signedXdr es requerido'); return; }
 
     const user = await prisma.users.findUnique({ where: { id: userId }, select: { wallet_address: true } });
     if (!user?.wallet_address) {
-      res.status(400).json({ error: 'Debes vincular una wallet antes de enviar una transacción' });
+      sendApiError(req, res, 400, 'BAD_REQUEST', 'Debes vincular una wallet antes de enviar una transacción');
       return;
     }
 
     const tx = TransactionBuilder.fromXDR(signedXdr, NETWORK_PASSPHRASE);
     if (tx instanceof FeeBumpTransaction) {
-      res.status(400).json({ error: 'Fee-bump no soportado' }); return;
+      sendApiError(req, res, 400, 'BAD_REQUEST', 'Fee-bump no soportado'); return;
     }
     if (tx.source !== user.wallet_address) {
-      res.status(403).json({ error: 'La transacción no corresponde a tu wallet' });
+      sendApiError(req, res, 403, 'FORBIDDEN', 'La transacción no corresponde a tu wallet');
       return;
     }
 
@@ -1575,7 +1994,7 @@ app.post('/api/transactions/submit-classic', authMiddleware, async (req, res) =>
   } catch (error: any) {
     const data = error?.response?.data;
     console.error('[CLASSIC] submit error:', data ?? error?.message);
-    res.status(500).json({ error: error.message ?? 'Error enviando transacción clásica', detail: data });
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error enviando transacción clásica');
   }
 });
 
@@ -1583,7 +2002,7 @@ app.post('/api/transactions/submit-classic', authMiddleware, async (req, res) =>
 app.get('/api/admin/venues', authMiddleware, async (req, res) => {
   try {
     const user = await prisma.users.findUnique({ where: { id: (req as any).userId } });
-    if (user?.role !== 'ADMIN') { res.status(403).json({ error: 'Acceso denegado' }); return; }
+    if (user?.role !== 'ADMIN') { sendApiError(req, res, 403, 'FORBIDDEN', 'Acceso denegado'); return; }
 
     const venues = await prisma.venues.findMany({ include: { venue_sections: true } });
     res.json(venues.map(v => ({
@@ -1597,94 +2016,118 @@ app.get('/api/admin/venues', authMiddleware, async (req, res) => {
         capacity: s.capacity
       }))
     })));
-  } catch (error: any) { res.status(500).json({ error: error.message }); }
+  } catch (error: any) {
+    console.error('[ADMIN] Venues error:', error);
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error obteniendo venues');
+  }
 });
 
 // POST /api/admin/scan — Redeem a ticket
-app.post('/api/admin/scan', authMiddleware, async (req, res) => {
+app.post('/api/admin/scan', scannerRateLimit, authMiddleware, async (req, res) => {
   try {
     const user = await prisma.users.findUnique({ where: { id: (req as any).userId } });
-    if (!user || !['ADMIN', 'STAFF'].includes(user.role)) { res.status(403).json({ error: 'Acceso denegado' }); return; }
+    const roleDecision = authorizeScannerRole(user?.role);
+    if (roleDecision) {
+      sendApiError(req, res, roleDecision.status, codeForStatus(roleDecision.status), roleDecision.error);
+      return;
+    }
+    const verifierUserId = (req as any).userId as string;
+    let checkinPayload = buildCheckinPayloadSummary(req.body);
 
-    // Accept either:
-    //   { ticketId }                          ← legacy QR (DB UUID, version-bound)
-    //   { contractAddress, ticketRootId }     ← new QR baked into Freighter NFT
-    //                                            (stable across resale versions)
-    const { ticketId, contractAddress, ticketRootId, version, ownerWallet } = req.body;
+    // Production scanner accepts signed QR tokens. Legacy ticketId scanning is
+    // available only when explicitly enabled for demo/dev fixtures.
+    const scanRequest = parseScanRequest(req.body, {
+      qrSecret: QR_SIGNING_SECRET,
+      allowLegacyTicketId: ALLOW_LEGACY_TICKET_ID_SCAN,
+    });
+    if ('ok' in scanRequest) {
+      sendApiError(req, res, scanRequest.status, codeForStatus(scanRequest.status), scanRequest.error);
+      return;
+    }
 
     let ticket = null as Awaited<ReturnType<typeof prisma.tickets.findUnique>> | null;
+    let requestedVersion: number | undefined;
 
-    if (ticketId) {
-      ticket = await prisma.tickets.findUnique({ where: { id: ticketId } });
-    } else if (contractAddress && ticketRootId != null) {
-      // version is mandatory: a QR without it could be a pre-Phase-4.6 screenshot
-      // from a previous holder that would otherwise resolve to the current ACTIVE ticket.
-      if (version == null) {
-        res.status(400).json({
-          error: 'QR antiguo sin versión. Pide al asistente que regenere el QR desde la app.',
-        });
+    if (scanRequest.kind === 'ticketId') {
+      ticket = await prisma.tickets.findUnique({ where: { id: scanRequest.ticketId } });
+      checkinPayload = summarizeScanRequest({ kind: 'ticketId', ticketId: scanRequest.ticketId });
+    } else {
+      requestedVersion = scanRequest.version;
+      checkinPayload = summarizeScanRequest(scanRequest);
+      const event = await prisma.events.findFirst({
+        where: {
+          id: scanRequest.eventId,
+          contract_address: scanRequest.contractAddress,
+        } as any,
+        select: { id: true } as any,
+      });
+      if (!event) {
+        await recordCheckin({
+          verifierUserId,
+          result: 'DENIED',
+          reason: 'QR no corresponde al evento del contrato',
+          payload: checkinPayload,
+        }).catch((auditError) => console.error('[SCAN] Checkin audit error:', auditError));
+        sendApiError(req, res, 409, 'CONFLICT', 'QR no corresponde al evento del contrato');
         return;
       }
+      // Resolve the latest version for this root. Status is checked below so
+      // duplicate scans return 409 instead of looking like a missing ticket.
       ticket = await prisma.tickets.findFirst({
         where: {
-          contract_address: String(contractAddress),
-          ticket_root_id: Number(ticketRootId),
-          status: 'ACTIVE',
+          contract_address: scanRequest.contractAddress,
+          ticket_root_id: scanRequest.ticketRootId,
         },
         orderBy: { version: 'desc' },
       });
-      if (ticket && Number(version) !== (ticket as any).version) {
-        res.status(409).json({
-          error: 'QR vencido: este boleto fue revendido. El nuevo dueño tiene el QR válido.',
-        });
-        return;
-      }
-      // Wallet-bound validation: if the QR embeds an ownerWallet, it must match
-      // the DB's current owner_wallet for the active version. A Freighter image
-      // cached from before a resale will carry the previous owner's wallet and
-      // be rejected here even if the version check passed (race window).
-      if (ticket && ownerWallet) {
-        const dbOwner = (ticket as any).owner_wallet;
-        if (dbOwner && String(ownerWallet) !== String(dbOwner)) {
-          res.status(409).json({
-            error: 'QR vencido: el dueño on-chain de este boleto cambió. El nuevo dueño tiene el QR válido.',
-          });
-          return;
-        }
-      }
-    } else {
-      res.status(400).json({ error: 'Se requiere ticketId o (contractAddress + ticketRootId)' });
+    }
+
+    const scanDecision = evaluateScanTicket(
+      ticket
+        ? {
+            id: ticket.id,
+            status: ticket.status,
+            version: (ticket as any).version ?? null,
+            ownerWallet: (ticket as any).owner_wallet ?? null,
+          }
+        : null,
+      requestedVersion,
+      scanRequest.kind === 'contractTicket' ? scanRequest.ownerWallet : null,
+    );
+    if (!scanDecision.ok) {
+      await recordCheckin({
+        verifierUserId,
+        ticketId: ticket?.id ?? null,
+        result: 'DENIED',
+        reason: scanDecision.error,
+        payload: checkinPayload,
+      }).catch((auditError) => console.error('[SCAN] Checkin audit error:', auditError));
+      sendApiError(req, res, scanDecision.status, codeForStatus(scanDecision.status), scanDecision.error);
       return;
     }
 
-    if (!ticket) {
-      res.status(404).json({ error: 'Boleto no encontrado o ya redimido' });
-      return;
-    }
+    // Gate scan is DB-only for thesis demo speed. Soroban redemption is handled
+    // only when the indexer receives a boleto_redimido event from an on-chain flow.
+    await prisma.$transaction([
+      prisma.tickets.update({
+        where: { id: scanDecision.ticketId },
+        data: { status: 'USED', used_at: new Date(), is_for_sale: false, lifecycle_reason: 'REDEEMED_DB_SCAN' },
+      }),
+      prisma.checkins.create({
+        data: {
+          verifier_user_id: verifierUserId,
+          ticket_id: scanDecision.ticketId,
+          result: 'ALLOWED',
+          source: 'db',
+          payload: checkinPayload,
+        },
+      }),
+    ]);
 
-    if (ticket.status !== 'ACTIVE') {
-      res.status(400).json({ error: `Boleto inhabilitado: ${ticket.status}` });
-      return;
-    }
-
-    if ((ticket as any).is_for_sale === true) {
-      res.status(409).json({
-        error: 'Boleto publicado en reventa P2P. El QR no es válido hasta que se concrete o se cancele la reventa.',
-      });
-      return;
-    }
-
-    // In a real Web3 environment, if ticket.contract_address exists, we'd trigger a Soroban burn here via CLI
-    // For this simulation/hybrid speed, we update Postgres linearly to avoid gate delays.
-    await prisma.tickets.update({
-       where: { id: ticket.id },
-       data: { status: 'CANCELLED' } // 'CANCELLED' is the generic inactive state in Prisma schema for this thesis demo
-    });
-
-    res.json({ success: true, message: 'Boleto redimido exitosamente' });
+    res.json({ success: true, message: 'Boleto validado y marcado como usado' });
   } catch (error: any) {
     console.error('[SCAN] Error:', error);
-    res.status(500).json({ error: error.message });
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error interno del scanner');
   }
 });
 
@@ -1692,7 +2135,7 @@ app.post('/api/admin/scan', authMiddleware, async (req, res) => {
 app.get('/api/admin/contracts', authMiddleware, async (req, res) => {
   try {
     const user = await prisma.users.findUnique({ where: { id: (req as any).userId } });
-    if (!user || user.role !== 'ADMIN') { res.status(403).json({ error: 'Acceso denegado' }); return; }
+    if (!user || user.role !== 'ADMIN') { sendApiError(req, res, 403, 'FORBIDDEN', 'Acceso denegado'); return; }
 
     const factoryId = process.env.ORGANIZER_PUBLIC || 'GBM6N2SUCK3Y6I5DHQKULZD3W27EYMU37VYHNKWLVBNS6VYZHRJPWJBT';
     
@@ -1712,13 +2155,16 @@ app.get('/api/admin/contracts', authMiddleware, async (req, res) => {
       factoryContractId: factoryId,
       events: deployedEvents
     });
-  } catch (error: any) { res.status(500).json({ error: error.message }); }
+  } catch (error: any) {
+    console.error('[ADMIN] Contracts error:', error);
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error obteniendo contratos');
+  }
 });
 
 app.get('/api/admin/events', authMiddleware, async (req, res) => {
   try {
     const user = await prisma.users.findUnique({ where: { id: (req as any).userId } });
-    if (user?.role !== 'ADMIN') { res.status(403).json({ error: 'Acceso denegado' }); return; }
+    if (user?.role !== 'ADMIN') { sendApiError(req, res, 403, 'FORBIDDEN', 'Acceso denegado'); return; }
 
     const events = await prisma.events.findMany({
       include: eventIncludes,
@@ -1726,17 +2172,18 @@ app.get('/api/admin/events', authMiddleware, async (req, res) => {
     });
     res.json(events.map(toEventDto));
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    console.error('[ADMIN] Events error:', error);
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error obteniendo eventos admin');
   }
 });
 
 app.post('/api/admin/events', authMiddleware, async (req, res) => {
   try {
     const user = await prisma.users.findUnique({ where: { id: (req as any).userId } });
-    if (user?.role !== 'ADMIN') { res.status(403).json({ error: 'Acceso denegado' }); return; }
+    if (user?.role !== 'ADMIN') { sendApiError(req, res, 403, 'FORBIDDEN', 'Acceso denegado'); return; }
 
     const { title, slug, category_id, date, venue_id, sections, cover_image_url } = req.body;
-
+    
     // Hardcode organizer for MVP
     const organizer = await prisma.organizers.findFirst();
     const firstCat = await prisma.event_categories.findFirst();
@@ -1760,7 +2207,9 @@ app.post('/api/admin/events', authMiddleware, async (req, res) => {
         await prisma.event_ticket_types.create({
           data: {
             event_id: newEvent.id,
-            venue_section_id: s.id,
+            // Admin quick-create models section names as general-admission
+            // ticket types. Assigned seating inventory is managed separately.
+            venue_section_id: null,
             ticket_type_name: s.name,
             description: `Boleto habilitado para ${s.name}`,
             price_amount: s.price || 0,
@@ -1776,22 +2225,39 @@ app.post('/api/admin/events', authMiddleware, async (req, res) => {
     res.json({ success: true, eventId: newEvent.id });
   } catch (error: any) {
     console.error('[ADMIN] Create event error:', error);
-    res.status(500).json({ error: error.message });
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error creando evento');
   }
 });
 
 app.post('/api/admin/events/:id/deploy', authMiddleware, async (req, res) => {
   try {
     const user = await prisma.users.findUnique({ where: { id: (req as any).userId } });
-    if (user?.role !== 'ADMIN') { res.status(403).json({ error: 'Acceso denegado' }); return; }
+    if (user?.role !== 'ADMIN') { sendApiError(req, res, 403, 'FORBIDDEN', 'Acceso denegado'); return; }
 
     const eventId = req.params.id as string;
-    const event = await prisma.events.findUnique({ where: { id: eventId } });
-    if (!event) { res.status(404).json({ error: 'Evento no encontrado' }); return; }
-    if (event.contract_address) { res.status(400).json({ error: 'El evento ya tiene contrato' }); return; }
+    const event = await prisma.events.findUnique({
+      where: { id: eventId },
+      select: { id: true, contract_address: true },
+    });
+    const soldTicketsCount = await prisma.tickets.count({
+      where: {
+        order_items: {
+          event_ticket_types: { event_id: eventId },
+        },
+      },
+    });
+    const deployDecision = authorizeSingleEventDeploy({ event, soldTicketsCount });
+    if (!deployDecision.ok) {
+      sendApiError(req, res, deployDecision.status, codeForStatus(deployDecision.status), deployDecision.error);
+      return;
+    }
 
-    // Run the Soroban deploy script inside Node Environment
-    const { stdout, stderr } = await execPromise('npx tsx scripts/deploy-contracts.ts', { cwd: require('path').resolve(__dirname, '..') });
+    // Run the Soroban deploy script for this event only. It must not clear or
+    // redeploy contracts for other published events.
+    const { stdout, stderr } = await execPromise('npx tsx scripts/deploy-contracts.ts', {
+      cwd: require('path').resolve(__dirname, '..'),
+      env: { ...process.env, DEPLOY_EVENT_ID: eventId },
+    });
     console.log(`[ADMIN] Deploy Output:\n${stdout}`);
     if (stderr) console.error(`[ADMIN] Deploy Stderr:\n${stderr}`);
 
@@ -1806,28 +2272,28 @@ app.post('/api/admin/events/:id/deploy', authMiddleware, async (req, res) => {
     });
   } catch (error: any) {
     console.error('[ADMIN] Deploy event error:', error);
-    res.status(500).json({ error: error.message });
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error desplegando contrato del evento');
   }
 });
 
 // --- AUTH ENDPOINTS ---
-app.post('/api/auth/login', async (req, res) => {
+app.post('/api/auth/login', authRateLimit, async (req, res) => {
   try {
     const { email, password } = req.body;
     if (!email || !password) {
-      res.status(400).json({ error: 'Email y contraseña son requeridos' });
+      sendApiError(req, res, 400, 'BAD_REQUEST', 'Email y contraseña son requeridos');
       return;
     }
 
     const user = await prisma.users.findFirst({ where: { email } });
     if (!user) {
-      res.status(401).json({ error: 'Credenciales inválidas' });
+      sendApiError(req, res, 401, 'UNAUTHORIZED', 'Credenciales inválidas');
       return;
     }
 
     const valid = await bcrypt.compare(password, user.password_hash);
     if (!valid) {
-      res.status(401).json({ error: 'Credenciales inválidas' });
+      sendApiError(req, res, 401, 'UNAUTHORIZED', 'Credenciales inválidas');
       return;
     }
 
@@ -1838,22 +2304,22 @@ app.post('/api/auth/login', async (req, res) => {
     res.json({ accessToken, user: toUserDto(user) });
   } catch (error: any) {
     console.error('[AUTH] Login error:', error);
-    res.status(500).json({ error: 'Error interno del servidor' });
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error interno del servidor');
   }
 });
 
-app.post('/api/auth/register', async (req, res) => {
+app.post('/api/auth/register', authRateLimit, async (req, res) => {
   try {
     const { firstName, lastName, email, password, documentType, documentNumber, phone } = req.body;
     if (!firstName || !email || !password || !documentNumber) {
-      res.status(400).json({ error: 'Campos requeridos: firstName, email, password, documentNumber' });
+      sendApiError(req, res, 400, 'BAD_REQUEST', 'Campos requeridos: firstName, email, password, documentNumber');
       return;
     }
 
     // Check if email already exists
     const existing = await prisma.users.findFirst({ where: { email } });
     if (existing) {
-      res.status(409).json({ error: 'Ya existe una cuenta con ese correo electrónico' });
+      sendApiError(req, res, 409, 'CONFLICT', 'Ya existe una cuenta con ese correo electrónico');
       return;
     }
 
@@ -1874,7 +2340,7 @@ app.post('/api/auth/register', async (req, res) => {
     res.json({ accessToken, user: toUserDto(user) });
   } catch (error: any) {
     console.error('[AUTH] Register error:', error);
-    res.status(500).json({ error: 'Error interno del servidor' });
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error interno del servidor');
   }
 });
 
@@ -1882,13 +2348,13 @@ app.get('/api/users/me', authMiddleware, async (req, res) => {
   try {
     const user = await prisma.users.findUnique({ where: { id: (req as any).userId } });
     if (!user) {
-      res.status(404).json({ error: 'Usuario no encontrado' });
+      sendApiError(req, res, 404, 'NOT_FOUND', 'Usuario no encontrado');
       return;
     }
     res.json(toUserDto(user));
   } catch (error: any) {
     console.error('[AUTH] Me error:', error);
-    res.status(500).json({ error: 'Error interno del servidor' });
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error interno del servidor');
   }
 });
 
@@ -1909,27 +2375,111 @@ app.patch('/api/users/me', authMiddleware, async (req, res) => {
     res.json(toUserDto(user));
   } catch (error: any) {
     console.error('[AUTH] Update profile error:', error);
-    res.status(500).json({ error: 'Error interno del servidor' });
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error interno del servidor');
   }
 });
 
-// PATCH /api/users/me/wallet — link Freighter wallet to user account
-app.patch('/api/users/me/wallet', authMiddleware, async (req, res) => {
+// POST /api/wallet/challenge — issue a short-lived message to prove wallet ownership
+app.post('/api/wallet/challenge', walletRateLimit, authMiddleware, async (req, res) => {
   try {
-    const { walletAddress } = req.body;
-    if (!walletAddress) { res.status(400).json({ error: 'walletAddress requerido' }); return; }
-    const user = await prisma.users.update({
-      where: { id: (req as any).userId },
-      data: { wallet_address: walletAddress },
+    const walletAddress = String(req.body?.walletAddress ?? '').trim();
+    if (!walletAddress) {
+      sendApiError(req, res, 400, 'BAD_REQUEST', 'walletAddress requerido');
+      return;
+    }
+
+    const challenge = createWalletChallenge({
+      userId: (req as any).userId,
+      walletAddress,
     });
+    if ('ok' in challenge) {
+      sendApiError(req, res, challenge.status, codeForStatus(challenge.status), challenge.error);
+      return;
+    }
+
+    const row = await prisma.wallet_challenges.create({
+      data: {
+        user_id: (req as any).userId,
+        wallet_address: walletAddress,
+        nonce: challenge.nonce,
+        message: challenge.message,
+        expires_at: challenge.expiresAt,
+      },
+      select: { id: true, message: true, expires_at: true },
+    });
+
+    res.status(201).json({
+      challengeId: row.id,
+      message: row.message,
+      expiresAt: row.expires_at,
+    });
+  } catch (error: any) {
+    console.error('[AUTH] Wallet challenge error:', error);
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error interno del servidor');
+  }
+});
+
+// PATCH /api/users/me/wallet — link Freighter wallet to user account after signature proof
+app.patch('/api/users/me/wallet', walletRateLimit, authMiddleware, async (req, res) => {
+  try {
+    const walletAddress = String(req.body?.walletAddress ?? '').trim();
+    const challengeId = String(req.body?.challengeId ?? '').trim();
+    const signature = String(req.body?.signature ?? '').trim();
+    if (!walletAddress || !challengeId || !signature) {
+      sendApiError(req, res, 400, 'BAD_REQUEST', 'walletAddress, challengeId y signature son requeridos');
+      return;
+    }
+
+    const challenge = await prisma.wallet_challenges.findFirst({
+      where: {
+        id: challengeId,
+        user_id: (req as any).userId,
+        wallet_address: walletAddress,
+      },
+      select: {
+        id: true,
+        message: true,
+        expires_at: true,
+        consumed_at: true,
+      },
+    });
+
+    if (!challenge) {
+      sendApiError(req, res, 404, 'NOT_FOUND', 'Challenge de wallet no encontrado');
+      return;
+    }
+
+    const verification = verifyWalletChallengeSignature({
+      walletAddress,
+      message: challenge.message,
+      signature,
+      expiresAt: challenge.expires_at,
+      consumedAt: challenge.consumed_at,
+    });
+    if (!verification.ok) {
+      sendApiError(req, res, verification.status, codeForStatus(verification.status), verification.error);
+      return;
+    }
+
+    const user = await prisma.$transaction(async (tx) => {
+      await tx.wallet_challenges.update({
+        where: { id: challenge.id },
+        data: { consumed_at: new Date() },
+      });
+      return tx.users.update({
+        where: { id: (req as any).userId },
+        data: { wallet_address: walletAddress },
+      });
+    });
+
     res.json({ walletAddress: user.wallet_address });
   } catch (error: any) {
     if (error.code === 'P2002') {
-      res.status(409).json({ error: 'Wallet ya vinculada a otra cuenta' });
+      sendApiError(req, res, 409, 'CONFLICT', 'Wallet ya vinculada a otra cuenta');
       return;
     }
     console.error('[AUTH] Link wallet error:', error);
-    res.status(500).json({ error: error.message });
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error interno del servidor');
   }
 });
 
@@ -1942,6 +2492,91 @@ async function getOrCreateCart(userId: string) {
     cart = await prisma.carts.create({ data: { user_id: userId, status: 'ACTIVE' } });
   }
   return cart;
+}
+
+class SeatReservationConflictError extends Error {
+  constructor(message = 'Uno o más asientos ya no están disponibles') {
+    super(message);
+    this.name = 'SeatReservationConflictError';
+  }
+}
+
+class CheckoutSeatSaleConflictError extends Error {
+  constructor(message = 'La reserva de uno o más asientos expiró o ya no está disponible') {
+    super(message);
+    this.name = 'CheckoutSeatSaleConflictError';
+  }
+}
+
+function isSeatHoldAvailabilityDatabaseError(error: any) {
+  const message = String(error?.message ?? '');
+  return message.includes('is not available for holding');
+}
+
+function isCheckoutSeatSaleDatabaseConflict(error: any) {
+  const message = `${String(error?.message ?? '')} ${String(error?.meta?.message ?? '')} ${String(error?.meta?.error ?? '')}`;
+  return message.includes('division by zero');
+}
+
+/** Atomically marks HELD inventory as SOLD; if the number of updated rows != expectedCount, forces division-by-zero so the statement fails and the surrounding transaction rolls back. */
+function markHeldSeatInventoryAsSoldOrFail(inventoryIds: string[], expectedCount: number, now: Date) {
+  const inventoryIdSql = inventoryIds.map((id) => Prisma.sql`${id}::uuid`);
+  return prisma.$executeRaw`
+    WITH updated AS (
+      UPDATE ticketing.event_seat_inventory
+         SET status = 'SOLD'::ticketing.seat_inventory_status,
+             updated_at = ${now}
+       WHERE id IN (${Prisma.join(inventoryIdSql)})
+         AND status = 'HELD'::ticketing.seat_inventory_status
+       RETURNING id
+    ),
+    checked AS (
+      SELECT COUNT(*)::int AS sold_count
+        FROM updated
+    )
+    SELECT CASE
+             WHEN sold_count = ${expectedCount} THEN 1
+             ELSE 1 / (sold_count - sold_count)
+           END
+      FROM checked
+  `;
+}
+
+async function releaseExpiredSeatHolds(now = new Date()) {
+  const expiredHolds = await prisma.seat_holds.findMany({
+    where: { status: 'ACTIVE', expires_at: { lte: now } },
+    select: { id: true, cart_id: true, event_seat_inventory_id: true },
+  });
+
+  if (expiredHolds.length === 0) {
+    return { released: 0 };
+  }
+
+  const holdIds = expiredHolds.map((hold) => hold.id);
+  const inventoryIds = Array.from(new Set(expiredHolds.map((hold) => hold.event_seat_inventory_id)));
+  const expiredCartItemPairs = expiredHolds.map((hold) => ({
+    cart_id: hold.cart_id,
+    event_seat_inventory_id: hold.event_seat_inventory_id,
+  }));
+
+  await prisma.$transaction([
+    prisma.seat_holds.updateMany({
+      where: { id: { in: holdIds }, status: 'ACTIVE' },
+      data: { status: 'EXPIRED', updated_at: now },
+    }),
+    prisma.cart_items.deleteMany({
+      where: {
+        OR: expiredCartItemPairs,
+        carts: { is: { status: 'ACTIVE' } },
+      },
+    }),
+    prisma.event_seat_inventory.updateMany({
+      where: { id: { in: inventoryIds }, status: 'HELD' },
+      data: { status: 'AVAILABLE', updated_at: now },
+    }),
+  ]);
+
+  return { released: inventoryIds.length };
 }
 
 // Helper: transform cart_items rows into the shape the frontend expects
@@ -1984,10 +2619,34 @@ const cartItemIncludes = {
   },
 };
 
+const orderItemIncludes = {
+  event_ticket_types: {
+    include: {
+      events: { include: eventIncludes },
+    },
+  },
+  event_seat_inventory: {
+    include: {
+      seats: true,
+      event_ticket_types: {
+        include: {
+          events: { include: eventIncludes },
+        },
+      },
+    },
+  },
+  tickets: true,
+};
+
+const orderIncludes = {
+  order_items: { include: orderItemIncludes },
+};
+
 // GET /api/cart — list items in user's active cart
 app.get('/api/cart', authMiddleware, async (req, res) => {
   try {
     const userId = (req as any).userId;
+    await releaseExpiredSeatHolds();
     const cart = await prisma.carts.findFirst({
       where: { user_id: userId, status: 'ACTIVE' },
       include: { cart_items: { include: cartItemIncludes } },
@@ -1995,7 +2654,7 @@ app.get('/api/cart', authMiddleware, async (req, res) => {
     res.json((cart?.cart_items ?? []).map(toCartItemDto));
   } catch (error: any) {
     console.error('[CART] GET error:', error);
-    res.status(500).json({ error: error.message });
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error obteniendo carrito');
   }
 });
 
@@ -2007,14 +2666,15 @@ app.post('/api/cart/items', authMiddleware, async (req, res) => {
   try {
     const userId = (req as any).userId;
     const { ticketTypeId, quantity, seatIds } = req.body;
+    await releaseExpiredSeatHolds();
     if (!ticketTypeId) {
-      res.status(400).json({ error: 'ticketTypeId es requerido' });
+      sendApiError(req, res, 400, 'BAD_REQUEST', 'ticketTypeId es requerido');
       return;
     }
 
     const ticketType = await prisma.event_ticket_types.findUnique({ where: { id: ticketTypeId } });
     if (!ticketType) {
-      res.status(404).json({ error: 'Tipo de boleta no encontrado' });
+      sendApiError(req, res, 404, 'NOT_FOUND', 'Tipo de boleta no encontrado');
       return;
     }
 
@@ -2022,9 +2682,9 @@ app.post('/api/cart/items', authMiddleware, async (req, res) => {
     const hasSeatIds = Array.isArray(seatIds) && seatIds.length > 0;
 
     if (hasSeatIds) {
-      // Assigned seating: one cart_item per seat. Mark each inventory row as HELD.
+      // Assigned seating: one cart_item per seat. The seat_holds trigger marks inventory as HELD.
       if (!ticketType.event_id) {
-        res.status(400).json({ error: 'Ticket type sin evento' });
+        sendApiError(req, res, 400, 'BAD_REQUEST', 'Ticket type sin evento');
         return;
       }
 
@@ -2037,21 +2697,26 @@ app.post('/api/cart/items', authMiddleware, async (req, res) => {
       });
 
       if (inventoryRows.length !== seatIds.length) {
-        res.status(400).json({ error: 'Uno o más asientos no existen en el inventario del evento' });
+        sendApiError(req, res, 400, 'BAD_REQUEST', 'Uno o más asientos no existen en el inventario del evento');
         return;
       }
 
-      const unavailable = inventoryRows.filter((r) => r.status !== 'AVAILABLE');
-      if (unavailable.length > 0) {
-        res.status(409).json({ error: 'Uno o más asientos ya no están disponibles' });
-        return;
-      }
+      const expiresAt = buildSeatHoldExpiration();
+      const reservationOps: any[] = [];
 
-      const created = await prisma.$transaction(
-        inventoryRows.flatMap((inv) => [
-          prisma.event_seat_inventory.update({
-            where: { id: inv.id },
-            data: { status: 'HELD' },
+      for (const inv of inventoryRows) {
+        if (!isSeatReservable(inv.status)) {
+          throw new SeatReservationConflictError();
+        }
+
+        reservationOps.push(
+          prisma.seat_holds.create({
+            data: {
+              cart_id: cart.id,
+              event_seat_inventory_id: inv.id,
+              expires_at: expiresAt,
+              status: 'ACTIVE',
+            },
           }),
           prisma.cart_items.create({
             data: {
@@ -2062,20 +2727,22 @@ app.post('/api/cart/items', authMiddleware, async (req, res) => {
               service_fee_amount: ticketType.service_fee_amount,
             },
             include: cartItemIncludes,
-          }),
-        ])
-      );
+          })
+        );
+      }
+
+      const transactionResults = await prisma.$transaction(reservationOps);
+      const createdCartItems = transactionResults.filter((_result, index) => index % 2 === 1);
 
       // Return the last cart_item created (or all of them — frontend treats them individually)
-      const cartItems = created.filter((r: any) => r && r.cart_id);
-      const last = cartItems[cartItems.length - 1];
+      const last = createdCartItems[createdCartItems.length - 1];
       res.json(toCartItemDto(last));
       return;
     }
 
     // General admission flow (unchanged)
     if (!quantity || quantity < 1) {
-      res.status(400).json({ error: 'quantity es requerido para admisión general' });
+      sendApiError(req, res, 400, 'BAD_REQUEST', 'quantity es requerido para admisión general');
       return;
     }
 
@@ -2102,8 +2769,16 @@ app.post('/api/cart/items', authMiddleware, async (req, res) => {
 
     res.json(toCartItemDto(item));
   } catch (error: any) {
+    if (error instanceof SeatReservationConflictError) {
+      sendApiError(req, res, 409, 'CONFLICT', error.message);
+      return;
+    }
+    if (isSeatHoldAvailabilityDatabaseError(error)) {
+      sendApiError(req, res, 409, 'CONFLICT', 'Uno o más asientos ya no están disponibles');
+      return;
+    }
     console.error('[CART] POST error:', error);
-    res.status(500).json({ error: error.message });
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error agregando item al carrito');
   }
 });
 
@@ -2113,7 +2788,7 @@ app.patch('/api/cart/items/:id', authMiddleware, async (req, res) => {
     const userId = (req as any).userId;
     const { quantity } = req.body;
     if (!quantity || quantity < 1) {
-      res.status(400).json({ error: 'quantity debe ser >= 1' });
+      sendApiError(req, res, 400, 'BAD_REQUEST', 'quantity debe ser >= 1');
       return;
     }
     const result = await prisma.cart_items.updateMany({
@@ -2124,13 +2799,13 @@ app.patch('/api/cart/items/:id', authMiddleware, async (req, res) => {
       data: { quantity },
     });
     if (result.count === 0) {
-      res.status(404).json({ error: 'Item de carrito no encontrado' });
+      sendApiError(req, res, 404, 'NOT_FOUND', 'Item de carrito no encontrado');
       return;
     }
     res.status(204).send();
   } catch (error: any) {
     console.error('[CART] PATCH error:', error);
-    res.status(500).json({ error: error.message });
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error actualizando carrito');
   }
 });
 
@@ -2143,18 +2818,26 @@ app.delete('/api/cart/items/:id', authMiddleware, async (req, res) => {
         id: req.params.id as string,
         carts: { is: { user_id: userId, status: 'ACTIVE' } },
       },
-      select: { id: true, event_seat_inventory_id: true },
+      select: { id: true, cart_id: true, event_seat_inventory_id: true },
     });
     if (!item) {
-      res.status(404).json({ error: 'Item de carrito no encontrado' });
+      sendApiError(req, res, 404, 'NOT_FOUND', 'Item de carrito no encontrado');
       return;
     }
 
     if (item.event_seat_inventory_id) {
       await prisma.$transaction([
-        prisma.event_seat_inventory.update({
-          where: { id: item.event_seat_inventory_id },
-          data: { status: 'AVAILABLE' },
+        prisma.seat_holds.updateMany({
+          where: {
+            cart_id: item.cart_id,
+            event_seat_inventory_id: item.event_seat_inventory_id,
+            status: 'ACTIVE',
+          },
+          data: { status: 'RELEASED', updated_at: new Date() },
+        }),
+        prisma.event_seat_inventory.updateMany({
+          where: { id: item.event_seat_inventory_id, status: 'HELD' },
+          data: { status: 'AVAILABLE', updated_at: new Date() },
         }),
         prisma.cart_items.delete({ where: { id: item.id } }),
       ]);
@@ -2164,7 +2847,7 @@ app.delete('/api/cart/items/:id', authMiddleware, async (req, res) => {
     res.status(204).send();
   } catch (error: any) {
     console.error('[CART] DELETE error:', error);
-    res.status(500).json({ error: error.message });
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error eliminando item del carrito');
   }
 });
 
@@ -2183,10 +2866,19 @@ app.delete('/api/cart/clear', authMiddleware, async (req, res) => {
 
       const ops: any[] = [];
       if (heldInventoryIds.length > 0) {
+        const now = new Date();
         ops.push(
+          prisma.seat_holds.updateMany({
+            where: {
+              cart_id: cart.id,
+              event_seat_inventory_id: { in: heldInventoryIds },
+              status: 'ACTIVE',
+            },
+            data: { status: 'RELEASED', updated_at: now },
+          }),
           prisma.event_seat_inventory.updateMany({
             where: { id: { in: heldInventoryIds }, status: 'HELD' },
-            data: { status: 'AVAILABLE' },
+            data: { status: 'AVAILABLE', updated_at: now },
           })
         );
       }
@@ -2196,22 +2888,23 @@ app.delete('/api/cart/clear', authMiddleware, async (req, res) => {
     res.status(204).send();
   } catch (error: any) {
     console.error('[CART] CLEAR error:', error);
-    res.status(500).json({ error: error.message });
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error limpiando carrito');
   }
 });
 
-// --- CHECKOUT ENDPOINTS (real) ---
+// --- CHECKOUT ENDPOINTS (simulated payment for thesis demo) ---
 
 // POST /api/checkout/preview — validate cart, return totals
 app.post('/api/checkout/preview', authMiddleware, async (req, res) => {
   try {
     const userId = (req as any).userId;
+    await releaseExpiredSeatHolds();
     const cart = await prisma.carts.findFirst({
       where: { user_id: userId, status: 'ACTIVE' },
       include: { cart_items: { include: { event_ticket_types: true } } },
     });
     if (!cart || cart.cart_items.length === 0) {
-      res.status(400).json({ error: 'El carrito está vacío' });
+      sendApiError(req, res, 400, 'BAD_REQUEST', 'El carrito está vacío');
       return;
     }
 
@@ -2222,10 +2915,17 @@ app.post('/api/checkout/preview', authMiddleware, async (req, res) => {
       serviceFees += Number(item.service_fee_amount) * item.quantity;
     }
 
-    res.json({ subtotal, serviceFees, total: subtotal + serviceFees, itemCount: cart.cart_items.length });
+    res.json({
+      subtotal,
+      serviceFees,
+      total: subtotal + serviceFees,
+      itemCount: cart.cart_items.length,
+      paymentMode: 'SIMULATED',
+      message: 'Pago simulado para demo academica; no se procesa una pasarela fiat real.',
+    });
   } catch (error: any) {
     console.error('[CHECKOUT] Preview error:', error);
-    res.status(500).json({ error: error.message });
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error calculando checkout');
   }
 });
 
@@ -2234,16 +2934,30 @@ app.post('/api/checkout/confirm', authMiddleware, async (req, res) => {
   try {
     const userId = (req as any).userId;
     const { buyerEmail, buyerPhone, paymentMethod } = req.body;
+    const requestedIdempotencyKey = normalizeIdempotencyKey(req.body?.idempotencyKey ?? req.headers['idempotency-key']);
+    await releaseExpiredSeatHolds();
 
     const user = await prisma.users.findUnique({ where: { id: userId } });
-    if (!user) { res.status(404).json({ error: 'Usuario no encontrado' }); return; }
+    if (!user) { sendApiError(req, res, 404, 'NOT_FOUND', 'Usuario no encontrado'); return; }
+
+    if (requestedIdempotencyKey) {
+      const orderNumber = buildSimulatedOrderNumber(requestedIdempotencyKey);
+      const existingOrder = await prisma.orders.findFirst({
+        where: { user_id: userId, order_number: orderNumber },
+        include: orderIncludes,
+      });
+      if (existingOrder) {
+        res.json(formatCheckoutOrderResponse(existingOrder, true));
+        return;
+      }
+    }
 
     const cart = await prisma.carts.findFirst({
       where: { user_id: userId, status: 'ACTIVE' },
       include: { cart_items: { include: { event_ticket_types: true } } },
     });
     if (!cart || cart.cart_items.length === 0) {
-      res.status(400).json({ error: 'El carrito está vacío' });
+      sendApiError(req, res, 400, 'BAD_REQUEST', 'El carrito está vacío');
       return;
     }
 
@@ -2256,11 +2970,10 @@ app.post('/api/checkout/confirm', authMiddleware, async (req, res) => {
     }
     const total = subtotal + serviceFees;
 
-    // Generate order number: TT-YYYYMMDD-XXXXX
     const now = new Date();
-    const datePart = now.toISOString().slice(0, 10).replace(/-/g, '');
-    const randPart = Math.random().toString(36).slice(2, 7).toUpperCase();
-    const orderNumber = `TT-${datePart}-${randPart}`;
+    const effectiveIdempotencyKey = requestedIdempotencyKey ?? `checkout:${userId}:${cart.id}`;
+    const orderNumber = buildSimulatedOrderNumber(effectiveIdempotencyKey);
+    const ticketCodePart = orderNumber.slice(-5);
 
     const orderItemCreates = cart.cart_items.map((cartItem) => ({
       event_ticket_type_id: cartItem.event_ticket_type_id,
@@ -2271,68 +2984,195 @@ app.post('/api/checkout/confirm', authMiddleware, async (req, res) => {
       tickets: {
         create: Array.from({ length: cartItem.quantity }, (_, i) => ({
           owner_user_id: userId,
-          ticket_code: `TK-${randPart}-${cartItem.id.slice(-4).toUpperCase()}-${i + 1}`,
+          ticket_code: `TK-${ticketCodePart}-${cartItem.id.slice(-4).toUpperCase()}-${i + 1}`,
           status: 'ACTIVE' as const,
         })),
       },
     }));
 
-    const seatInventoryIdsToSell = cart.cart_items
+    const seatInventoryIdsToSell = Array.from(new Set(cart.cart_items
       .map((i) => i.event_seat_inventory_id)
-      .filter((v): v is string => Boolean(v));
-
-    // Use a batch transaction instead of an interactive tx callback. Supabase/pgBouncer
-    // can drop long-lived interactive transactions in local/demo environments.
-    const ops: any[] = [
-      prisma.orders.create({
-        data: {
-          user_id: userId,
-          order_number: orderNumber,
-          status: 'PAID',
-          subtotal_amount: subtotal,
-          service_fee_amount: serviceFees,
-          total_amount: total,
-          buyer_email: buyerEmail || user.email,
-          buyer_phone: buyerPhone || user.phone,
-          buyer_document_type: user.document_type,
-          buyer_document_number: user.document_number,
-          order_items: { create: orderItemCreates },
-          payments: {
-            create: {
-              payment_method: paymentMethod || 'CARD',
-              status: 'PAID',
-              amount: total,
-              processed_at: now,
-            },
-          },
-        },
-      }),
-      prisma.carts.update({ where: { id: cart.id }, data: { status: 'CONVERTED' } }),
-    ];
+      .filter((v): v is string => Boolean(v))));
 
     if (seatInventoryIdsToSell.length > 0) {
-      ops.push(
-        prisma.event_seat_inventory.updateMany({
-          where: { id: { in: seatInventoryIdsToSell } },
-          data: { status: 'SOLD' },
-        })
-      );
+      const [activeHolds, heldSeats] = await Promise.all([
+        prisma.seat_holds.count({
+          where: {
+            cart_id: cart.id,
+            event_seat_inventory_id: { in: seatInventoryIdsToSell },
+            status: 'ACTIVE',
+            expires_at: { gt: now },
+          },
+        }),
+        prisma.event_seat_inventory.count({
+          where: { id: { in: seatInventoryIdsToSell }, status: 'HELD' },
+        }),
+      ]);
+
+      if (activeHolds !== seatInventoryIdsToSell.length || heldSeats !== seatInventoryIdsToSell.length) {
+        sendApiError(req, res, 409, 'CONFLICT', 'La reserva de uno o más asientos expiró o ya no está disponible');
+        return;
+      }
     }
 
-    const [order] = await prisma.$transaction(ops);
+    let order;
+    if (seatInventoryIdsToSell.length > 0) {
+      const [, , createdOrder] = await prisma.$transaction([
+        markHeldSeatInventoryAsSoldOrFail(seatInventoryIdsToSell, seatInventoryIdsToSell.length, now),
+        prisma.seat_holds.updateMany({
+          where: {
+            cart_id: cart.id,
+            event_seat_inventory_id: { in: seatInventoryIdsToSell },
+            status: 'ACTIVE',
+          },
+          data: { status: 'CONSUMED', updated_at: now },
+        }),
+        prisma.orders.create({
+          data: {
+            user_id: userId,
+            order_number: orderNumber,
+            status: 'PAID',
+            subtotal_amount: subtotal,
+            service_fee_amount: serviceFees,
+            total_amount: total,
+            buyer_email: buyerEmail || user.email,
+            buyer_phone: buyerPhone || user.phone,
+            buyer_document_type: user.document_type,
+            buyer_document_number: user.document_number,
+            order_items: { create: orderItemCreates },
+            payments: {
+              create: {
+                payment_method: paymentMethod || 'CARD',
+                status: 'PAID',
+                amount: total,
+                provider_reference: `SIMULATED:${effectiveIdempotencyKey}`,
+                processed_at: now,
+              },
+            },
+          },
+        }),
+        prisma.carts.update({ where: { id: cart.id }, data: { status: 'CONVERTED' } }),
+      ]);
+      order = createdOrder;
+    } else {
+      // General admission keeps the batch transaction path; no seat inventory
+      // count must be checked here.
+      const [createdOrder] = await prisma.$transaction([
+        prisma.orders.create({
+          data: {
+            user_id: userId,
+            order_number: orderNumber,
+            status: 'PAID',
+            subtotal_amount: subtotal,
+            service_fee_amount: serviceFees,
+            total_amount: total,
+            buyer_email: buyerEmail || user.email,
+            buyer_phone: buyerPhone || user.phone,
+            buyer_document_type: user.document_type,
+            buyer_document_number: user.document_number,
+            order_items: { create: orderItemCreates },
+            payments: {
+              create: {
+                payment_method: paymentMethod || 'CARD',
+                status: 'PAID',
+                amount: total,
+                provider_reference: `SIMULATED:${effectiveIdempotencyKey}`,
+                processed_at: now,
+              },
+            },
+          },
+        }),
+        prisma.carts.update({ where: { id: cart.id }, data: { status: 'CONVERTED' } }),
+      ]);
+      order = createdOrder;
+    }
 
-    res.json({
-      id: order.id,
-      orderNumber: order.order_number,
-      subtotal: Number(order.subtotal_amount),
-      serviceFees: Number(order.service_fee_amount),
-      total: Number(order.total_amount),
+    const fullOrder = await prisma.orders.findUnique({
+      where: { id: order.id },
+      include: orderIncludes,
     });
+
+    res.json(formatCheckoutOrderResponse(fullOrder ?? order, false));
   } catch (error: any) {
+    if (error instanceof CheckoutSeatSaleConflictError || isCheckoutSeatSaleDatabaseConflict(error)) {
+      sendApiError(req, res, 409, 'CONFLICT', 'La reserva de uno o más asientos expiró o ya no está disponible');
+      return;
+    }
+    if (error?.code === 'P2002') {
+      const userId = (req as any).userId;
+      const requestedIdempotencyKey = normalizeIdempotencyKey(req.body?.idempotencyKey ?? req.headers['idempotency-key']);
+      if (requestedIdempotencyKey) {
+        const existingOrder = await prisma.orders.findFirst({
+          where: { user_id: userId, order_number: buildSimulatedOrderNumber(requestedIdempotencyKey) },
+          include: orderIncludes,
+        });
+        if (existingOrder) {
+          res.json(formatCheckoutOrderResponse(existingOrder, true));
+          return;
+        }
+      }
+    }
     console.error('[CHECKOUT] Confirm error:', error);
-    res.status(500).json({ error: error.message });
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error confirmando checkout');
   }
 });
+
+function formatCheckoutOrderResponse(order: {
+  id: string;
+  order_number: string;
+  buyer_email?: unknown;
+  buyer_phone?: string | null;
+  buyer_document_type?: unknown;
+  buyer_document_number?: string | null;
+  subtotal_amount: unknown;
+  service_fee_amount: unknown;
+  total_amount: unknown;
+  created_at?: Date;
+  status?: string;
+  order_items?: any[];
+}, idempotentReplay: boolean) {
+  return {
+    id: order.id,
+    orderNumber: order.order_number,
+    buyerEmail: order.buyer_email ? String(order.buyer_email) : '',
+    buyerPhone: order.buyer_phone ?? '',
+    buyerDocument: order.buyer_document_type && order.buyer_document_number
+      ? `${String(order.buyer_document_type)} ${order.buyer_document_number}`
+      : '',
+    subtotal: Number(order.subtotal_amount),
+    serviceFees: Number(order.service_fee_amount),
+    total: Number(order.total_amount),
+    createdAt: order.created_at?.toISOString?.() ?? new Date().toISOString(),
+    status: order.status === 'PENDING_PAYMENT' ? 'pending' : 'confirmed',
+    items: (order.order_items ?? []).flatMap((item: any) => toOrderItemTicketDtos(item)),
+    paymentMode: 'SIMULATED',
+    paymentStatus: 'SIMULATED_PAID',
+    idempotentReplay,
+    message: 'Pago simulado para demo academica; no se proceso una pasarela fiat real.',
+  };
+}
+
+function toOrderItemTicketDtos(item: any) {
+  const tt = item.event_ticket_types ?? item.event_seat_inventory?.event_ticket_types;
+  const evt = tt?.events;
+  const seat = item.event_seat_inventory?.seats;
+  const tickets = item.tickets?.length ? item.tickets : Array.from({ length: item.quantity }, (_unused, index) => ({ id: `${item.id}-${index}` }));
+
+  return tickets.map((ticket: any) => ({
+    id: ticket.id,
+    ticketCode: ticket.ticket_code,
+    purchasedAt: ticket.issued_at?.toISOString?.() ?? item.created_at?.toISOString?.() ?? new Date().toISOString(),
+    quantity: 1,
+    seatIds: seat ? [seat.id] : [],
+    ticketType: tt ? {
+      id: tt.id,
+      name: tt.ticket_type_name,
+      price: Number(tt.price_amount),
+      serviceFee: Number(tt.service_fee_amount),
+    } : undefined,
+    event: evt ? toEventDto(evt) : undefined,
+  }));
+}
 
 // --- ORDERS & TICKETS ENDPOINTS (real) ---
 
@@ -2355,7 +3195,27 @@ app.get('/api/orders', authMiddleware, async (req, res) => {
     })));
   } catch (error: any) {
     console.error('[ORDERS] GET error:', error);
-    res.status(500).json({ error: error.message });
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error obteniendo ordenes');
+  }
+});
+
+// GET /api/orders/:id — full order detail for confirmation refresh
+app.get('/api/orders/:id', authMiddleware, async (req, res) => {
+  try {
+    const userId = (req as any).userId;
+    const order = await prisma.orders.findFirst({
+      where: { id: String(req.params.id), user_id: userId },
+      include: orderIncludes,
+    });
+    if (!order) {
+      sendApiError(req, res, 404, 'NOT_FOUND', 'Orden no encontrada');
+      return;
+    }
+
+    res.json(formatCheckoutOrderResponse(order, false));
+  } catch (error: any) {
+    console.error('[ORDERS] GET detail error:', error);
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error obteniendo orden');
   }
 });
 
@@ -2385,8 +3245,24 @@ app.get('/api/tickets', authMiddleware, async (req, res) => {
       orderBy: { created_at: 'desc' },
     });
 
-    // Para tickets adquiridos via reventa (version>0), consulta el resale_price
-    // de la versión anterior (la fila CANCELLED del vendedor).
+    const contractAddressesWithoutOrderEvent = [
+      ...new Set(
+        tickets
+          .filter((t) => {
+            const tt = t.order_items?.event_ticket_types ?? t.order_items?.event_seat_inventory?.event_ticket_types;
+            return !tt?.events && Boolean(t.contract_address);
+          })
+          .map((t) => t.contract_address!)
+      ),
+    ];
+    const fallbackEvents = contractAddressesWithoutOrderEvent.length
+      ? await prisma.events.findMany({
+          where: { contract_address: { in: contractAddressesWithoutOrderEvent } },
+          include: eventIncludes,
+        })
+      : [];
+    const eventByContract = new Map(fallbackEvents.map((event) => [event.contract_address, event]));
+
     const p2pLookups = await Promise.all(
       tickets.map(async (t) => {
         if (
@@ -2411,9 +3287,18 @@ app.get('/api/tickets', authMiddleware, async (req, res) => {
 
     res.json(tickets.map((t, idx) => {
       const tt = t.order_items?.event_ticket_types ?? t.order_items?.event_seat_inventory?.event_ticket_types;
-      const evt = tt?.events;
+      const evt = tt?.events ?? (t.contract_address ? eventByContract.get(t.contract_address) : undefined);
       const seat = t.order_items?.event_seat_inventory?.seats;
       const acquiredViaResale = typeof t.version === 'number' && t.version > 0;
+      const signedQrPayload = t.contract_address && t.ticket_root_id != null && t.version != null && evt?.id
+        ? JSON.stringify(buildSignedTicketQrPayload({
+            contractAddress: t.contract_address,
+            ticketRootId: t.ticket_root_id,
+            version: t.version,
+            eventId: evt.id,
+            ownerWallet: t.owner_wallet ?? null,
+          }))
+        : t.qr_payload;
       return {
         id: t.id,
         ticketCode: t.ticket_code,
@@ -2425,8 +3310,7 @@ app.get('/api/tickets', authMiddleware, async (req, res) => {
           price: Number(tt.price_amount),
           serviceFee: Number(tt.service_fee_amount),
         } : undefined,
-        // venue debe ser string para PurchaseHistory/MyTickets (toEventDto devuelve objeto)
-        event: evt ? { ...toEventDto(evt), venue: evt.venues?.name ?? '' } : undefined,
+        event: evt ? toEventDto(evt) : undefined,
         seatLabel: seat?.seat_label ?? null,
         sectionName: seat?.venue_sections?.section_name ?? null,
         // Web3 fields
@@ -2436,19 +3320,18 @@ app.get('/api/tickets', authMiddleware, async (req, res) => {
         ticketRootId: t.ticket_root_id,
         version: t.version,
         ownerWallet: t.owner_wallet,
-        // Para tickets propios: lo listado actualmente. Para P2P comprados:
-        // lo pagado al vendedor (versión previa CANCELLED).
         resalePrice: acquiredViaResale
           ? p2pLookups[idx]
           : t.resale_price ? Number(t.resale_price) : null,
         acquiredViaResale,
         nftContractAddress: (evt as any)?.nft_contract_address ?? null,
         nftTokenId: (t as any).nft_token_id ?? null,
+        qrPayload: signedQrPayload,
       };
     }));
   } catch (error: any) {
     console.error('[TICKETS] GET error:', error);
-    res.status(500).json({ error: error.message });
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error obteniendo tickets');
   }
 });
 
@@ -2456,12 +3339,12 @@ app.get('/api/tickets', authMiddleware, async (req, res) => {
 app.get('/api/tickets/sold', authMiddleware, async (req, res) => {
   try {
     const userId = (req as any).userId;
-    // Sold tickets = CANCELLED + had a resale_price (distinguishes from invalidated)
+    // Sold tickets are previous versions explicitly replaced by a resale flow.
     const tickets = await prisma.tickets.findMany({
       where: {
         owner_user_id: userId,
         status: 'CANCELLED',
-        resale_price: { not: null },
+        lifecycle_reason: { in: ['RESOLD_PREVIOUS_VERSION', 'PRIMARY_P2P_REPLACED'] },
       },
       include: {
         order_items: {
@@ -2521,7 +3404,7 @@ app.get('/api/tickets/sold', authMiddleware, async (req, res) => {
     res.json(results);
   } catch (error: any) {
     console.error('[TICKETS/SOLD] GET error:', error);
-    res.status(500).json({ error: error.message });
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error obteniendo ventas P2P');
   }
 });
 
@@ -2545,3 +3428,7 @@ if (!isServerless) {
 }
 
 export default app;
+
+export async function closeAppResources() {
+  await prisma.$disconnect();
+}

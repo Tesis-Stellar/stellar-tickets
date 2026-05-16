@@ -5,15 +5,17 @@ import { Footer } from "@/components/layout/Footer";
 import { getEventBySlug, getEventTicketTypes, getRelatedEvents, type EventData, type LiveTicket } from "@/data/events";
 import { MapPin, Calendar, Clock, ChevronLeft, User, Info, ShieldCheck, Lock, Loader2, ExternalLink, CheckCircle2 } from "lucide-react";
 import { EventCard } from "@/components/ui/EventCard";
-import { useAppContext } from "@/context/AppContext";
+import { useAppContext, type ResaleFlowStatus } from "@/context/AppContext";
 import { useXlmPrice, formatCOP } from "@/hooks/useXlmPrice";
+import { getOfficialPurchasePath } from "@/lib/purchaseRoute";
+import { useToast } from "@/hooks/use-toast";
 import {
   Dialog,
   DialogContent,
-  DialogHeader,
-  DialogTitle,
   DialogDescription,
   DialogFooter,
+  DialogHeader,
+  DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 
@@ -26,32 +28,11 @@ const EventDetail = () => {
   const [liveTickets, setLiveTickets] = useState<LiveTicket[]>([]);
   const [buyingId, setBuyingId] = useState<string | null>(null);
   const [cancellingId, setCancellingId] = useState<string | null>(null);
+  const [flowStatusByTicketId, setFlowStatusByTicketId] = useState<Record<string, ResaleFlowStatus>>({});
   const [successDialog, setSuccessDialog] = useState<{ kind: "buy" | "cancel"; txHash?: string } | null>(null);
   const { buyResaleTicket, cancelResaleListing, linkWallet, walletAddress } = useAppContext();
+  const { toast } = useToast();
   const xlmCop = useXlmPrice();
-
-  const doBuy = async (lt: LiveTicket) => {
-    try {
-      if (!walletAddress) {
-        alert("Conecta tu billetera Freighter desde el botón del header primero.");
-        return;
-      }
-      setBuyingId(lt.id);
-      await linkWallet(walletAddress).catch(() => {});
-      const buyResult = await buyResaleTicket(lt.contractAddress, lt.ticketRootId, walletAddress);
-      if (buyResult.success) {
-        setLiveTickets((prev) => prev.filter((t) => t.id !== lt.id));
-        setSuccessDialog({ kind: "buy", txHash: buyResult.txHash });
-      } else {
-        alert("Error: " + buyResult.error);
-      }
-    } catch (e: any) {
-      console.error("[BUY] Error:", e);
-      alert("Error: " + e.message);
-    } finally {
-      setBuyingId(null);
-    }
-  };
 
   useEffect(() => {
     if (!slug) return;
@@ -105,7 +86,18 @@ const EventDetail = () => {
   );
 
   const minPrice = event.ticketTypes.length ? Math.min(...event.ticketTypes.map((t) => t.price)) : 0;
-  const buyUrl = `/evento/${event.id}/asientos`;
+  const buyUrl = getOfficialPurchasePath(event.id, event.hasSeatSelection);
+  const flowStatusLabel: Record<ResaleFlowStatus, string> = {
+    building_xdr: "Preparando XDR...",
+    signing: "Esperando firma...",
+    submitted: "Enviada...",
+    reconciling: "Confirmando...",
+    confirmed: "Confirmado",
+    failed: "Falló",
+  };
+  const setTicketFlowStatus = (ticketId: string, status: ResaleFlowStatus) => {
+    setFlowStatusByTicketId((prev) => ({ ...prev, [ticketId]: status }));
+  };
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
@@ -203,16 +195,29 @@ const EventDetail = () => {
                           onClick={async () => {
                             try {
                               setCancellingId(lt.id);
-                              const result = await cancelResaleListing(lt.id);
+                              setTicketFlowStatus(lt.id, "building_xdr");
+                              const result = await cancelResaleListing(lt.id, { onStatus: (status) => setTicketFlowStatus(lt.id, status) });
                               if (result.success) {
-                                setLiveTickets((prev) => prev.filter((t) => t.id !== lt.id));
+                                toast({
+                                  title: "Reventa cancelada",
+                                  description: "Tu boleto fue retirado del mercado P2P.",
+                                });
                                 setSuccessDialog({ kind: "cancel", txHash: result.txHash });
+                                setLiveTickets((prev) => prev.filter((t) => t.id !== lt.id));
                               } else {
-                                alert("Error: " + result.error);
+                                toast({
+                                  title: "No se pudo cancelar la reventa",
+                                  description: result.error ?? "La operación no fue confirmada.",
+                                  variant: "destructive",
+                                });
                               }
-                            } catch (e: any) {
+                            } catch (e: unknown) {
                               console.error("[CANCEL] Error:", e);
-                              alert("Error: " + e.message);
+                              toast({
+                                title: "No se pudo cancelar la reventa",
+                                description: e instanceof Error ? e.message : "Ocurrió un error retirando el boleto del mercado.",
+                                variant: "destructive",
+                              });
                             } finally {
                               setCancellingId(null);
                             }
@@ -220,22 +225,57 @@ const EventDetail = () => {
                           className="bg-red-600 hover:bg-red-700 text-white text-xs font-bold px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1 shadow-md shadow-red-900/20 disabled:opacity-50"
                         >
                           {cancellingId === lt.id ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
-                          {cancellingId === lt.id ? "Cancelando..." : "Cancelar Reventa"}
+                          {cancellingId === lt.id ? flowStatusLabel[flowStatusByTicketId[lt.id]] ?? "Cancelando..." : "Cancelar Reventa"}
                         </button>
                       ) : (
                         <button
                           disabled={buyingId === lt.id}
-                          onClick={() => {
-                            if (!walletAddress) {
-                              alert("Conecta tu billetera Freighter desde el botón del header primero.");
-                              return;
+                          onClick={async () => {
+                            try {
+                              if (!walletAddress) {
+                                toast({
+                                  title: "Conecta tu wallet",
+                                  description: "Necesitas Freighter conectado desde el header para comprar una reventa.",
+                                  variant: "destructive",
+                                });
+                                return;
+                              }
+                              const pk = walletAddress;
+                              setBuyingId(lt.id);
+                              setTicketFlowStatus(lt.id, "building_xdr");
+                              await linkWallet(pk);
+                              const buyResult = await buyResaleTicket(lt.contractAddress, lt.ticketRootId, pk, lt.version, {
+                                onStatus: (status) => setTicketFlowStatus(lt.id, status),
+                              });
+                              if (buyResult.success) {
+                                toast({
+                                  title: "Compra confirmada",
+                                  description: `Tu boleto fue reconciliado por el backend${buyResult.txHash ? ` · Tx ${buyResult.txHash.slice(0, 12)}...` : ""}.`,
+                                });
+                                setSuccessDialog({ kind: "buy", txHash: buyResult.txHash });
+                                setLiveTickets((prev) => prev.filter((t) => t.id !== lt.id));
+                              } else {
+                                toast({
+                                  title: "No se pudo comprar la reventa",
+                                  description: buyResult.error ?? "La operación no fue confirmada.",
+                                  variant: "destructive",
+                                });
+                              }
+                            } catch (e: unknown) {
+                              console.error("[BUY] Error:", e);
+                              toast({
+                                title: "No se pudo comprar la reventa",
+                                description: e instanceof Error ? e.message : "Ocurrió un error durante la compra P2P.",
+                                variant: "destructive",
+                              });
+                            } finally {
+                              setBuyingId(null);
                             }
-                            void doBuy(lt);
                           }}
                           className="bg-purple-600 hover:bg-purple-700 text-white text-xs font-bold px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1 shadow-md shadow-purple-900/20 disabled:opacity-50"
                         >
                           {buyingId === lt.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <Lock className="w-3 h-3" />}
-                          {buyingId === lt.id ? "Firmando..." : "Comprar"}
+                          {buyingId === lt.id ? flowStatusLabel[flowStatusByTicketId[lt.id]] ?? "Firmando..." : "Comprar"}
                         </button>
                       )}
                     </div>
@@ -257,42 +297,42 @@ const EventDetail = () => {
       </main>
       <Footer />
 
-      {/* Success post-buy / post-cancel */}
-      <Dialog open={!!successDialog} onOpenChange={(o) => !o && setSuccessDialog(null)}>
+      <Dialog open={!!successDialog} onOpenChange={(open) => !open && setSuccessDialog(null)}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
-              <CheckCircle2 className="w-5 h-5 text-success" />
-              {successDialog?.kind === "buy" ? "¡Compra exitosa!" : "Reventa cancelada"}
+              <CheckCircle2 className="w-5 h-5 text-green-600" />
+              {successDialog?.kind === "buy" ? "Compra P2P confirmada" : "Reventa cancelada"}
             </DialogTitle>
             <DialogDescription>
               {successDialog?.kind === "buy"
-                ? "Tu boleto aparecerá en Mis Entradas en unos segundos. El NFT ya se transfirió a tu wallet on-chain."
-                : "Tu boleto se retiró del mercado de reventa. Sigue siendo tuyo y aparece en Mis Entradas."}
+                ? "Tu boleto aparecerá en Mis Entradas cuando el indexer termine de reflejar la compra."
+                : "Tu boleto se retiró del mercado P2P y vuelve a quedar disponible en Mis Entradas."}
             </DialogDescription>
           </DialogHeader>
 
-          {successDialog?.txHash && (
+          {successDialog?.txHash ? (
             <div className="rounded-lg bg-muted/50 p-3 space-y-1 text-xs">
               <div className="text-muted-foreground">Transaction hash</div>
-              <div className="font-mono break-all">{successDialog.txHash}</div>
+              <div className="font-mono break-all text-foreground">{successDialog.txHash}</div>
               <a
                 href={`https://stellar.expert/explorer/testnet/tx/${successDialog.txHash}`}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="inline-flex items-center gap-1 text-purple-500 hover:text-purple-400 mt-1"
+                className="inline-flex items-center gap-1 text-purple-600 hover:text-purple-700 font-semibold mt-1"
               >
-                <ExternalLink className="w-3 h-3" /> Ver en Stellar Explorer
+                <ExternalLink className="w-3 h-3" />
+                Ver en Stellar Explorer
               </a>
             </div>
-          )}
+          ) : null}
 
           <DialogFooter className="gap-2 sm:gap-0">
-            {successDialog?.kind === "buy" && (
+            {successDialog?.kind === "buy" ? (
               <Button variant="outline" onClick={() => navigate("/mi-cuenta/entradas")}>
                 Ir a Mis Entradas
               </Button>
-            )}
+            ) : null}
             <Button onClick={() => setSuccessDialog(null)} className="bg-purple-600 hover:bg-purple-700 text-white">
               Listo
             </Button>

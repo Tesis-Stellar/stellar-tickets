@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useEffect, useRef, useState } from "react";
+import { Loader2 } from "lucide-react";
+import { useParams, useSearchParams } from "react-router-dom";
 import { Header } from "@/components/layout/Header";
 import { Footer } from "@/components/layout/Footer";
 import { FilterPanel } from "@/components/ui/FilterPanel";
@@ -13,22 +14,27 @@ const categoryMap: Record<string, string> = {
 
 const EventsList = () => {
   const { category } = useParams<{ category?: string }>();
+  const [searchParams] = useSearchParams();
   const presetCategory = category ? categoryMap[category] ?? "" : "";
 
-  const [query, setQuery] = useState("");
-  const [cat, setCat] = useState(presetCategory);
-  const [city, setCity] = useState("");
-  const [sort, setSort] = useState("");
+  const [query, setQuery] = useState(searchParams.get("q") ?? "");
+  const [cat, setCat] = useState(searchParams.get("category") ?? presetCategory);
+  const [city, setCity] = useState(searchParams.get("city") ?? "");
+  const [sort, setSort] = useState(searchParams.get("sort") ?? "");
   const [results, setResults] = useState<EventData[]>([]);
+  const [loading, setLoading] = useState(true);
+  const fetchIdRef = useRef(0);
 
   useEffect(() => {
-    setCat(presetCategory);
-    setQuery("");
-    setCity("");
-    setSort("");
-  }, [presetCategory]);
+    setQuery(searchParams.get("q") ?? "");
+    setCat(searchParams.get("category") ?? presetCategory);
+    setCity(searchParams.get("city") ?? "");
+    setSort(searchParams.get("sort") ?? "");
+  }, [presetCategory, searchParams]);
 
   useEffect(() => {
+    const id = ++fetchIdRef.current;
+    setLoading(true);
     void (async () => {
       try {
         const sortMap: Record<string, string> = { date: "date_asc", "price-asc": "price_asc", "price-desc": "price_desc" };
@@ -38,9 +44,13 @@ const EventsList = () => {
           city: city || undefined,
           sort: sortMap[sort],
         });
+        if (fetchIdRef.current !== id) return;
         setResults(list);
       } catch {
+        if (fetchIdRef.current !== id) return;
         setResults([]);
+      } finally {
+        if (fetchIdRef.current === id) setLoading(false);
       }
     })();
   }, [cat, city, query, sort]);
@@ -59,10 +69,16 @@ const EventsList = () => {
               onQueryChange={setQuery} onCategoryChange={setCat} onCityChange={setCity} onSortChange={setSort}
               onClear={() => { setQuery(""); setCat(presetCategory); setCity(""); setSort(""); }}
               totalResults={results.length}
+              isLoading={loading}
             />
           </div>
           <div className="lg:col-span-3">
-            {results.length === 0 ? (
+            {loading ? (
+              <div className="flex flex-col items-center justify-center gap-3 py-24 text-muted-foreground" aria-live="polite">
+                <Loader2 className="h-10 w-10 animate-spin text-primary" aria-hidden />
+                <p className="text-sm font-medium">Cargando eventos…</p>
+              </div>
+            ) : results.length === 0 ? (
               <div className="text-center py-20">
                 <p className="text-lg font-bold text-foreground mb-2">No se encontraron eventos</p>
                 <p className="text-sm text-muted-foreground">Intenta con otros filtros o busca algo diferente.</p>

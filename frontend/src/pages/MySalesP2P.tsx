@@ -8,18 +8,22 @@ import { useXlmPrice, formatCOP, stroopsToXLM } from "@/hooks/useXlmPrice";
 import { ArrowRightLeft } from "lucide-react";
 
 const MySalesP2P = () => {
-  const { isLoggedIn, soldTickets, refreshSoldTickets, refreshTickets } = useAppContext();
+  const { isLoggedIn, authStatus, soldTickets, refreshSoldTickets, refreshTickets } = useAppContext();
   const xlmCop = useXlmPrice();
   useEffect(() => {
     if (!isLoggedIn) return;
     refreshSoldTickets().catch(() => {});
     refreshTickets().catch(() => {});
-    const id = setInterval(() => {
+    const id = window.setInterval(() => {
       refreshSoldTickets().catch(() => {});
       refreshTickets().catch(() => {});
     }, 8000);
-    return () => clearInterval(id);
+    return () => window.clearInterval(id);
   }, [isLoggedIn, refreshSoldTickets, refreshTickets]);
+
+  if (authStatus === "checking") {
+    return <div className="min-h-screen bg-background flex flex-col"><Header /><main className="flex-1 flex items-center justify-center px-4"><p className="text-sm font-bold text-muted-foreground">Cargando sesión...</p></main><Footer /></div>;
+  }
   if (!isLoggedIn) return <Navigate to="/login" replace />;
 
   const totalXLM = soldTickets.reduce((sum, t) => sum + t.resalePrice, 0) / 10_000_000;

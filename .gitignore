@@ -44,3 +44,6 @@ contracts/wasm/
 
 # Optional generated artifacts
 frontend/openapi.v1.json
+backend/CONTRATOS.txt
+backend/*deploy_report*.txt
+backend/*deployment_report*.txt

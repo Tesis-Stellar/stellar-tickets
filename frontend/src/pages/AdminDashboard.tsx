@@ -1,10 +1,13 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Header } from "@/components/layout/Header";
 import { Footer } from "@/components/layout/Footer";
 import { useAppContext } from "@/context/AppContext";
 import { ShieldCheck, Plus, RefreshCw, Rocket, Building, MapPin, Users, Ticket, ExternalLink, Image as ImageIcon, X } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+
+const getErrorMessage = (error: unknown, fallback: string) =>
+  error instanceof Error ? error.message : fallback;
 
 interface AdminEvent {
   id: string;
@@ -37,7 +40,7 @@ interface AdminContractList {
 }
 
 const AdminDashboard = () => {
-  const { user, apiFetch } = useAppContext();
+  const { user, authStatus, apiFetch } = useAppContext();
   const navigate = useNavigate();
   const [events, setEvents] = useState<AdminEvent[]>([]);
   const [venues, setVenues] = useState<Venue[]>([]);
@@ -54,7 +57,7 @@ const AdminDashboard = () => {
   
   const { toast } = useToast();
 
-  const loadData = async () => {
+  const loadData = useCallback(async () => {
     setLoading(true);
     try {
       const [eventsData, venuesData, contractsRes] = await Promise.all([
@@ -65,20 +68,21 @@ const AdminDashboard = () => {
       setEvents(eventsData || []);
       setVenues(venuesData || []);
       setContractsData(contractsRes || null);
-    } catch (err: any) {
-      toast({ title: "Error", description: err.message, variant: "destructive" });
+    } catch (err: unknown) {
+      toast({ title: "Error", description: getErrorMessage(err, "No fue posible cargar datos"), variant: "destructive" });
     } finally {
       setLoading(false);
     }
-  };
+  }, [apiFetch, toast]);
 
   useEffect(() => {
+    if (authStatus === "checking") return;
     if (!user || user.role !== "ADMIN") {
       navigate("/");
       return;
     }
     loadData();
-  }, [user, navigate]);
+  }, [authStatus, user, navigate, loadData]);
 
   const handleVenueChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const venueId = e.target.value;
@@ -114,7 +118,7 @@ const AdminDashboard = () => {
     const file = e.target.files?.[0];
     if (!file) return;
     if (!file.type.startsWith("image/")) {
-      toast({ title: "Archivo inválido", description: "Selecciona una imagen (PNG, JPG, WEBP).", variant: "destructive" });
+      toast({ title: "Archivo inválido", description: "Selecciona una imagen PNG, JPG o WEBP.", variant: "destructive" });
       return;
     }
     if (file.size > 5 * 1024 * 1024) {
@@ -181,25 +185,36 @@ const AdminDashboard = () => {
       (e.target as HTMLFormElement).reset();
       setSelectedVenueId("");
       clearCoverImage();
-    } catch (err: any) {
-      toast({ title: "Error al crear", description: err.message, variant: "destructive" });
+    } catch (err: unknown) {
+      toast({ title: "Error al crear", description: getErrorMessage(err, "No fue posible crear el evento"), variant: "destructive" });
     }
   };
 
   const deployContract = async (id: string) => {
     setDeployingId(id);
     try {
-      const res = await apiFetch<any>(`/api/admin/events/${id}/deploy`, { method: "POST" });
+      const res = await apiFetch<{ success?: boolean; contractAddress?: string }>(`/api/admin/events/${id}/deploy`, { method: "POST" });
       if (res?.success) {
-        toast({ title: "Deploy On-Chain Exitoso", description: `Contrato: ${res.contractAddress.slice(0,8)}...` });
+        toast({ title: "Deploy On-Chain Exitoso", description: `Contrato: ${res.contractAddress?.slice(0,8) ?? ""}...` });
         loadData();
       }
-    } catch (err: any) {
-      toast({ title: "Fallo el Despliegue", description: err.message, variant: "destructive" });
+    } catch (err: unknown) {
+      toast({ title: "Fallo el Despliegue", description: getErrorMessage(err, "No fue posible desplegar el contrato"), variant: "destructive" });
     } finally {
       setDeployingId(null);
     }
   };
+
+  if (authStatus === "checking") {
+    return (
+      <div className="min-h-screen bg-background flex flex-col">
+        <Header />
+        <main className="flex-1 flex items-center justify-center px-4">
+          <p className="text-sm font-bold text-muted-foreground">Cargando sesión...</p>
+        </main>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
@@ -239,14 +254,13 @@ const AdminDashboard = () => {
                   </div>
                 </div>
 
-                {/* COVER IMAGE UPLOAD */}
                 <div>
                   <label className="text-xs font-bold text-muted-foreground uppercase flex items-center gap-1">
                     <ImageIcon className="w-3 h-3" /> Imagen del Evento
                   </label>
                   {coverImage ? (
                     <div className="mt-1 relative rounded-lg overflow-hidden border border-border bg-background">
-                      <img src={coverImage} alt="Preview" className="w-full h-40 object-cover" />
+                      <img src={coverImage} alt="Preview del evento" className="w-full h-40 object-cover" />
                       <button
                         type="button"
                         onClick={clearCoverImage}
@@ -262,7 +276,7 @@ const AdminDashboard = () => {
                   ) : (
                     <label className="mt-1 flex flex-col items-center justify-center gap-1.5 w-full h-28 bg-background border-2 border-dashed border-border hover:border-primary/40 rounded-lg cursor-pointer transition-colors text-muted-foreground hover:text-foreground">
                       <ImageIcon className="w-6 h-6" />
-                      <span className="text-xs font-medium">Subir imagen (PNG, JPG, WEBP)</span>
+                      <span className="text-xs font-medium">Subir imagen PNG, JPG o WEBP</span>
                       <span className="text-[10px] opacity-70">Máx. 5 MB · Opcional</span>
                       <input
                         type="file"
@@ -429,14 +443,14 @@ const AdminDashboard = () => {
               
               <div className="mb-8 p-5 bg-amber-500/10 border border-amber-500/20 rounded-xl relative overflow-hidden">
                 <div className="absolute top-0 right-0 p-4 opacity-10 pointer-events-none"><Building className="w-24 h-24" /></div>
-                <h3 className="text-sm font-bold text-amber-500 uppercase flex items-center gap-1.5 relative"><Rocket className="w-4 h-4"/> Supremo: Cuenta Maestra Organizadora</h3>
-                <p className="text-xs text-muted-foreground mt-1 mb-3 relative">Tu billetera administradora en Stellar. Despliega y delega permisos a todas las fábricas y eventos creados de forma descentralizada.</p>
-                <div className="relative font-mono bg-background p-3 rounded-md text-sm border border-border flex items-center justify-between z-10">
+                <h3 className="relative text-sm font-bold text-amber-500 uppercase flex items-center gap-1.5"><Rocket className="w-4 h-4"/> Supremo: Cuenta Maestra Organizadora</h3>
+                <p className="relative text-xs text-muted-foreground mt-1 mb-3">Tu billetera administradora en Stellar. Despliega y delega permisos a todas las fábricas y eventos creados de forma descentralizada.</p>
+                <div className="relative z-10 font-mono bg-background p-3 rounded-md text-sm border border-border flex items-center justify-between">
                   <span className="truncate mr-4 text-foreground/80">{contractsData.factoryContractId}</span>
                   <a
                     target="_blank"
                     rel="noreferrer"
-                    href={`https://stellar.expert/explorer/testnet/${contractsData.factoryContractId.startsWith('C') ? 'contract' : 'account'}/${contractsData.factoryContractId}`}
+                    href={`https://stellar.expert/explorer/testnet/${contractsData.factoryContractId.startsWith("C") ? "contract" : "account"}/${contractsData.factoryContractId}`}
                     className="text-[10px] text-blue-500 font-bold hover:underline flex items-center gap-1 shrink-0 bg-blue-500/10 px-2 py-1 rounded cursor-pointer"
                   >
                     Stellar Expert <ExternalLink className="w-3 h-3"/>
