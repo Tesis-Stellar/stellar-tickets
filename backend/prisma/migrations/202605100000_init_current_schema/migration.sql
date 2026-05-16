@@ -190,7 +190,7 @@ CREATE TABLE "ticketing"."cart_items" (
     "quantity" INTEGER NOT NULL DEFAULT 1,
     "unit_price_amount" DECIMAL(12,2) NOT NULL,
     "service_fee_amount" DECIMAL(12,2) NOT NULL DEFAULT 0,
-    "line_total_amount" DECIMAL(14,2) DEFAULT ((unit_price_amount + service_fee_amount) * (quantity)::numeric),
+    "line_total_amount" DECIMAL(14,2),
     "created_at" TIMESTAMPTZ(6) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updated_at" TIMESTAMPTZ(6) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
@@ -231,7 +231,7 @@ CREATE TABLE "ticketing"."order_items" (
     "quantity" INTEGER NOT NULL DEFAULT 1,
     "unit_price_amount" DECIMAL(12,2) NOT NULL,
     "service_fee_amount" DECIMAL(12,2) NOT NULL DEFAULT 0,
-    "line_total_amount" DECIMAL(14,2) DEFAULT ((unit_price_amount + service_fee_amount) * (quantity)::numeric),
+    "line_total_amount" DECIMAL(14,2),
     "created_at" TIMESTAMPTZ(6) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updated_at" TIMESTAMPTZ(6) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
