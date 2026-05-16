@@ -425,6 +425,27 @@ async function burnAndMintResaleNft(input: {
   });
   const oldNftTokenId = ((oldRow as any)?.nft_token_id as number | null) ?? input.ticketRootId;
 
+  const burnOldToken = async () => {
+    const adminScVal = new Address(organizerKeypair.publicKey()).toScVal();
+    try {
+      const burnResult = await invokeSoroban(
+        organizerKeypair,
+        input.nftContractAddress,
+        'burn',
+        [adminScVal, nativeToScVal(oldNftTokenId, { type: 'u32' })],
+      );
+      console.log(`[NFT] burned token=${oldNftTokenId} on ${input.nftContractAddress.slice(0, 8)}...`);
+      return (burnResult as any).txHash ?? null;
+    } catch (error: any) {
+      const msg = String(error?.message ?? '');
+      if (msg.includes('TokenNoEncontrado') || msg.includes('#4')) {
+        console.log(`[NFT] burn skipped (token=${oldNftTokenId} already gone)`);
+        return null;
+      }
+      throw error;
+    }
+  };
+
   const newRow = await prisma.tickets.findFirst({
     where: {
       contract_address: input.contractAddress,
@@ -444,7 +465,7 @@ async function burnAndMintResaleNft(input: {
   const existingNewTokenId = (newRow as any).nft_token_id as number | null;
   if (existingNewTokenId != null && existingNewTokenId !== oldNftTokenId) {
     return {
-      burnTxHash: null,
+      burnTxHash: await burnOldToken(),
       mintTxHash: null,
       nftTokenId: existingNewTokenId,
       alreadyTransferred: true,
@@ -460,25 +481,7 @@ async function burnAndMintResaleNft(input: {
     return Math.max(maxId, input.ticketRootId) + 1;
   };
 
-  const adminScVal = new Address(organizerKeypair.publicKey()).toScVal();
-  let burnTxHash: string | null = null;
-  try {
-    const burnResult = await invokeSoroban(
-      organizerKeypair,
-      input.nftContractAddress,
-      'burn',
-      [adminScVal, nativeToScVal(oldNftTokenId, { type: 'u32' })],
-    );
-    burnTxHash = (burnResult as any).txHash ?? null;
-    console.log(`[NFT] burned token=${oldNftTokenId} on ${input.nftContractAddress.slice(0, 8)}...`);
-  } catch (error: any) {
-    const msg = String(error?.message ?? '');
-    if (msg.includes('TokenNoEncontrado') || msg.includes('#4')) {
-      console.log(`[NFT] burn skipped (token=${oldNftTokenId} already gone)`);
-    } else {
-      throw error;
-    }
-  }
+  const burnTxHash = await burnOldToken();
 
   const attemptMint = async (tokenId: number) => {
     const tokenUri = `${PUBLIC_BASE_URL}/api/nft/metadata/${input.nftContractAddress}/${tokenId}`;
