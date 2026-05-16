@@ -34,6 +34,7 @@ Documentación operativa del proyecto.
 - `operations/WALLETS_ROLES_TESTNET.md`
 - `operations/SECRETS_AND_CUSTODY.md`
 - `operations/FRONTEND_LINT_BASELINE.md`
+- `operations/LOAD_TESTING.md`
 
 ### `setup/`
 Guías de preparación y actualización del entorno.
