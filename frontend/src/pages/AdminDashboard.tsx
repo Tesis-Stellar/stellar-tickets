@@ -227,6 +227,11 @@ const AdminDashboard = () => {
   const eventsTotalPages = Math.max(1, Math.ceil(events.length / eventsPageSize));
   const normalizedEventsPage = Math.min(eventsPage, eventsTotalPages);
   const paginatedEvents = events.slice((normalizedEventsPage - 1) * eventsPageSize, normalizedEventsPage * eventsPageSize);
+  const visibleEventPages = Array.from({ length: eventsTotalPages }, (_, idx) => idx + 1).filter((page) => {
+    if (eventsTotalPages <= 7) return true;
+    if (page === 1 || page === eventsTotalPages) return true;
+    return Math.abs(page - normalizedEventsPage) <= 1;
+  });
   const deployedContractsCount = contractsData?.events.length ?? events.filter((event) => event.contract_address).length;
   const pendingDeployCount = events.filter((event) => !event.contract_address).length;
 
@@ -611,35 +616,35 @@ const AdminDashboard = () => {
           </div>
 
           {/* EVENTS LIST ROW */}
-          <div className="bg-card rounded-xl p-6 border border-border shadow-sm overflow-hidden flex flex-col h-full">
-            <div className="flex justify-between items-center mb-6">
+          <div className="bg-card rounded-xl p-5 border border-border shadow-sm overflow-hidden flex flex-col h-full">
+            <div className="flex justify-between items-start gap-4 mb-4">
                <div>
-                 <h2 className="text-lg font-bold flex items-center gap-2 uppercase tracking-tight">Directorio Híbrido</h2>
+                 <h2 className="text-base font-black flex items-center gap-2 uppercase tracking-tight">Directorio Híbrido</h2>
                  <p className="text-xs text-muted-foreground mt-1">
                    {events.length} evento{events.length !== 1 ? "s" : ""} · página {normalizedEventsPage} de {eventsTotalPages}
                  </p>
                </div>
-               <button onClick={loadData} className="text-muted-foreground hover:text-foreground">
+               <button onClick={loadData} className="text-muted-foreground hover:text-foreground p-1 rounded-md hover:bg-secondary">
                  <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
                </button>
             </div>
             
-            <div className="flex-1 space-y-3">
+            <div className="flex-1 space-y-2.5">
                 {paginatedEvents.map(e => (
-                  <div key={e.id} className="p-4 rounded-xl border border-border bg-background hover:border-primary/20 transition-colors">
-                    <div className="flex justify-between items-start mb-2">
-                      <div>
-                        <div className="font-black text-foreground">{e.title}</div>
-                        <div className="text-xs text-muted-foreground mt-0.5">{new Date(e.startsAt).toLocaleDateString()} — {e.venue.name}</div>
+                  <div key={e.id} className="p-3 rounded-lg border border-border bg-background hover:border-primary/20 transition-colors">
+                    <div className="flex justify-between items-start gap-3">
+                      <div className="min-w-0">
+                        <div className="font-black text-sm text-foreground leading-snug truncate">{e.title}</div>
+                        <div className="text-[11px] text-muted-foreground mt-0.5 truncate">{new Date(e.startsAt).toLocaleDateString()} — {e.venue.name}</div>
                       </div>
-                      <div className="text-[10px] uppercase font-mono bg-accent text-accent-foreground px-2 py-0.5 rounded font-bold">
+                      <div className="shrink-0 text-[9px] uppercase font-mono bg-accent text-accent-foreground px-1.5 py-0.5 rounded font-black">
                         {e.city}
                       </div>
                     </div>
                     
-                    <div className="pt-3 mt-3 border-t border-border flex items-center justify-between">
+                    <div className="pt-2 mt-2 border-t border-border flex items-center justify-between">
                       {e.contract_address ? (
-                         <div className="bg-success/10 border border-success/20 text-success text-xs font-black px-3 py-1.5 rounded flex items-center gap-1.5 w-full justify-center">
+                         <div className="bg-success/10 border border-success/20 text-success text-[11px] font-black px-2.5 py-1.5 rounded-md flex items-center gap-1.5 w-full justify-center">
                            <span>ON-CHAIN ✓</span>
                            <a target="_blank" rel="noreferrer" href={`https://testnet.stellarchain.io/contracts/${e.contract_address}`} className="font-mono underline hover:text-success/80 ml-2">
                              {e.contract_address.slice(0,8)}...{e.contract_address.slice(-6)}
@@ -649,9 +654,9 @@ const AdminDashboard = () => {
                          <button 
                            onClick={() => deployContract(e.id)} 
                            disabled={deployingId === e.id}
-                           className="w-full flex items-center justify-center gap-2 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white font-bold text-xs py-2 rounded shadow transition-all"
+                           className="w-full flex items-center justify-center gap-2 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white font-black text-[11px] py-1.5 rounded-md shadow-sm transition-all"
                          >
-                           <Rocket className={`w-4 h-4 ${deployingId === e.id ? 'animate-bounce' : ''}`} /> 
+                           <Rocket className={`w-3.5 h-3.5 ${deployingId === e.id ? 'animate-bounce' : ''}`} /> 
                            {deployingId === e.id ? 'Desplegando en Soroban...' : 'Desplegar Contrato / Init'}
                          </button>
                       )}
@@ -666,36 +671,42 @@ const AdminDashboard = () => {
                 )}
             </div>
             {events.length > eventsPageSize && (
-              <div className="mt-5 pt-4 border-t border-border flex items-center justify-between gap-3">
+              <div className="mt-4 pt-3 border-t border-border flex flex-wrap items-center justify-between gap-2">
                 <button
                   type="button"
                   onClick={() => setEventsPage((page) => Math.max(1, page - 1))}
                   disabled={normalizedEventsPage === 1}
-                  className="rounded-lg border border-border px-3 py-2 text-xs font-bold text-muted-foreground hover:text-foreground disabled:opacity-40 disabled:cursor-not-allowed"
+                  className="rounded-lg border border-border px-2.5 py-1.5 text-[11px] font-bold text-muted-foreground hover:text-foreground disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                   Anterior
                 </button>
-                <div className="flex items-center gap-1">
-                  {Array.from({ length: eventsTotalPages }, (_, idx) => idx + 1).map((page) => (
-                    <button
-                      key={page}
-                      type="button"
-                      onClick={() => setEventsPage(page)}
-                      className={`h-8 w-8 rounded-lg text-xs font-black transition-colors ${
-                        page === normalizedEventsPage
-                          ? "bg-primary text-primary-foreground"
-                          : "bg-background text-muted-foreground hover:bg-secondary hover:text-foreground"
-                      }`}
-                    >
-                      {page}
-                    </button>
-                  ))}
+                <div className="flex min-w-0 flex-1 items-center justify-center gap-1 overflow-hidden">
+                  {visibleEventPages.map((page, index) => {
+                    const previousPage = visibleEventPages[index - 1];
+                    const showGap = previousPage !== undefined && page - previousPage > 1;
+                    return (
+                      <div key={page} className="flex items-center gap-1">
+                        {showGap && <span className="px-0.5 text-xs font-black text-muted-foreground">…</span>}
+                        <button
+                          type="button"
+                          onClick={() => setEventsPage(page)}
+                          className={`h-7 min-w-7 rounded-lg px-2 text-[11px] font-black transition-colors ${
+                            page === normalizedEventsPage
+                              ? "bg-primary text-primary-foreground"
+                              : "bg-background text-muted-foreground hover:bg-secondary hover:text-foreground"
+                          }`}
+                        >
+                          {page}
+                        </button>
+                      </div>
+                    );
+                  })}
                 </div>
                 <button
                   type="button"
                   onClick={() => setEventsPage((page) => Math.min(eventsTotalPages, page + 1))}
                   disabled={normalizedEventsPage === eventsTotalPages}
-                  className="rounded-lg border border-border px-3 py-2 text-xs font-bold text-muted-foreground hover:text-foreground disabled:opacity-40 disabled:cursor-not-allowed"
+                  className="rounded-lg border border-border px-2.5 py-1.5 text-[11px] font-bold text-muted-foreground hover:text-foreground disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                   Siguiente
                 </button>

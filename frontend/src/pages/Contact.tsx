@@ -1,12 +1,14 @@
 import { useState } from "react";
 import { Header } from "@/components/layout/Header";
 import { Footer } from "@/components/layout/Footer";
-import { Phone, Mail, MapPin, ChevronDown } from "lucide-react";
+import { Phone, Mail, MapPin, ChevronDown, ShieldCheck } from "lucide-react";
 
 const faqs = [
   { q: "¿Cómo compro boletos?", a: "Busca tu evento, selecciona los boletos deseados, agrégalos al carrito y completa el pago simulado de la demo." },
   { q: "¿Puedo cancelar mi compra?", a: "Las compras son definitivas. Consulta la política del evento específico para excepciones." },
   { q: "¿Cómo recibo mis boletos?", a: "Recibirás tus boletos digitales por correo electrónico y podrás verlos en tu cuenta." },
+  { q: "¿Cómo funciona la reventa segura?", a: "La reventa P2P se realiza bajo reglas de Secure Ticket: cada evento define si permite reventa, precio máximo, ventana de publicación, bloqueo antes del evento y comisiones. Antes de listar, el sistema verifica que el boleto sea tuyo, esté activo, no esté ya publicado y cumpla los límites configurados." },
+  { q: "¿Qué significa que la reventa esté amparada por Secure Ticket?", a: "Significa que la ticketera opera la experiencia comercial, mientras Secure Ticket conserva evidencia técnica del boleto, sus versiones, el dueño vigente y los cambios de estado. Esto ayuda a evitar doble venta, sobreprecio y reclamos sin trazabilidad." },
   { q: "¿Qué métodos de pago aceptan?", a: "En esta demo se muestran tarjeta, PSE y Nequi como métodos simulados; no se procesa una pasarela fiat real." },
   { q: "¿Qué hago si no recibí mi boleto?", a: "Revisa tu carpeta de spam. Si no lo encuentras, contáctanos y te lo reenviaremos." },
 ];
@@ -50,6 +52,18 @@ const Contact = () => {
               <div className="flex items-center gap-3 text-sm text-muted-foreground"><Mail className="w-4 h-4 text-primary" />soporte@tuticket.co</div>
               <div className="flex items-center gap-3 text-sm text-muted-foreground"><MapPin className="w-4 h-4 text-primary" />Calle 85 #15-30, Bogotá, Colombia</div>
               <p className="text-xs text-muted-foreground">Horario: Lunes a Viernes 8:00 AM - 6:00 PM</p>
+            </div>
+
+            <div className="bg-primary/5 rounded-xl border border-primary/15 p-6 space-y-3">
+              <h3 className="font-bold text-foreground flex items-center gap-2">
+                <ShieldCheck className="w-4 h-4 text-primary" /> Contacto Secure Ticket
+              </h3>
+              <p className="text-sm text-muted-foreground leading-relaxed">
+                Para incidentes de QR, reventa P2P, transferencia NFT o evidencia de validación, el caso se atiende desde la capa Secure Ticket.
+              </p>
+              <div className="flex items-center gap-3 text-sm text-muted-foreground"><Mail className="w-4 h-4 text-primary" />secureticket@tuticket.co</div>
+              <div className="flex items-center gap-3 text-sm text-muted-foreground"><Phone className="w-4 h-4 text-primary" />(601) 555-0199 ext. 2</div>
+              <p className="text-xs text-muted-foreground">También puedes abrir un reclamo desde Mi Cuenta → PQR y Reclamos para conservar la evidencia técnica del boleto.</p>
             </div>
           </div>
 

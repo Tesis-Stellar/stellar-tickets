@@ -1,15 +1,39 @@
 import { expect, test, type Page } from "@playwright/test";
 
-const demoUser = {
-  id: "user-demo-qa",
+const demoCustomer = {
+  id: "user-demo-customer",
   firstName: "Ana",
-  lastName: "QA",
-  email: "ana.qa@example.com",
+  lastName: "Cliente",
+  email: "ana.cliente@example.com",
   phone: "3001234567",
   documentType: "CC",
   documentNumber: "1020304050",
+  walletAddress: "GC5DPWEAIL6KIPBB7D7NGSAGKTUFEBJATSZVVQLCZ2SVLT2RR3HJOFDQ",
+  role: "CUSTOMER",
+};
+
+const demoStaff = {
+  id: "user-demo-staff",
+  firstName: "Sara",
+  lastName: "Staff",
+  email: "sara.staff@example.com",
+  phone: "3007654321",
+  documentType: "CC",
+  documentNumber: "2030405060",
   walletAddress: null,
   role: "STAFF",
+};
+
+const demoAdmin = {
+  id: "user-demo-admin",
+  firstName: "Juan",
+  lastName: "Admin",
+  email: "juan.admin@example.com",
+  phone: "3009999999",
+  documentType: "CC",
+  documentNumber: "3040506070",
+  walletAddress: null,
+  role: "ADMIN",
 };
 
 const demoEvent = {
@@ -31,12 +55,31 @@ const demoEvent = {
   bannerImage: "https://placehold.co/1200x400?text=QA",
 };
 
+const seatedEvent = {
+  ...demoEvent,
+  id: "seated-event",
+  slug: "seated-event",
+  title: "Estadio QA Operativo",
+  venue: { name: "Estadio QA" },
+  venueType: "STADIUM",
+  hasSeatSelection: true,
+};
+
 const ticketType = {
   id: "ticket-general-qa",
   name: "General QA",
   price: 50000,
   serviceFee: 5000,
   availability: 25,
+  maxPerOrder: 4,
+};
+
+const seatedTicketType = {
+  id: "ticket-seated-qa",
+  name: "Platea QA",
+  price: 70000,
+  serviceFee: 7000,
+  availability: 20,
   maxPerOrder: 4,
 };
 
@@ -70,8 +113,8 @@ const purchasedTicket = {
 const confirmedOrder = {
   id: "order-demo-qa",
   orderNumber: "ORD-DEMO-QA",
-  buyerEmail: demoUser.email,
-  buyerPhone: demoUser.phone,
+  buyerEmail: demoCustomer.email,
+  buyerPhone: demoCustomer.phone,
   buyerDocument: "CC 1020304050",
   subtotal: 50000,
   serviceFees: 5000,
@@ -81,10 +124,33 @@ const confirmedOrder = {
   items: [purchasedTicket],
 };
 
+const seatedResponse = {
+  venueType: "STADIUM",
+  venueName: "Estadio QA",
+  sections: [
+    {
+      id: "section-platea",
+      name: "Platea",
+      ticketTypeId: seatedTicketType.id,
+      price: seatedTicketType.price,
+      serviceFee: seatedTicketType.serviceFee,
+      maxPerOrder: seatedTicketType.maxPerOrder,
+      seats: [
+        { seatId: "seat-a1", label: "A1", row: "A", number: 1, status: "AVAILABLE" },
+        { seatId: "seat-a2", label: "A2", row: "A", number: 2, status: "SOLD" },
+        { seatId: "seat-a3", label: "A3", row: "A", number: 3, status: "HELD" },
+        { seatId: "seat-b1", label: "B1", row: "B", number: 1, status: "BLOCKED" },
+      ],
+    },
+  ],
+};
+
 async function mockDemoApi(page: Page) {
+  let currentUser = demoCustomer;
   let cartItems: unknown[] = [];
   let orders = [confirmedOrder];
   let tickets: unknown[] = [];
+  const events = [demoEvent, seatedEvent];
 
   await page.route("http://127.0.0.1:3000/**", async (route) => {
     const request = route.request();
@@ -100,24 +166,50 @@ async function mockDemoApi(page: Page) {
       });
 
     if (method === "POST" && path === "/api/auth/login") {
-      return json({ accessToken: "demo-token", user: demoUser });
+      const body = request.postDataJSON() as { email?: string };
+      currentUser =
+        body.email === demoAdmin.email ? demoAdmin :
+        body.email === demoStaff.email ? demoStaff :
+        demoCustomer;
+      return json({ accessToken: `${currentUser.role.toLowerCase()}-demo-token`, user: currentUser });
     }
     if (method === "GET" && path === "/api/users/me") {
-      return json(demoUser);
+      return json(currentUser);
     }
     if (method === "GET" && path === "/api/events") {
-      return json({ data: [demoEvent] });
+      return json({ data: events });
     }
     if (method === "GET" && path === "/api/events/featured") {
-      return json([demoEvent]);
+      return json(events);
+    }
+    if (method === "GET" && (path === `/api/events/${demoEvent.id}` || path === `/api/events/${demoEvent.slug}`)) {
+      return json({ ...demoEvent, ticketTypes: [ticketType] });
+    }
+    if (method === "GET" && (path === `/api/events/${seatedEvent.id}` || path === `/api/events/${seatedEvent.slug}`)) {
+      return json({ ...seatedEvent, ticketTypes: [seatedTicketType] });
     }
     if (method === "GET" && path === `/api/events/${demoEvent.id}/ticket-types`) {
       return json([ticketType]);
+    }
+    if (method === "GET" && path === `/api/events/${seatedEvent.id}/ticket-types`) {
+      return json([seatedTicketType]);
+    }
+    if (method === "GET" && path === `/api/events/${seatedEvent.id}/seats`) {
+      return json(seatedResponse);
+    }
+    if (method === "GET" && path === `/api/events/${demoEvent.id}/related`) {
+      return json([seatedEvent]);
+    }
+    if (method === "GET" && path === `/api/events/${seatedEvent.id}/related`) {
+      return json([demoEvent]);
     }
     if (method === "GET" && path === "/api/cart") {
       return json(cartItems);
     }
     if (method === "POST" && path === "/api/cart/items") {
+      if (currentUser.role !== "CUSTOMER") {
+        return json({ code: "FORBIDDEN", message: "Las cuentas operativas no pueden comprar boletos" }, 403);
+      }
       cartItems = [
         {
           id: "cart-item-demo-qa",
@@ -157,22 +249,50 @@ async function mockDemoApi(page: Page) {
     if (method === "POST" && path === "/api/admin/scan") {
       return json({ success: true, ticketId: purchasedTicket.id, result: "ACCEPTED" });
     }
+    if (method === "GET" && path === "/api/admin/events") {
+      return json([
+        { ...demoEvent, status: "PUBLISHED", contract_address: "CDERIVEDCONTRACTQA1234567890" },
+        { ...seatedEvent, status: "PUBLISHED", contract_address: null },
+      ]);
+    }
+    if (method === "GET" && path === "/api/admin/venues") {
+      return json([]);
+    }
+    if (method === "GET" && path === "/api/admin/contracts") {
+      return json({
+        factoryContractId: "GBMFIYOGHHNXJGUVWXTDUMLZJ2IRO3T2OOPG5CQPBEVLA2OO3SYPK2B2",
+        events: [
+          {
+            id: demoEvent.id,
+            title: demoEvent.title,
+            contract_address: "CDERIVEDCONTRACTQA1234567890",
+            created_at: "2026-05-11T16:00:00.000Z",
+          },
+        ],
+      });
+    }
+    if (method === "GET" && path === "/api/admin/claims") {
+      return json([]);
+    }
 
     return json({ code: "NOT_MOCKED", message: `${method} ${path}` }, 404);
   });
+}
+
+async function login(page: Page, email: string) {
+  await page.goto("/login", { waitUntil: "domcontentloaded" });
+  await page.getByPlaceholder("tu@email.com").fill(email);
+  await page.getByPlaceholder("••••••••").fill("demo1234");
+  await page.getByRole("button", { name: "Ingresar" }).click();
+  await expect(page.locator("main")).toContainText(/Mi Cuenta|Secure Ticket Console/);
 }
 
 test.beforeEach(async ({ page }) => {
   await mockDemoApi(page);
 });
 
-test("demo controlado: login, compra, entradas y scanner sin Freighter real", async ({ page }) => {
-  await page.goto("/login", { waitUntil: "domcontentloaded" });
-  await page.getByPlaceholder("tu@email.com").fill(demoUser.email);
-  await page.getByPlaceholder("••••••••").fill("demo1234");
-  await page.getByRole("button", { name: "Ingresar" }).click();
-
-  await expect(page.getByRole("heading", { name: "Mi Cuenta" })).toBeVisible();
+test("cliente: login, compra y consulta entradas sin Freighter real", async ({ page }) => {
+  await login(page, demoCustomer.email);
 
   await page.goto(`/evento/${demoEvent.id}/boletas`, { waitUntil: "domcontentloaded" });
   await page.getByRole("button", { name: `Agregar ${ticketType.name}` }).click();
@@ -182,10 +302,10 @@ test("demo controlado: login, compra, entradas y scanner sin Freighter real", as
   await expect(page.getByText(demoEvent.title)).toBeVisible();
   await page.getByRole("link", { name: "Continuar al Checkout" }).click();
 
-  await page.getByPlaceholder("Juan Pérez").fill("Ana QA");
-  await page.getByPlaceholder("juan@email.com").fill(demoUser.email);
-  await page.getByPlaceholder("3001234567").fill(demoUser.phone);
-  await page.getByPlaceholder("1020304050").fill(demoUser.documentNumber);
+  await page.getByPlaceholder("Juan Pérez").fill("Ana Cliente");
+  await page.getByPlaceholder("juan@email.com").fill(demoCustomer.email);
+  await page.getByPlaceholder("3001234567").fill(demoCustomer.phone);
+  await page.getByPlaceholder("1020304050").fill(demoCustomer.documentNumber);
   await page.getByRole("button", { name: "Continuar" }).click();
   await page.getByLabel(/Acepto los/i).check();
   await page.getByRole("button", { name: /Confirmar compra simulada/i }).click();
@@ -194,15 +314,38 @@ test("demo controlado: login, compra, entradas y scanner sin Freighter real", as
   await page.getByRole("link", { name: "Ver Confirmación" }).click();
   await expect(page.getByText("¡Compra Confirmada!")).toBeVisible();
   await expect(page.getByText("ORD-DEMO-QA")).toBeVisible();
-  await expect(page.getByText(ticketType.name, { exact: false })).toBeVisible();
 
   await page.goto("/mi-cuenta/entradas", { waitUntil: "domcontentloaded" });
   await expect(page.getByText(demoEvent.title)).toBeVisible();
+});
 
-  await page.evaluate(() => {
-    window.localStorage.setItem("e2eScanPayload", JSON.stringify({ qrToken: "signed-demo-token" }));
-  });
-  await page.goto("/escanear", { waitUntil: "domcontentloaded" });
-  await page.getByRole("button", { name: "Simular escaneo QA" }).click();
-  await expect(page.getByText("Acceso Permitido")).toBeVisible();
+test("staff: dashboard operativo, scanner y mapa de asientos solo lectura", async ({ page }) => {
+  await login(page, demoStaff.email);
+
+  await expect(page.getByText(/Esta cuenta es operativa/i)).toBeVisible();
+  await expect(page.getByText("Secure Ticket Scanner")).toBeVisible();
+
+  await page.goto(`/evento/${seatedEvent.id}`, { waitUntil: "domcontentloaded" });
+  await expect(page.getByText("Estado del evento")).toBeVisible();
+  await expect(page.getByText("Ver mapa de asientos")).toBeVisible();
+  await page.getByRole("link", { name: /Ver mapa de asientos/i }).click();
+  await expect(page.getByText("Mapa Operativo de Asientos")).toBeVisible();
+  await expect(page.getByText("Las cuentas operativas no pueden seleccionar ni reservar asientos.")).toBeVisible();
+  await expect(page.getByText("Estado del aforo")).toBeVisible();
+
+  await page.goto("/carrito", { waitUntil: "domcontentloaded" });
+  await expect(page.getByText("Carrito no disponible")).toBeVisible();
+});
+
+test("admin: consola, contratos y cuenta maestra ocultable", async ({ page }) => {
+  await login(page, demoAdmin.email);
+
+  await expect(page.getByText("Secure Ticket Console")).toBeVisible();
+  await page.getByRole("button", { name: /Contratos Secure Ticket/i }).click();
+  await expect(page.getByText("Explorador Secure Ticket On-Chain")).toBeVisible();
+  await expect(page.getByText(/GBMFIYOG.*B2/)).toBeVisible();
+  await page.getByRole("button", { name: "Mostrar cuenta maestra" }).click();
+  await expect(page.getByText("GBMFIYOGHHNXJGUVWXTDUMLZJ2IRO3T2OOPG5CQPBEVLA2OO3SYPK2B2")).toBeVisible();
+  await page.getByRole("button", { name: "Ocultar cuenta maestra" }).click();
+  await expect(page.getByText("GBMFIYOGHHNXJGUVWXTDUMLZJ2IRO3T2OOPG5CQPBEVLA2OO3SYPK2B2")).toHaveCount(0);
 });

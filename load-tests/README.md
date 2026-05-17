@@ -91,6 +91,35 @@ k6 run load-tests/transactions-guard.k6.js
 
 Por defecto usa 8 iteraciones por minuto durante 1 minuto. Cada iteracion ejecuta 3 requests, para mantenerse por debajo del rate limit transaccional.
 
+### Lectura operativa admin/staff
+
+Modo no destructivo: valida lectura publica de eventos y lectura autenticada de consola operativa (`admin/events`, `admin/contracts`, `admin/claims`). Sirve para sustentar el panel de Secure Ticket sin crear compras ni contratos.
+
+```bash
+BASE_URL=http://localhost:3000 \
+ADMIN_EMAIL=<EMAIL_ADMIN> \
+ADMIN_PASSWORD='<PASSWORD_ADMIN>' \
+EVENT_ID=<EVENTO_CON_ASIENTOS_OPCIONAL> \
+k6 run load-tests/operational-read.k6.js
+```
+
+También acepta `ADMIN_TOKEN` si ya tienes un JWT.
+
+### Guardas de roles operativos
+
+Modo no destructivo: prueba bajo carga que `ADMIN` y `STAFF` no puedan comprar, confirmar checkout ni vincular wallet. Cada iteración espera `403` en todos los endpoints sensibles.
+
+```bash
+BASE_URL=http://localhost:3000 \
+ADMIN_EMAIL=<EMAIL_ADMIN> \
+ADMIN_PASSWORD='<PASSWORD_ADMIN>' \
+STAFF_EMAIL=<EMAIL_STAFF> \
+STAFF_PASSWORD='<PASSWORD_STAFF>' \
+k6 run load-tests/role-guard.k6.js
+```
+
+También acepta `ADMIN_TOKEN` y `STAFF_TOKEN`.
+
 ## Parametros comunes
 
 - `BASE_URL`: API objetivo. Default: `http://localhost:3000`.

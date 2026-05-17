@@ -43,6 +43,8 @@ export type Seat = SelectedSeat;
 interface SeatMapProps {
   venueType: VenueType;
   venueName: string;
+  eventTitle?: string;
+  eventCategory?: string;
   sections: SectionConfig[];
   selectedSeats: SelectedSeat[];
   onToggleSeat: (seat: SelectedSeat) => void;
@@ -389,12 +391,121 @@ function getArenaPos(name: string, index: number): StadiumPos {
   return fallback[index % fallback.length];
 }
 
+type ConcertPos = "front" | "back" | "left" | "right" | "floorLeft" | "floorRight";
+
+function isFootballEvent(title?: string, category?: string) {
+  const text = `${title ?? ""} ${category ?? ""}`.toLowerCase();
+  return /f[uú]tbol|futbol|soccer|partido|final capital|capital cup|liga|copa/.test(text);
+}
+
+function getConcertPos(name: string, index: number): ConcertPos {
+  const n = name.toLowerCase();
+  if (n.includes("vip") || n.includes("palco")) return "front";
+  if (n.includes("platea") || n.includes("preferencial")) return "floorLeft";
+  if (n.includes("general")) return "left";
+  const fallback: ConcertPos[] = ["front", "floorLeft", "floorRight", "left", "right", "back"];
+  return fallback[index % fallback.length];
+}
+
 function getTheaterDepth(name: string, index: number): number {
   const n = name.toLowerCase();
   if (n.includes("vip") || n.includes("palco")) return 0;
   if (n.includes("platea") || n.includes("preferencial")) return 1;
   if (n.includes("general")) return 2;
   return index + 3;
+}
+
+function ConcertStage() {
+  return (
+    <div className="relative flex items-center justify-center">
+      <div className="relative z-10 h-28 w-80 rounded-lg border-2 border-slate-700 bg-white shadow-sm flex items-center justify-center">
+        <span className="text-2xl font-black uppercase tracking-tight text-slate-700">Stage</span>
+      </div>
+      <div className="absolute top-full left-1/2 h-28 w-10 -translate-x-1/2 border-2 border-dashed border-slate-500 bg-slate-100/80" />
+    </div>
+  );
+}
+
+function ConcertAisle({ className = "" }: { className?: string }) {
+  return (
+    <div className={`absolute h-24 w-40 rounded-sm border-2 border-dashed border-slate-500 bg-slate-200/70 ${className}`} />
+  );
+}
+
+interface ConcertBlockProps {
+  section: SectionConfig;
+  rows: MapRow[];
+  pi: number;
+  className: string;
+  orientation?: "horizontal" | "vertical";
+  labelSide?: "top" | "right" | "left";
+  seatLimit?: number;
+  sectionMap: Record<string, SectionConfig>;
+  selectedIds: Set<string>;
+  maxReached: boolean;
+  onToggle: (seat: SelectedSeat) => void;
+}
+
+function ConcertBlock({ section, rows, pi, className, orientation = "horizontal", labelSide = "top", seatLimit = 12, sectionMap, selectedIds, maxReached, onToggle }: ConcertBlockProps) {
+  const visibleRows = rows.slice(0, 5);
+  const maxCols = visibleRows.reduce((max, row) => Math.max(max, Math.min(seatLimit, row.seats.length)), 0);
+  const badge = <SectionBadge name={section.name} pi={pi} />;
+
+  if (orientation === "vertical") {
+    return (
+      <div className={`absolute flex items-center gap-2 ${className}`}>
+        {labelSide === "left" ? badge : null}
+        <div className="flex gap-[7px]">
+          {visibleRows.map((row) => (
+            <div key={`${row.sectionId}-${row.label}`} className="flex flex-col gap-[7px]">
+              {row.seats.slice(0, seatLimit).map((seat) => (
+                <SeatBtn
+                  key={seat.id}
+                  seat={seat}
+                  sectionId={row.sectionId}
+                  sectionIndex={row.sectionIndex}
+                  sectionMap={sectionMap}
+                  selectedIds={selectedIds}
+                  maxReached={maxReached}
+                  onToggle={onToggle}
+                  size="sm"
+                />
+              ))}
+            </div>
+          ))}
+        </div>
+        {labelSide !== "left" ? badge : null}
+      </div>
+    );
+  }
+
+  return (
+    <div className={`absolute flex flex-col items-center gap-2 ${className}`}>
+      {labelSide === "top" ? badge : null}
+      <div className="space-y-[6px]">
+        {visibleRows.map((row) => (
+          <div key={`${row.sectionId}-${row.label}`} className="flex items-center justify-center gap-[6px]">
+            {row.seats.slice(0, seatLimit).map((seat) => (
+              <SeatBtn
+                key={seat.id}
+                seat={seat}
+                sectionId={row.sectionId}
+                sectionIndex={row.sectionIndex}
+                sectionMap={sectionMap}
+                selectedIds={selectedIds}
+                maxReached={maxReached}
+                onToggle={onToggle}
+                size="sm"
+              />
+            ))}
+            {Array.from({ length: Math.max(0, maxCols - Math.min(seatLimit, row.seats.length)) }).map((_, i) => (
+              <span key={`pad-${i}`} className="h-6 w-6 shrink-0" />
+            ))}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 // ── Stadium layout ─────────────────────────────────────────────────────────
@@ -615,6 +726,83 @@ function ArenaLayout({ sections, selectedSeats, onToggleSeat, maxSeats, zoom, pa
   );
 }
 
+function ConcertArenaLayout({ sections, selectedSeats, onToggleSeat, maxSeats, zoom, pan }: ZoomableLayoutProps) {
+  const maxReached = selectedSeats.length >= maxSeats;
+  const selectedIds = useMemo(() => new Set(selectedSeats.map((s) => s.id)), [selectedSeats]);
+  const sectionMap = useMemo(() => {
+    const m: Record<string, SectionConfig> = {};
+    for (const s of sections) m[s.id] = s;
+    return m;
+  }, [sections]);
+  const handleToggle = useCallback((seat: SelectedSeat) => onToggleSeat(seat), [onToggleSeat]);
+  const positioned = useMemo(() => {
+    const r: Record<ConcertPos, Array<{ section: SectionConfig; rows: MapRow[]; pi: number }>> = {
+      front: [], back: [], left: [], right: [], floorLeft: [], floorRight: [],
+    };
+    sections.forEach((section, pi) => {
+      r[getConcertPos(section.name, pi)].push({ section, rows: buildRowsFromSeats(section, pi), pi });
+    });
+    return r;
+  }, [sections]);
+
+  const blockConfig: Record<ConcertPos, { className: string; orientation?: "horizontal" | "vertical"; labelSide?: "top" | "right" | "left"; seatLimit?: number; dx: number; dy: number }> = {
+    front: { className: "left-[292px] top-12", orientation: "horizontal", labelSide: "top", dx: 0, dy: 86 },
+    left: { className: "left-7 top-[318px]", orientation: "horizontal", labelSide: "right", seatLimit: 6, dx: 0, dy: 116 },
+    right: { className: "right-12 top-14", orientation: "vertical", labelSide: "left", dx: -124, dy: 0 },
+    floorLeft: { className: "left-[286px] top-[534px]", orientation: "horizontal", labelSide: "top", dx: 0, dy: 82 },
+    floorRight: { className: "right-[286px] top-[534px]", orientation: "horizontal", labelSide: "top", dx: 0, dy: 82 },
+    back: { className: "left-[304px] top-[590px]", orientation: "horizontal", labelSide: "top", dx: 0, dy: -82 },
+  };
+
+  return (
+    <div className="overflow-auto rounded-xl border border-slate-100 bg-[#f7f5ee]">
+      <div
+        className="min-w-[900px] h-[760px] pb-4 transition-transform duration-200"
+        style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`, transformOrigin: "top center" }}
+      >
+        <div className="relative mx-auto w-[900px] h-[710px] overflow-hidden bg-[#f7f5ee]">
+          <div className="absolute left-1/2 top-[255px] -translate-x-1/2">
+            <ConcertStage />
+          </div>
+
+          <ConcertAisle className="left-[92px] top-12 -rotate-[52deg]" />
+          <ConcertAisle className="right-[92px] top-12 rotate-[52deg]" />
+          <ConcertAisle className="left-[92px] bottom-16 rotate-[52deg]" />
+          <ConcertAisle className="right-[92px] bottom-16 -rotate-[52deg]" />
+
+          {(Object.keys(positioned) as ConcertPos[]).flatMap((pos) =>
+            positioned[pos].map((group, index) => {
+              const cfg = blockConfig[pos];
+              return (
+                <div
+                  key={group.section.id}
+                  className="absolute inset-0"
+                  style={{ transform: `translate(${cfg.dx * index}px, ${cfg.dy * index}px)` }}
+                >
+                  <ConcertBlock
+                    section={group.section}
+                    rows={group.rows}
+                    pi={group.pi}
+                    className={cfg.className}
+                    orientation={cfg.orientation}
+                    labelSide={cfg.labelSide}
+                    seatLimit={cfg.seatLimit}
+                    sectionMap={sectionMap}
+                    selectedIds={selectedIds}
+                    maxReached={maxReached}
+                    onToggle={handleToggle}
+                  />
+                </div>
+              );
+            })
+          )}
+        </div>
+        <SeatLegend sections={sections} selectedSeats={selectedSeats} />
+      </div>
+    </div>
+  );
+}
+
 // ── Cinema layout ──────────────────────────────────────────────────────────
 
 interface CinemaLayoutProps {
@@ -729,12 +917,13 @@ function CinemaLayout({ sections, selectedSeats, onToggleSeat, maxSeats, zoom, p
 
 // ── Main SeatMap ───────────────────────────────────────────────────────────
 
-export function SeatMap({ venueType, venueName, sections, selectedSeats, onToggleSeat, maxSeats = 10 }: SeatMapProps) {
+export function SeatMap({ venueType, venueName, eventTitle, eventCategory, sections, selectedSeats, onToggleSeat, maxSeats = 10 }: SeatMapProps) {
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const maxReached = selectedSeats.length >= maxSeats;
   const isStadium = venueType === "STADIUM";
   const isArena = venueType === "ARENA" || venueType === "COLISEUM";
+  const useConcertLayout = isArena || (isStadium && !isFootballEvent(eventTitle, eventCategory));
   const zoomOut = () => setZoom((value) => Math.max(0.65, Number((value - 0.15).toFixed(2))));
   const zoomIn = () => setZoom((value) => Math.min(1.6, Number((value + 0.15).toFixed(2))));
   const resetZoom = () => {
@@ -764,7 +953,16 @@ export function SeatMap({ venueType, venueName, sections, selectedSeats, onToggl
       </div>
 
       <SeatMapViewport onPan={movePan}>
-        {isStadium ? (
+        {useConcertLayout ? (
+          <ConcertArenaLayout
+            sections={sections}
+            selectedSeats={selectedSeats}
+            onToggleSeat={onToggleSeat}
+            maxSeats={maxSeats}
+            zoom={zoom}
+            pan={pan}
+          />
+        ) : isStadium ? (
           <StadiumLayout
             sections={sections}
             selectedSeats={selectedSeats}

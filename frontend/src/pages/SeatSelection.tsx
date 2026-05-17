@@ -226,6 +226,8 @@ const SeatSelection = () => {
               <SeatMap
                 venueType={venueType}
                 venueName={venueName}
+                eventTitle={event.title}
+                eventCategory={event.category}
                 sections={sections}
                 selectedSeats={isOperationalRole ? [] : selectedSeats}
                 onToggleSeat={isOperationalRole ? () => {} : toggleSeat}

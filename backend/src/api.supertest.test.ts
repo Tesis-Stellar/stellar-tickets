@@ -11,9 +11,16 @@ process.env.JWT_SECRET ||= 'stellar-tickets-dev-secret-change-in-prod';
 
 const prisma = new PrismaClient();
 const jwtSecret = process.env.JWT_SECRET;
+const validWalletAddress = 'GC5DPWEAIL6KIPBB7D7NGSAGKTUFEBJATSZVVQLCZ2SVLT2RR3HJOFDQ';
 
 function tokenFor(userId: string) {
   return jwt.sign({ userId }, jwtSecret);
+}
+
+async function testUserId(email: string) {
+  const user = await prisma.users.findUnique({ where: { email }, select: { id: true } });
+  assert.ok(user, `expected ${email} to exist`);
+  return user.id;
 }
 
 test.before(async () => {
@@ -41,7 +48,20 @@ test.before(async () => {
       document_number: 'CI-CUSTOMER-1',
       role: 'CUSTOMER',
     },
-    update: { is_active: true },
+    update: { role: 'CUSTOMER', is_active: true },
+  });
+  await prisma.users.upsert({
+    where: { email: 'ci-supertest-staff@stellar-tickets.local' },
+    create: {
+      first_name: 'CI',
+      last_name: 'Staff',
+      email: 'ci-supertest-staff@stellar-tickets.local',
+      password_hash: 'unused',
+      document_type: 'CC',
+      document_number: 'CI-STAFF-1',
+      role: 'STAFF',
+    },
+    update: { role: 'STAFF', is_active: true },
   });
 });
 
@@ -153,9 +173,10 @@ test('authenticated routes reject inactive users', async () => {
 });
 
 test('POST /api/cart/items returns 404 for unknown ticket type', async () => {
+  const customerId = await testUserId('ci-supertest-customer@stellar-tickets.local');
   const res = await request(app)
     .post('/api/cart/items')
-    .set('Authorization', `Bearer ${tokenFor('00000000-0000-0000-0000-000000000001')}`)
+    .set('Authorization', `Bearer ${tokenFor(customerId)}`)
     .send({ ticketTypeId: '00000000-0000-0000-0000-000000000002', quantity: 1 })
     .expect(404);
   assert.equal(res.body.code, 'NOT_FOUND');
@@ -164,9 +185,10 @@ test('POST /api/cart/items returns 404 for unknown ticket type', async () => {
 });
 
 test('POST /api/checkout/preview rejects an empty cart', async () => {
+  const customerId = await testUserId('ci-supertest-customer@stellar-tickets.local');
   const res = await request(app)
     .post('/api/checkout/preview')
-    .set('Authorization', `Bearer ${tokenFor('00000000-0000-0000-0000-000000000003')}`)
+    .set('Authorization', `Bearer ${tokenFor(customerId)}`)
     .send({})
     .expect(400);
   assert.equal(res.body.code, 'BAD_REQUEST');
@@ -174,21 +196,23 @@ test('POST /api/checkout/preview rejects an empty cart', async () => {
   assert.ok(res.body.requestId);
 });
 
-test('POST /api/checkout/confirm returns 404 for unknown user', async () => {
+test('POST /api/checkout/confirm rejects an empty customer cart', async () => {
+  const customerId = await testUserId('ci-supertest-customer@stellar-tickets.local');
   const res = await request(app)
     .post('/api/checkout/confirm')
-    .set('Authorization', `Bearer ${tokenFor('00000000-0000-0000-0000-000000000004')}`)
+    .set('Authorization', `Bearer ${tokenFor(customerId)}`)
     .send({ idempotencyKey: 'qa-unknown-user' })
-    .expect(404);
-  assert.equal(res.body.code, 'NOT_FOUND');
-  assert.equal(res.body.message, 'Usuario no encontrado');
+    .expect(400);
+  assert.equal(res.body.code, 'BAD_REQUEST');
+  assert.equal(res.body.message, 'El carrito está vacío');
   assert.ok(res.body.requestId);
 });
 
 test('POST /api/transactions/build-buy-xdr returns standard error envelope for missing input', async () => {
+  const customerId = await testUserId('ci-supertest-customer@stellar-tickets.local');
   const res = await request(app)
     .post('/api/transactions/build-buy-xdr')
-    .set('Authorization', `Bearer ${tokenFor('00000000-0000-0000-0000-000000000007')}`)
+    .set('Authorization', `Bearer ${tokenFor(customerId)}`)
     .send({})
     .expect(400);
   assert.equal(res.body.code, 'BAD_REQUEST');
@@ -197,9 +221,10 @@ test('POST /api/transactions/build-buy-xdr returns standard error envelope for m
 });
 
 test('POST /api/transactions/submit-classic returns standard error envelope for missing XDR', async () => {
+  const customerId = await testUserId('ci-supertest-customer@stellar-tickets.local');
   const res = await request(app)
     .post('/api/transactions/submit-classic')
-    .set('Authorization', `Bearer ${tokenFor('00000000-0000-0000-0000-000000000008')}`)
+    .set('Authorization', `Bearer ${tokenFor(customerId)}`)
     .send({})
     .expect(400);
   assert.equal(res.body.code, 'BAD_REQUEST');
@@ -275,9 +300,10 @@ test('POST /api/wallet/challenge requires authentication', async () => {
 });
 
 test('POST /api/wallet/challenge rejects malformed Stellar wallets', async () => {
+  const customerId = await testUserId('ci-supertest-customer@stellar-tickets.local');
   const res = await request(app)
     .post('/api/wallet/challenge')
-    .set('Authorization', `Bearer ${tokenFor('00000000-0000-0000-0000-000000000007')}`)
+    .set('Authorization', `Bearer ${tokenFor(customerId)}`)
     .send({ walletAddress: 'not-a-stellar-public-key' })
     .expect(400);
   assert.equal(res.body.code, 'BAD_REQUEST');
@@ -285,10 +311,93 @@ test('POST /api/wallet/challenge rejects malformed Stellar wallets', async () =>
   assert.ok(res.body.requestId);
 });
 
+test('operational roles cannot use customer purchase endpoints', async () => {
+  const roles = [
+    { label: 'admin', userId: await testUserId('ci-supertest-admin@stellar-tickets.local') },
+    { label: 'staff', userId: await testUserId('ci-supertest-staff@stellar-tickets.local') },
+  ];
+
+  for (const role of roles) {
+    const token = tokenFor(role.userId);
+
+    const addToCart = await request(app)
+      .post('/api/cart/items')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ ticketTypeId: '00000000-0000-0000-0000-000000000002', quantity: 1 })
+      .expect(403);
+    assert.equal(addToCart.body.code, 'FORBIDDEN', role.label);
+    assert.equal(addToCart.body.message, 'Las cuentas operativas no pueden comprar boletos');
+    assert.ok(addToCart.body.requestId);
+
+    const preview = await request(app)
+      .post('/api/checkout/preview')
+      .set('Authorization', `Bearer ${token}`)
+      .send({})
+      .expect(403);
+    assert.equal(preview.body.code, 'FORBIDDEN', role.label);
+    assert.equal(preview.body.message, 'Las cuentas operativas no pueden comprar boletos');
+    assert.ok(preview.body.requestId);
+
+    const confirm = await request(app)
+      .post('/api/checkout/confirm')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ paymentMethod: 'CARD', idempotencyKey: `role-guard-${role.label}` })
+      .expect(403);
+    assert.equal(confirm.body.code, 'FORBIDDEN', role.label);
+    assert.equal(confirm.body.message, 'Las cuentas operativas no pueden comprar boletos');
+    assert.ok(confirm.body.requestId);
+  }
+});
+
+test('operational roles cannot link wallets', async () => {
+  const roles = [
+    { label: 'admin', userId: await testUserId('ci-supertest-admin@stellar-tickets.local') },
+    { label: 'staff', userId: await testUserId('ci-supertest-staff@stellar-tickets.local') },
+  ];
+
+  for (const role of roles) {
+    const token = tokenFor(role.userId);
+
+    const challenge = await request(app)
+      .post('/api/wallet/challenge')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ walletAddress: validWalletAddress })
+      .expect(403);
+    assert.equal(challenge.body.code, 'FORBIDDEN', role.label);
+    assert.equal(challenge.body.message, 'Las cuentas operativas no pueden vincular wallet');
+    assert.ok(challenge.body.requestId);
+
+    const patch = await request(app)
+      .patch('/api/users/me/wallet')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ walletAddress: validWalletAddress, challengeId: 'challenge-id', signature: 'signature' })
+      .expect(403);
+    assert.equal(patch.body.code, 'FORBIDDEN', role.label);
+    assert.equal(patch.body.message, 'Las cuentas operativas no pueden vincular wallet');
+    assert.ok(patch.body.requestId);
+  }
+});
+
+test('customer users can request a wallet proof challenge', async () => {
+  const customerId = await testUserId('ci-supertest-customer@stellar-tickets.local');
+
+  const res = await request(app)
+    .post('/api/wallet/challenge')
+    .set('Authorization', `Bearer ${tokenFor(customerId)}`)
+    .send({ walletAddress: validWalletAddress })
+    .expect(201);
+
+  assert.ok(res.body.challengeId);
+  assert.ok(String(res.body.message).includes('Secure Ticket wallet verification'));
+  assert.ok(String(res.body.message).includes(`wallet_address=${validWalletAddress}`));
+  assert.ok(res.body.expiresAt);
+});
+
 test('PATCH /api/users/me/wallet requires proof fields', async () => {
+  const customerId = await testUserId('ci-supertest-customer@stellar-tickets.local');
   const res = await request(app)
     .patch('/api/users/me/wallet')
-    .set('Authorization', `Bearer ${tokenFor('00000000-0000-0000-0000-000000000008')}`)
+    .set('Authorization', `Bearer ${tokenFor(customerId)}`)
     .send({ walletAddress: 'GA3GQMZLZBE4VTVNZPZ2SQZGR5F6TFVMHY65IQCY2MMZ4KUMRYWSOVRD' })
     .expect(400);
   assert.equal(res.body.code, 'BAD_REQUEST');
