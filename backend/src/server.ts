@@ -32,6 +32,8 @@ import { authorizeSingleEventDeploy } from './deployEventPolicy';
 import { codeForStatus, requestIdMiddleware, sendApiError } from './apiError';
 import { evaluateRateLimit, isCorsOriginAllowed, isJwtSecretStrong, parseCorsOrigins, type RateLimitBucket } from './securityPolicy';
 import { buildSeatHoldExpiration, isSeatReservable } from './seatHoldPolicy';
+import { defaultResalePolicy, evaluateResalePolicy, type ResalePolicyInput } from './resalePolicy';
+import { canUserAccessClaim, isInternalClaimRole, isPqrClaimStatus, isPqrClaimType } from './claimPolicy';
 import { exec } from 'child_process';
 import util from 'util';
 import QRCode from 'qrcode';
@@ -347,6 +349,298 @@ async function createTransactionIntent(input: {
     },
     select: { id: true, expires_at: true },
   });
+}
+
+function normalizeResalePolicy(policy: any): ResalePolicyInput {
+  const fallback = defaultResalePolicy();
+  if (!policy) return fallback;
+  return {
+    enabled: Boolean(policy.enabled),
+    limitType: policy.limit_type === 'FIXED_PRICE' ? 'FIXED_PRICE' : 'PERCENTAGE',
+    maxPriceAmount: policy.max_price_amount != null ? Number(policy.max_price_amount) : null,
+    maxPricePercent: policy.max_price_percent != null ? Number(policy.max_price_percent) : null,
+    resaleStartsAt: policy.resale_starts_at ?? null,
+    resaleEndsAt: policy.resale_ends_at ?? null,
+    blockHoursBeforeEvent: Number(policy.block_hours_before_event ?? fallback.blockHoursBeforeEvent),
+    platformFeePercent: Number(policy.platform_fee_percent ?? fallback.platformFeePercent),
+    organizerFeePercent: Number(policy.organizer_fee_percent ?? fallback.organizerFeePercent),
+  };
+}
+
+async function getTicketResaleContext(ticketId: string, userId?: string) {
+  const ticket = await prisma.tickets.findFirst({
+    where: { id: ticketId, ...(userId ? { owner_user_id: userId } : {}) },
+    include: {
+      order_items: {
+        include: {
+          event_ticket_types: {
+            include: {
+              events: {
+                include: {
+                  event_resale_policies: true,
+                },
+              },
+            },
+          },
+          event_seat_inventory: {
+            include: {
+              event_ticket_types: {
+                include: {
+                  events: {
+                    include: {
+                      event_resale_policies: true,
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  });
+  if (!ticket) return null;
+
+  let ticketType = ticket.order_items?.event_ticket_types ?? ticket.order_items?.event_seat_inventory?.event_ticket_types ?? null;
+  let event = ticketType?.events ?? null;
+  if (!event && ticket.contract_address) {
+    event = await prisma.events.findFirst({
+      where: { contract_address: ticket.contract_address },
+      include: { event_resale_policies: true },
+    });
+  }
+  if (!ticketType && event?.id) {
+    ticketType = await prisma.event_ticket_types.findFirst({
+      where: {
+        event_id: event.id,
+        is_active: true,
+        deleted_at: null,
+      },
+      include: {
+        events: {
+          include: {
+            event_resale_policies: true,
+          },
+        },
+      },
+      orderBy: { price_amount: 'asc' },
+    });
+  }
+
+  const originalPriceAmount = ticketType?.price_amount != null ? Number(ticketType.price_amount) : null;
+  const policy = normalizeResalePolicy((event as any)?.event_resale_policies ?? null);
+  return { ticket, event, ticketType, originalPriceAmount, policy };
+}
+
+function buildTicketResalePolicyResponse(context: NonNullable<Awaited<ReturnType<typeof getTicketResaleContext>>>, requestedPriceAmount?: number | null) {
+  if (!context.event || context.originalPriceAmount == null) {
+    return {
+      canList: false,
+      reason: 'No fue posible determinar el evento o precio original del ticket',
+      ticketStatus: context.ticket.status,
+      isForSale: context.ticket.is_for_sale,
+      policy: null,
+    };
+  }
+  const evaluation = evaluateResalePolicy({
+    policy: context.policy,
+    originalPriceAmount: context.originalPriceAmount,
+    requestedPriceAmount,
+    eventStartsAt: context.event.starts_at,
+  });
+  let canList = evaluation.ok;
+  let reason = evaluation.ok ? null : evaluation.error;
+  if (context.ticket.status !== 'ACTIVE') {
+    canList = false;
+    reason = `El ticket no está activo: ${context.ticket.status}`;
+  } else if (context.ticket.is_for_sale) {
+    canList = false;
+    reason = 'Ticket ya está en venta';
+  }
+  return {
+    canList,
+    reason,
+    ticketStatus: context.ticket.status,
+    isForSale: context.ticket.is_for_sale,
+    event: {
+      id: context.event.id,
+      title: context.event.title,
+      startsAt: context.event.starts_at.toISOString(),
+    },
+    ticketType: context.ticketType ? {
+      id: context.ticketType.id,
+      name: context.ticketType.ticket_type_name,
+      price: Number(context.ticketType.price_amount),
+      serviceFee: Number(context.ticketType.service_fee_amount),
+    } : null,
+    policy: evaluation.snapshot,
+  };
+}
+
+const claimIncludes = {
+  users: { select: { id: true, first_name: true, last_name: true, email: true, role: true } },
+  assignee: { select: { id: true, first_name: true, last_name: true, email: true, role: true } },
+  messages: {
+    orderBy: { created_at: 'asc' as const },
+    include: { users: { select: { id: true, first_name: true, last_name: true, email: true, role: true } } },
+  },
+};
+
+function formatClaim(claim: any) {
+  return {
+    id: claim.id,
+    type: claim.type,
+    status: claim.status,
+    subject: claim.subject,
+    description: claim.description,
+    relatedTxHash: claim.related_tx_hash,
+    decisionReason: claim.decision_reason,
+    resolvedAt: claim.resolved_at?.toISOString?.() ?? null,
+    createdAt: claim.created_at.toISOString(),
+    updatedAt: claim.updated_at.toISOString(),
+    ticketId: claim.ticket_id,
+    orderId: claim.order_id,
+    eventId: claim.event_id,
+    evidence: claim.evidence,
+    user: claim.users ? {
+      id: claim.users.id,
+      name: `${claim.users.first_name} ${claim.users.last_name}`.trim(),
+      email: claim.users.email,
+      role: claim.users.role,
+    } : null,
+    assignedTo: claim.assignee ? {
+      id: claim.assignee.id,
+      name: `${claim.assignee.first_name} ${claim.assignee.last_name}`.trim(),
+      email: claim.assignee.email,
+      role: claim.assignee.role,
+    } : null,
+    messages: (claim.messages ?? []).map((m: any) => ({
+      id: m.id,
+      message: m.message,
+      statusFrom: m.status_from,
+      statusTo: m.status_to,
+      createdAt: m.created_at.toISOString(),
+      author: m.users ? {
+        id: m.users.id,
+        name: `${m.users.first_name} ${m.users.last_name}`.trim(),
+        email: m.users.email,
+        role: m.users.role,
+      } : null,
+    })),
+  };
+}
+
+async function buildPqrEvidence(input: {
+  userId: string;
+  ticketId?: string | null;
+  orderId?: string | null;
+  eventId?: string | null;
+  relatedTxHash?: string | null;
+}) {
+  const now = new Date();
+  const ticket = input.ticketId ? await prisma.tickets.findUnique({
+    where: { id: input.ticketId },
+    include: {
+      order_items: {
+        include: {
+          orders: true,
+          event_ticket_types: { include: { events: true } },
+          event_seat_inventory: {
+            include: {
+              seats: { include: { venue_sections: true } },
+              event_ticket_types: { include: { events: true } },
+            },
+          },
+        },
+      },
+      checkins: { orderBy: { created_at: 'desc' }, take: 3 },
+    },
+  }) : null;
+
+  if (input.ticketId && !ticket) return { ok: false as const, status: 404, error: 'Ticket no encontrado' };
+  if (ticket && ticket.owner_user_id !== input.userId) return { ok: false as const, status: 403, error: 'No puedes reclamar un ticket de otro usuario' };
+
+  const explicitOrder = input.orderId ? await prisma.orders.findFirst({
+    where: { id: input.orderId, user_id: input.userId },
+    include: { order_items: true },
+  }) : null;
+  if (input.orderId && !explicitOrder) return { ok: false as const, status: 404, error: 'Orden no encontrada' };
+
+  const order = explicitOrder ?? ticket?.order_items?.orders ?? null;
+  const ticketType = ticket?.order_items?.event_ticket_types ?? ticket?.order_items?.event_seat_inventory?.event_ticket_types ?? null;
+  let event = ticketType?.events ?? null;
+  if (!event && input.eventId) {
+    event = await prisma.events.findUnique({ where: { id: input.eventId } });
+  }
+  if (!event && ticket?.contract_address) {
+    event = await prisma.events.findFirst({ where: { contract_address: ticket.contract_address } });
+  }
+  if (input.eventId && !event) return { ok: false as const, status: 404, error: 'Evento no encontrado' };
+
+  const latestOnchainEvent = ticket?.contract_address && ticket.ticket_root_id != null
+    ? await prisma.onchain_events.findFirst({
+        where: {
+          contract_address: ticket.contract_address,
+          ticket_root_id: ticket.ticket_root_id,
+        },
+        orderBy: { processed_at: 'desc' },
+      })
+    : null;
+
+  return {
+    ok: true as const,
+    ticketId: ticket?.id ?? null,
+    orderId: order?.id ?? null,
+    eventId: event?.id ?? input.eventId ?? null,
+    evidence: {
+      capturedAt: now.toISOString(),
+      ticket: ticket ? {
+        id: ticket.id,
+        status: ticket.status,
+        lifecycleReason: ticket.lifecycle_reason,
+        ownerUserId: ticket.owner_user_id,
+        ownerWallet: ticket.owner_wallet,
+        contractAddress: ticket.contract_address,
+        ticketRootId: ticket.ticket_root_id,
+        version: ticket.version,
+        isForSale: ticket.is_for_sale,
+        resalePrice: ticket.resale_price?.toString?.() ?? null,
+        nftTokenId: ticket.nft_token_id,
+        usedAt: ticket.used_at?.toISOString?.() ?? null,
+        updatedAt: ticket.updated_at.toISOString(),
+      } : null,
+      order: order ? {
+        id: order.id,
+        orderNumber: order.order_number,
+        status: order.status,
+        totalAmount: Number(order.total_amount),
+        createdAt: order.created_at.toISOString(),
+      } : null,
+      event: event ? {
+        id: event.id,
+        title: event.title,
+        contractAddress: event.contract_address,
+        nftContractAddress: event.nft_contract_address,
+        startsAt: event.starts_at.toISOString(),
+      } : null,
+      latestOnchainEvent: latestOnchainEvent ? {
+        txHash: latestOnchainEvent.tx_hash,
+        eventName: latestOnchainEvent.event_name,
+        ticketRootId: latestOnchainEvent.ticket_root_id,
+        version: latestOnchainEvent.version,
+        status: latestOnchainEvent.status,
+        processedAt: latestOnchainEvent.processed_at.toISOString(),
+      } : null,
+      latestCheckins: (ticket?.checkins ?? []).map((c) => ({
+        id: c.id,
+        result: c.result,
+        source: c.source,
+        reason: c.reason,
+        createdAt: c.created_at.toISOString(),
+      })),
+      relatedTxHash: input.relatedTxHash ?? null,
+    },
+  };
 }
 
 async function mintTicketNftWithBump(input: {
@@ -1476,12 +1770,32 @@ app.post('/api/transactions/mint-collectible', authMiddleware, async (_req, res)
   res.json({ success: true, deprecated: true, message: 'Mint NFT ahora se hace en /secure-ticket' });
 });
 
+// GET /api/tickets/:id/resale-policy — evidence and limits before listing a ticket
+app.get('/api/tickets/:id/resale-policy', authMiddleware, async (req, res) => {
+  try {
+    const context = await getTicketResaleContext(String(req.params.id), (req as any).userId);
+    if (!context) {
+      sendApiError(req, res, 404, 'NOT_FOUND', 'Ticket no encontrado');
+      return;
+    }
+    res.json(buildTicketResalePolicyResponse(context));
+  } catch (error: any) {
+    console.error('[RESALE] policy error:', error);
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error consultando política de reventa');
+  }
+});
+
 // POST /api/transactions/list-ticket — Build owner-signed XDR to list a ticket for resale on Soroban
 app.post('/api/transactions/list-ticket', authMiddleware, async (req, res) => {
   try {
-    const { ticketId, price } = req.body; // price in XLM stroops (1 XLM = 10_000_000)
+    const { ticketId, price, priceCop } = req.body; // price in XLM stroops (1 XLM = 10_000_000)
     if (!ticketId || !price || price <= 0) {
       sendApiError(req, res, 400, 'BAD_REQUEST', 'ticketId y price son requeridos');
+      return;
+    }
+    const requestedPriceAmount = Number(priceCop);
+    if (!Number.isFinite(requestedPriceAmount) || requestedPriceAmount <= 0) {
+      sendApiError(req, res, 400, 'BAD_REQUEST', 'priceCop es requerido para validar la política de reventa');
       return;
     }
 
@@ -1491,13 +1805,20 @@ app.post('/api/transactions/list-ticket', authMiddleware, async (req, res) => {
       return;
     }
 
-    const ticket = await prisma.tickets.findUnique({ where: { id: ticketId } });
+    const context = await getTicketResaleContext(String(ticketId));
+    const ticket = context?.ticket;
     if (!ticket) { sendApiError(req, res, 404, 'NOT_FOUND', 'Ticket no encontrado'); return; }
     if (ticket.owner_user_id !== (req as any).userId) { sendApiError(req, res, 403, 'FORBIDDEN', 'No autorizado'); return; }
+    if (ticket.status !== 'ACTIVE') { sendApiError(req, res, 409, 'CONFLICT', `El ticket no está activo: ${ticket.status}`); return; }
     if (!ticket.contract_address || ticket.ticket_root_id === null) { sendApiError(req, res, 400, 'BAD_REQUEST', 'Ticket no registrado en blockchain'); return; }
     if (ticket.is_for_sale) { sendApiError(req, res, 409, 'CONFLICT', 'Ticket ya está en venta'); return; }
     if (!ticket.owner_wallet || ticket.owner_wallet !== user.wallet_address) {
       sendApiError(req, res, 403, 'FORBIDDEN', 'La wallet vinculada no coincide con el propietario on-chain registrado');
+      return;
+    }
+    const policyResponse = buildTicketResalePolicyResponse(context, requestedPriceAmount);
+    if (!policyResponse.canList) {
+      sendApiError(req, res, 409, 'CONFLICT', policyResponse.reason ?? 'La reventa no cumple la política del evento');
       return;
     }
 
@@ -2561,6 +2882,227 @@ app.patch('/api/users/me/wallet', walletRateLimit, authMiddleware, async (req, r
     }
     console.error('[AUTH] Link wallet error:', error);
     sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error interno del servidor');
+  }
+});
+
+// --- PQR / CLAIMS ENDPOINTS ---
+
+app.get('/api/claims', authMiddleware, async (req, res) => {
+  try {
+    const claims = await prisma.pqr_claims.findMany({
+      where: { user_id: (req as any).userId },
+      orderBy: { created_at: 'desc' },
+      include: claimIncludes,
+    });
+    res.json(claims.map(formatClaim));
+  } catch (error: any) {
+    console.error('[PQR] List user claims error:', error);
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error obteniendo reclamos');
+  }
+});
+
+app.post('/api/claims', authMiddleware, async (req, res) => {
+  try {
+    const type = String(req.body?.type ?? '').trim();
+    const subject = String(req.body?.subject ?? '').trim();
+    const description = String(req.body?.description ?? '').trim();
+    const ticketId = req.body?.ticketId ? String(req.body.ticketId).trim() : null;
+    const orderId = req.body?.orderId ? String(req.body.orderId).trim() : null;
+    const eventId = req.body?.eventId ? String(req.body.eventId).trim() : null;
+    const relatedTxHash = req.body?.relatedTxHash ? String(req.body.relatedTxHash).trim() : null;
+
+    if (!isPqrClaimType(type)) {
+      sendApiError(req, res, 400, 'BAD_REQUEST', 'Tipo de reclamo inválido');
+      return;
+    }
+    if (!subject || !description) {
+      sendApiError(req, res, 400, 'BAD_REQUEST', 'subject y description son requeridos');
+      return;
+    }
+    if (!ticketId && !orderId && !eventId && !relatedTxHash) {
+      sendApiError(req, res, 400, 'BAD_REQUEST', 'El reclamo debe asociarse a ticket, orden, evento o transacción');
+      return;
+    }
+
+    const evidenceResult = await buildPqrEvidence({
+      userId: (req as any).userId,
+      ticketId,
+      orderId,
+      eventId,
+      relatedTxHash,
+    });
+    if (!evidenceResult.ok) {
+      sendApiError(req, res, evidenceResult.status, codeForStatus(evidenceResult.status), evidenceResult.error);
+      return;
+    }
+
+    const claim = await prisma.$transaction(async (tx) => {
+      const created = await tx.pqr_claims.create({
+        data: {
+          user_id: (req as any).userId,
+          type: type as any,
+          subject,
+          description,
+          ticket_id: evidenceResult.ticketId,
+          order_id: evidenceResult.orderId,
+          event_id: evidenceResult.eventId,
+          related_tx_hash: relatedTxHash,
+          evidence: evidenceResult.evidence as any,
+        },
+      });
+      await tx.pqr_claim_messages.create({
+        data: {
+          claim_id: created.id,
+          author_id: (req as any).userId,
+          message: description,
+        },
+      });
+      return tx.pqr_claims.findUniqueOrThrow({ where: { id: created.id }, include: claimIncludes });
+    });
+
+    res.status(201).json(formatClaim(claim));
+  } catch (error: any) {
+    console.error('[PQR] Create claim error:', error);
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error creando reclamo');
+  }
+});
+
+app.get('/api/claims/:id', authMiddleware, async (req, res) => {
+  try {
+    const claim = await prisma.pqr_claims.findUnique({ where: { id: String(req.params.id) }, include: claimIncludes });
+    if (!claim) {
+      sendApiError(req, res, 404, 'NOT_FOUND', 'Reclamo no encontrado');
+      return;
+    }
+    if (!canUserAccessClaim({ role: (req as any).authUser?.role, userId: (req as any).userId, claimUserId: claim.user_id })) {
+      sendApiError(req, res, 403, 'FORBIDDEN', 'No autorizado');
+      return;
+    }
+    res.json(formatClaim(claim));
+  } catch (error: any) {
+    console.error('[PQR] Get claim error:', error);
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error obteniendo reclamo');
+  }
+});
+
+app.post('/api/claims/:id/messages', authMiddleware, async (req, res) => {
+  try {
+    const message = String(req.body?.message ?? '').trim();
+    if (!message) {
+      sendApiError(req, res, 400, 'BAD_REQUEST', 'message es requerido');
+      return;
+    }
+    const claim = await prisma.pqr_claims.findUnique({ where: { id: String(req.params.id) } });
+    if (!claim) {
+      sendApiError(req, res, 404, 'NOT_FOUND', 'Reclamo no encontrado');
+      return;
+    }
+    if (!canUserAccessClaim({ role: (req as any).authUser?.role, userId: (req as any).userId, claimUserId: claim.user_id })) {
+      sendApiError(req, res, 403, 'FORBIDDEN', 'No autorizado');
+      return;
+    }
+    await prisma.pqr_claim_messages.create({
+      data: {
+        claim_id: claim.id,
+        author_id: (req as any).userId,
+        message,
+      },
+    });
+    const updated = await prisma.pqr_claims.findUniqueOrThrow({ where: { id: claim.id }, include: claimIncludes });
+    res.status(201).json(formatClaim(updated));
+  } catch (error: any) {
+    console.error('[PQR] Add message error:', error);
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error agregando mensaje');
+  }
+});
+
+app.get('/api/admin/claims', authMiddleware, async (req, res) => {
+  try {
+    if (!isInternalClaimRole((req as any).authUser?.role)) {
+      sendApiError(req, res, 403, 'FORBIDDEN', 'Acceso denegado');
+      return;
+    }
+    const status = req.query.status ? String(req.query.status) : null;
+    const type = req.query.type ? String(req.query.type) : null;
+    if (status && !isPqrClaimStatus(status)) {
+      sendApiError(req, res, 400, 'BAD_REQUEST', 'Estado de reclamo inválido');
+      return;
+    }
+    if (type && !isPqrClaimType(type)) {
+      sendApiError(req, res, 400, 'BAD_REQUEST', 'Tipo de reclamo inválido');
+      return;
+    }
+    const claims = await prisma.pqr_claims.findMany({
+      where: {
+        ...(status ? { status: status as any } : {}),
+        ...(type ? { type: type as any } : {}),
+        ...(req.query.eventId ? { event_id: String(req.query.eventId) } : {}),
+        ...(req.query.userId ? { user_id: String(req.query.userId) } : {}),
+      },
+      orderBy: { created_at: 'desc' },
+      include: claimIncludes,
+    });
+    res.json(claims.map(formatClaim));
+  } catch (error: any) {
+    console.error('[PQR] Admin list claims error:', error);
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error obteniendo reclamos');
+  }
+});
+
+app.patch('/api/admin/claims/:id', authMiddleware, async (req, res) => {
+  try {
+    if (!isInternalClaimRole((req as any).authUser?.role)) {
+      sendApiError(req, res, 403, 'FORBIDDEN', 'Acceso denegado');
+      return;
+    }
+    const claim = await prisma.pqr_claims.findUnique({ where: { id: String(req.params.id) } });
+    if (!claim) {
+      sendApiError(req, res, 404, 'NOT_FOUND', 'Reclamo no encontrado');
+      return;
+    }
+
+    const status = req.body?.status ? String(req.body.status).trim() : null;
+    const assignedToUserId = req.body?.assignedToUserId ? String(req.body.assignedToUserId).trim() : undefined;
+    const decisionReason = req.body?.decisionReason !== undefined ? String(req.body.decisionReason ?? '').trim() : undefined;
+    const message = req.body?.message ? String(req.body.message).trim() : null;
+    if (status && !isPqrClaimStatus(status)) {
+      sendApiError(req, res, 400, 'BAD_REQUEST', 'Estado de reclamo inválido');
+      return;
+    }
+    if (!status && assignedToUserId === undefined && decisionReason === undefined && !message) {
+      sendApiError(req, res, 400, 'BAD_REQUEST', 'No hay cambios para aplicar');
+      return;
+    }
+
+    const updated = await prisma.$transaction(async (tx) => {
+      const nextStatus = status ?? claim.status;
+      await tx.pqr_claims.update({
+        where: { id: claim.id },
+        data: {
+          ...(status ? { status: status as any } : {}),
+          ...(assignedToUserId !== undefined ? { assigned_to_user_id: assignedToUserId || null } : {}),
+          ...(decisionReason !== undefined ? { decision_reason: decisionReason || null } : {}),
+          ...(['RESOLVED', 'REJECTED', 'CANCELLED'].includes(nextStatus) ? { resolved_at: new Date() } : { resolved_at: null }),
+          updated_at: new Date(),
+        },
+      });
+      if (status || message) {
+        await tx.pqr_claim_messages.create({
+          data: {
+            claim_id: claim.id,
+            author_id: (req as any).userId,
+            message: message || `Estado actualizado a ${nextStatus}`,
+            status_from: status ? claim.status as any : null,
+            status_to: status ? status as any : null,
+          },
+        });
+      }
+      return tx.pqr_claims.findUniqueOrThrow({ where: { id: claim.id }, include: claimIncludes });
+    });
+    res.json(formatClaim(updated));
+  } catch (error: any) {
+    console.error('[PQR] Admin update claim error:', error);
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error actualizando reclamo');
   }
 });
 

@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { Header } from "@/components/layout/Header";
 import { Footer } from "@/components/layout/Footer";
 import { useAppContext } from "@/context/AppContext";
-import { ShieldCheck, Plus, RefreshCw, Rocket, Building, MapPin, Users, Ticket, ExternalLink, Image as ImageIcon, X } from "lucide-react";
+import { ShieldCheck, Plus, RefreshCw, Rocket, Building, MapPin, Users, Ticket, ExternalLink, Image as ImageIcon, X, MessageSquareText } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 
 const getErrorMessage = (error: unknown, fallback: string) =>
@@ -39,14 +39,26 @@ interface AdminContractList {
   events: { id: string; title: string; contract_address: string; created_at: string }[];
 }
 
+interface AdminClaim {
+  id: string;
+  type: string;
+  status: string;
+  subject: string;
+  description: string;
+  createdAt: string;
+  user: { name: string; email: string } | null;
+}
+
 const AdminDashboard = () => {
   const { user, authStatus, apiFetch } = useAppContext();
   const navigate = useNavigate();
   const [events, setEvents] = useState<AdminEvent[]>([]);
   const [venues, setVenues] = useState<Venue[]>([]);
+  const [claims, setClaims] = useState<AdminClaim[]>([]);
   const [contractsData, setContractsData] = useState<AdminContractList | null>(null);
   const [loading, setLoading] = useState(true);
   const [deployingId, setDeployingId] = useState<string | null>(null);
+  const [eventsPage, setEventsPage] = useState(1);
   
   // Interactive Form State
   const [selectedVenueId, setSelectedVenueId] = useState<string>("");
@@ -54,6 +66,7 @@ const AdminDashboard = () => {
   const [sectionConfig, setSectionConfig] = useState<Record<string, { price: number; capacity: number }>>({});
   const [coverImage, setCoverImage] = useState<string | null>(null);
   const [coverImageName, setCoverImageName] = useState<string>("");
+  const [claimResponses, setClaimResponses] = useState<Record<string, string>>({});
   
   const { toast } = useToast();
 
@@ -65,8 +78,10 @@ const AdminDashboard = () => {
         apiFetch<Venue[]>("/api/admin/venues"),
         apiFetch<AdminContractList>("/api/admin/contracts")
       ]);
+      const claimsData = await apiFetch<AdminClaim[]>("/api/admin/claims").catch(() => []);
       setEvents(eventsData || []);
       setVenues(venuesData || []);
+      setClaims(claimsData || []);
       setContractsData(contractsRes || null);
     } catch (err: unknown) {
       toast({ title: "Error", description: getErrorMessage(err, "No fue posible cargar datos"), variant: "destructive" });
@@ -143,6 +158,14 @@ const AdminDashboard = () => {
   const totalVenueCapacity = selectedVenue ? selectedVenue.sections.reduce((sum, s) => sum + s.capacity, 0) : 0;
   const activeCapacity = selectedVenue ? selectedVenue.sections.filter(s => activeSections[s.id]).reduce((sum, s) => sum + (sectionConfig[s.id]?.capacity || 0), 0) : 0;
   const capacityPercent = totalVenueCapacity ? Math.round((activeCapacity / totalVenueCapacity) * 100) : 0;
+  const eventsPageSize = 5;
+  const eventsTotalPages = Math.max(1, Math.ceil(events.length / eventsPageSize));
+  const normalizedEventsPage = Math.min(eventsPage, eventsTotalPages);
+  const paginatedEvents = events.slice((normalizedEventsPage - 1) * eventsPageSize, normalizedEventsPage * eventsPageSize);
+
+  useEffect(() => {
+    if (eventsPage > eventsTotalPages) setEventsPage(eventsTotalPages);
+  }, [eventsPage, eventsTotalPages]);
 
   const handleCreate = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -202,6 +225,24 @@ const AdminDashboard = () => {
       toast({ title: "Fallo el Despliegue", description: getErrorMessage(err, "No fue posible desplegar el contrato"), variant: "destructive" });
     } finally {
       setDeployingId(null);
+    }
+  };
+
+  const updateClaim = async (claimId: string, status: string) => {
+    try {
+      await apiFetch(`/api/admin/claims/${claimId}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          status,
+          message: claimResponses[claimId] || undefined,
+          decisionReason: ["RESOLVED", "REJECTED"].includes(status) ? claimResponses[claimId] || "Revisado por soporte" : undefined,
+        }),
+      });
+      setClaimResponses((prev) => ({ ...prev, [claimId]: "" }));
+      toast({ title: "Reclamo actualizado", description: "La bitácora quedó registrada." });
+      loadData();
+    } catch (err: unknown) {
+      toast({ title: "Error actualizando reclamo", description: getErrorMessage(err, "No fue posible actualizar el reclamo"), variant: "destructive" });
     }
   };
 
@@ -383,14 +424,19 @@ const AdminDashboard = () => {
           {/* EVENTS LIST ROW */}
           <div className="bg-card rounded-xl p-6 border border-border shadow-sm overflow-hidden flex flex-col h-full">
             <div className="flex justify-between items-center mb-6">
-               <h2 className="text-lg font-bold flex items-center gap-2 uppercase tracking-tight">Directorio Híbrido</h2>
+               <div>
+                 <h2 className="text-lg font-bold flex items-center gap-2 uppercase tracking-tight">Directorio Híbrido</h2>
+                 <p className="text-xs text-muted-foreground mt-1">
+                   {events.length} evento{events.length !== 1 ? "s" : ""} · página {normalizedEventsPage} de {eventsTotalPages}
+                 </p>
+               </div>
                <button onClick={loadData} className="text-muted-foreground hover:text-foreground">
                  <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
                </button>
             </div>
             
-            <div className="flex-1 overflow-y-auto pr-2 custom-scrollbar space-y-3">
-                {events.map(e => (
+            <div className="flex-1 space-y-3">
+                {paginatedEvents.map(e => (
                   <div key={e.id} className="p-4 rounded-xl border border-border bg-background hover:border-primary/20 transition-colors">
                     <div className="flex justify-between items-start mb-2">
                       <div>
@@ -430,9 +476,84 @@ const AdminDashboard = () => {
                   </div>
                 )}
             </div>
+            {events.length > eventsPageSize && (
+              <div className="mt-5 pt-4 border-t border-border flex items-center justify-between gap-3">
+                <button
+                  type="button"
+                  onClick={() => setEventsPage((page) => Math.max(1, page - 1))}
+                  disabled={normalizedEventsPage === 1}
+                  className="rounded-lg border border-border px-3 py-2 text-xs font-bold text-muted-foreground hover:text-foreground disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  Anterior
+                </button>
+                <div className="flex items-center gap-1">
+                  {Array.from({ length: eventsTotalPages }, (_, idx) => idx + 1).map((page) => (
+                    <button
+                      key={page}
+                      type="button"
+                      onClick={() => setEventsPage(page)}
+                      className={`h-8 w-8 rounded-lg text-xs font-black transition-colors ${
+                        page === normalizedEventsPage
+                          ? "bg-primary text-primary-foreground"
+                          : "bg-background text-muted-foreground hover:bg-secondary hover:text-foreground"
+                      }`}
+                    >
+                      {page}
+                    </button>
+                  ))}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setEventsPage((page) => Math.min(eventsTotalPages, page + 1))}
+                  disabled={normalizedEventsPage === eventsTotalPages}
+                  className="rounded-lg border border-border px-3 py-2 text-xs font-bold text-muted-foreground hover:text-foreground disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  Siguiente
+                </button>
+              </div>
+            )}
           </div>
 
         </div>
+
+          <section className="bg-card rounded-xl p-6 border border-border shadow-sm">
+            <div className="flex items-center justify-between gap-3 mb-4">
+              <h2 className="text-lg font-bold flex items-center gap-2 uppercase tracking-tight">
+                <MessageSquareText className="w-5 h-5 text-primary" /> PQR y Reclamos
+              </h2>
+              <span className="text-xs font-bold text-muted-foreground">{claims.length} caso{claims.length !== 1 ? "s" : ""}</span>
+            </div>
+            {claims.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No hay reclamos registrados.</p>
+            ) : (
+              <div className="grid md:grid-cols-2 gap-3">
+                {claims.slice(0, 6).map((claim) => (
+                  <article key={claim.id} className="rounded-xl border border-border bg-background p-4 space-y-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <h3 className="font-black text-sm text-foreground">{claim.subject}</h3>
+                        <p className="text-xs text-muted-foreground">{claim.user?.email ?? "Usuario"} · {new Date(claim.createdAt).toLocaleString()}</p>
+                      </div>
+                      <span className="rounded-full bg-primary/10 px-2 py-1 text-[10px] font-black text-primary">{claim.status}</span>
+                    </div>
+                    <p className="text-xs text-muted-foreground line-clamp-2">{claim.description}</p>
+                    <textarea
+                      value={claimResponses[claim.id] ?? ""}
+                      onChange={(e) => setClaimResponses((prev) => ({ ...prev, [claim.id]: e.target.value }))}
+                      className="w-full rounded-lg border border-border bg-card px-3 py-2 text-xs resize-none"
+                      rows={2}
+                      placeholder="Respuesta o justificación interna"
+                    />
+                    <div className="flex flex-wrap gap-2">
+                      <button onClick={() => updateClaim(claim.id, "IN_REVIEW")} className="rounded bg-blue-600 px-3 py-1.5 text-xs font-bold text-white">En revisión</button>
+                      <button onClick={() => updateClaim(claim.id, "WAITING_USER")} className="rounded bg-amber-500 px-3 py-1.5 text-xs font-bold text-white">Pedir info</button>
+                      <button onClick={() => updateClaim(claim.id, "RESOLVED")} className="rounded bg-green-600 px-3 py-1.5 text-xs font-bold text-white">Resolver</button>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            )}
+          </section>
 
           {/* CONTRACT EXPLORER */}
           {contractsData && contractsData.factoryContractId && (

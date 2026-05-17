@@ -1,5 +1,5 @@
 import { Link, useLocation } from "react-router-dom";
-import { Ticket, ShoppingBag, User, Settings, LogOut, ArrowRightLeft } from "lucide-react";
+import { Ticket, ShoppingBag, User, Settings, LogOut, ArrowRightLeft, MessageSquareText } from "lucide-react";
 import { useAppContext } from "@/context/AppContext";
 
 const links = [
@@ -7,6 +7,7 @@ const links = [
   { to: "/mi-cuenta/entradas", label: "Mis Entradas", icon: Ticket },
   { to: "/mi-cuenta/compras", label: "Mis Compras", icon: ShoppingBag },
   { to: "/mi-cuenta/ventas-p2p", label: "Mis Ventas P2P", icon: ArrowRightLeft },
+  { to: "/mi-cuenta/reclamos", label: "PQR y Reclamos", icon: MessageSquareText },
   { to: "/mi-cuenta/perfil", label: "Mi Perfil", icon: User },
 ];
 

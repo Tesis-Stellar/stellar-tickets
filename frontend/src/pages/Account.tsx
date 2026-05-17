@@ -4,7 +4,7 @@ import { Header } from "@/components/layout/Header";
 import { Footer } from "@/components/layout/Footer";
 import { AccountSidebar } from "@/components/layout/AccountSidebar";
 import { useAppContext } from "@/context/AppContext";
-import { Ticket, ShoppingBag, User, Settings, ArrowRightLeft } from "lucide-react";
+import { Ticket, ShoppingBag, User, Settings, ArrowRightLeft, MessageSquareText } from "lucide-react";
 
 const Account = () => {
   const { isLoggedIn, authStatus, user, purchasedTickets, soldTickets, refreshTickets, refreshSoldTickets } = useAppContext();
@@ -30,6 +30,7 @@ const Account = () => {
     { to: "/mi-cuenta/entradas", icon: Ticket, label: "Mis Entradas", value: `${purchasedTickets.length} boleto${purchasedTickets.length !== 1 ? "s" : ""}` },
     { to: "/mi-cuenta/compras", icon: ShoppingBag, label: "Mis Compras", value: `${purchasesCount} compra${purchasesCount !== 1 ? "s" : ""}` },
     { to: "/mi-cuenta/ventas-p2p", icon: ArrowRightLeft, label: "Mis Ventas P2P", value: `${soldTickets.length} venta${soldTickets.length !== 1 ? "s" : ""}` },
+    { to: "/mi-cuenta/reclamos", icon: MessageSquareText, label: "PQR y Reclamos", value: "Soporte con evidencia" },
     { to: "/mi-cuenta/perfil", icon: User, label: "Mi Perfil", value: user?.name ?? "" },
     { to: "/contactanos", icon: Settings, label: "Ayuda", value: "Soporte y FAQ" },
   ];

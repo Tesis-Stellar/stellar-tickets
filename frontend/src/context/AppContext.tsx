@@ -48,6 +48,30 @@ export type ResaleFlowStatus = "building_xdr" | "signing" | "submitted" | "recon
 
 type ResaleFlowOptions = {
   onStatus?: (status: ResaleFlowStatus) => void;
+  priceCop?: number;
+};
+
+export type ResalePolicyInfo = {
+  canList: boolean;
+  reason?: string | null;
+  ticketStatus: string;
+  isForSale: boolean;
+  event?: { id: string; title: string; startsAt: string };
+  ticketType?: { id: string; name: string; price: number; serviceFee: number } | null;
+  policy: {
+    enabled: boolean;
+    limitType: "FIXED_PRICE" | "PERCENTAGE";
+    originalPriceAmount: number;
+    maxPriceAmount: number | null;
+    maxPricePercent: number | null;
+    resaleStartsAt: string | null;
+    resaleEndsAt: string | null;
+    resaleDeadline: string | null;
+    blockHoursBeforeEvent: number;
+    platformFeePercent: number;
+    organizerFeePercent: number;
+    sellerReceivesPercent: number;
+  } | null;
 };
 
 type TicketApiResponse = {
@@ -188,6 +212,7 @@ interface AppState {
   logout: () => void;
   updateProfile: (data: Partial<UserData>) => Promise<void>;
   secureTicketOnChain: (ticketId: string) => Promise<{ success: boolean; txHash?: string; nftContractAddress?: string | null; nftTokenId?: number | null; warning?: string; error?: string }>;
+  getTicketResalePolicy: (ticketId: string) => Promise<ResalePolicyInfo>;
   listTicketForSale: (ticketId: string, priceXLM: number, options?: ResaleFlowOptions) => Promise<{ success: boolean; txHash?: string; error?: string }>;
   cancelResaleListing: (ticketId: string, options?: ResaleFlowOptions) => Promise<{ success: boolean; txHash?: string; error?: string }>;
   buyResaleTicket: (contractAddress: string, ticketRootId: number, buyerPublicKey: string, currentVersion: number, options?: ResaleFlowOptions) => Promise<{ success: boolean; txHash?: string; error?: string }>;
@@ -875,7 +900,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         options?.onStatus?.("building_xdr");
         const { xdr, networkPassphrase, intentId } = await apiFetch<TransactionIntentResponse>("/api/transactions/list-ticket", {
           method: "POST",
-          body: JSON.stringify({ ticketId, price: priceStroops }),
+          body: JSON.stringify({ ticketId, price: priceStroops, priceCop: options?.priceCop }),
         });
         options?.onStatus?.("signing");
         const { signTransaction } = await import("@stellar/freighter-api");
@@ -908,6 +933,13 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       }
     },
     [apiFetch, ensureFreighterReady, waitForTicketReconciliation, walletAddress]
+  );
+
+  const getTicketResalePolicy = useCallback(
+    async (ticketId: string): Promise<ResalePolicyInfo> => {
+      return apiFetch<ResalePolicyInfo>(`/api/tickets/${ticketId}/resale-policy`);
+    },
+    [apiFetch]
   );
 
   const cancelResaleListing = useCallback(
@@ -1093,6 +1125,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         logout,
         updateProfile,
         secureTicketOnChain,
+        getTicketResalePolicy,
         listTicketForSale,
         cancelResaleListing,
         buyResaleTicket,

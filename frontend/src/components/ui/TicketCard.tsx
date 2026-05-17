@@ -1,6 +1,6 @@
 import { QrCode, MapPin, Calendar, ShieldCheck, Lock, ExternalLink, Tag, CheckCircle2 } from "lucide-react";
 import { QRCodeCanvas } from "qrcode.react";
-import type { PurchasedTicket, ResaleFlowStatus } from "@/context/AppContext";
+import type { PurchasedTicket, ResaleFlowStatus, ResalePolicyInfo } from "@/context/AppContext";
 import { useAppContext } from "@/context/AppContext";
 import { useXlmPrice, formatCOP } from "@/hooks/useXlmPrice";
 import { useState } from "react";
@@ -17,7 +17,7 @@ import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
 
 export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
-  const { secureTicketOnChain, listTicketForSale, cancelResaleListing, walletAddress } = useAppContext();
+  const { secureTicketOnChain, getTicketResalePolicy, listTicketForSale, cancelResaleListing, walletAddress } = useAppContext();
   const { toast } = useToast();
   const xlmCopPrice = useXlmPrice();
   const [isMinting, setIsMinting] = useState(false);
@@ -28,6 +28,8 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
   const [txHash, setTxHash] = useState<string | null>(null);
   const [resaleDialogOpen, setResaleDialogOpen] = useState(false);
   const [resalePriceInput, setResalePriceInput] = useState("");
+  const [resalePolicy, setResalePolicy] = useState<ResalePolicyInfo | null>(null);
+  const [isLoadingResalePolicy, setIsLoadingResalePolicy] = useState(false);
   const [nftDialogOpen, setNftDialogOpen] = useState(false);
   const [justMintedNftAddress, setJustMintedNftAddress] = useState<string | null>(null);
   const [justMintedNftTokenId, setJustMintedNftTokenId] = useState<number | null>(null);
@@ -36,8 +38,8 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
 
   const parsedPriceCOP = Number(resalePriceInput.replace(/[^\d]/g, ""));
   const previewXLM = xlmCopPrice && parsedPriceCOP > 0 ? parsedPriceCOP / xlmCopPrice : 0;
-  const organizerFeePct = 5;
-  const platformFeePct = 3;
+  const organizerFeePct = resalePolicy?.policy?.organizerFeePercent ?? 5;
+  const platformFeePct = resalePolicy?.policy?.platformFeePercent ?? 3;
   const sellerPct = 100 - organizerFeePct - platformFeePct;
   const organizerFeeCOP = (parsedPriceCOP * organizerFeePct) / 100;
   const platformFeeCOP = (parsedPriceCOP * platformFeePct) / 100;
@@ -99,7 +101,15 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
     }
   };
 
-  const openResaleDialog = () => {
+  const resaleMaxPriceCOP = resalePolicy?.policy?.maxPriceAmount ?? null;
+  const isAboveResaleLimit = resaleMaxPriceCOP != null && parsedPriceCOP > resaleMaxPriceCOP;
+  const resaleOriginalPriceCOP = resalePolicy?.policy?.originalPriceAmount ?? ticket.ticketType.price;
+  const resaleTicketStatus = resalePolicy?.ticketStatus ?? "ACTIVE";
+  const resaleDeadline = resalePolicy?.policy?.resaleDeadline
+    ? new Date(resalePolicy.policy.resaleDeadline).toLocaleString("es-CO", { dateStyle: "medium", timeStyle: "short" })
+    : "Sin fecha límite configurada";
+
+  const openResaleDialog = async () => {
     if (!walletAddress) {
       toast({
         title: "Conecta tu wallet",
@@ -116,18 +126,40 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
       });
       return;
     }
+    try {
+      setIsLoadingResalePolicy(true);
+      const policy = await getTicketResalePolicy(ticket.id);
+      setResalePolicy(policy);
+      if (!policy.canList) {
+        toast({
+          title: "Reventa no permitida",
+          description: policy.reason ?? "Este boleto no cumple las reglas de reventa del evento.",
+          variant: "destructive",
+        });
+        return;
+      }
+    } catch (error) {
+      toast({
+        title: "No se pudo consultar la política de reventa",
+        description: error instanceof Error ? error.message : "Intenta de nuevo en unos segundos.",
+        variant: "destructive",
+      });
+      return;
+    } finally {
+      setIsLoadingResalePolicy(false);
+    }
     setResalePriceInput("");
     setResaleDialogOpen(true);
   };
 
   const confirmResaleListing = async () => {
-    if (!xlmCopPrice || parsedPriceCOP <= 0) return;
+    if (!xlmCopPrice || parsedPriceCOP <= 0 || isAboveResaleLimit) return;
     const priceXLM = parsedPriceCOP / xlmCopPrice;
     setResaleDialogOpen(false);
     try {
       setIsListing(true);
       setResaleFlowStatus("building_xdr");
-      const result = await listTicketForSale(ticket.id, priceXLM, { onStatus: setResaleFlowStatus });
+      const result = await listTicketForSale(ticket.id, priceXLM, { onStatus: setResaleFlowStatus, priceCop: parsedPriceCOP });
       if (result.success) {
         setIsListed(true);
         setTxHash(result.txHash ?? txHash);
@@ -272,10 +304,18 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
             {!isListed && (
               <button
                 onClick={openResaleDialog}
-                disabled={isListing}
-                className={`inline-flex items-center gap-1 px-3 py-1 text-xs font-black rounded-lg transition-colors shadow-md shadow-blue-900/20 w-fit ${isListing ? "bg-muted text-muted-foreground" : "bg-blue-600 hover:bg-blue-700 text-white"}`}
+                disabled={isListing || isLoadingResalePolicy}
+                className={`inline-flex items-center gap-1 px-3 py-1 text-xs font-black rounded-lg transition-colors shadow-md shadow-blue-900/20 w-fit ${
+                  isListing || isLoadingResalePolicy ? "bg-muted text-muted-foreground" : "bg-blue-600 hover:bg-blue-700 text-white"
+                }`}
               >
-                {isListing && resaleFlowStatus ? resaleStatusLabel[resaleFlowStatus] : isListing ? "Listando en Soroban..." : "Vender boleta"}
+                {isLoadingResalePolicy
+                  ? "Validando reglas..."
+                  : isListing && resaleFlowStatus
+                    ? resaleStatusLabel[resaleFlowStatus]
+                    : isListing
+                      ? "Listando en Soroban..."
+                      : "Vender boleta"}
               </button>
             )}
             {(isListing || isCancelling) && resaleFlowStatus ? (
@@ -391,6 +431,37 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
             </div>
           </div>
 
+          <div className="rounded-lg border border-blue-200 bg-blue-50/60 p-3 space-y-2 text-sm">
+            <p className="text-xs font-bold uppercase tracking-wide text-blue-700">
+              Reglas de reventa del evento
+            </p>
+            <div className="grid grid-cols-1 gap-2 text-xs">
+              <div className="flex justify-between gap-3">
+                <span className="text-muted-foreground">Precio original</span>
+                <span className="font-mono font-semibold">{formatCOP(resaleOriginalPriceCOP)}</span>
+              </div>
+              <div className="flex justify-between gap-3">
+                <span className="text-muted-foreground">Precio máximo</span>
+                <span className="font-mono font-semibold">
+                  {resaleMaxPriceCOP != null ? formatCOP(resaleMaxPriceCOP) : "Sin límite"}
+                </span>
+              </div>
+              <div className="flex justify-between gap-3">
+                <span className="text-muted-foreground">Límite de publicación</span>
+                <span className="text-right font-medium">{resaleDeadline}</span>
+              </div>
+              <div className="flex justify-between gap-3">
+                <span className="text-muted-foreground">Estado del boleto</span>
+                <span className="font-mono font-semibold">{resaleTicketStatus}</span>
+              </div>
+            </div>
+            {isAboveResaleLimit ? (
+              <p className="rounded-md bg-red-50 px-2 py-1 text-xs font-semibold text-red-700">
+                El precio supera el máximo permitido para este evento.
+              </p>
+            ) : null}
+          </div>
+
           <div className="rounded-lg border border-border p-3 space-y-2 text-sm">
             <p className="text-xs font-bold uppercase tracking-wide text-muted-foreground">
               Desglose de comisiones
@@ -452,10 +523,10 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
           </Button>
           <Button
             onClick={confirmResaleListing}
-            disabled={parsedPriceCOP <= 0 || !xlmCopPrice}
+            disabled={parsedPriceCOP <= 0 || !xlmCopPrice || isAboveResaleLimit}
             className="bg-blue-600 hover:bg-blue-700 text-white"
           >
-            Listar por {parsedPriceCOP > 0 ? formatCOP(parsedPriceCOP) : "—"}
+            {isAboveResaleLimit ? "Precio no permitido" : `Listar por ${parsedPriceCOP > 0 ? formatCOP(parsedPriceCOP) : "—"}`}
           </Button>
         </DialogFooter>
       </DialogContent>
