@@ -186,6 +186,18 @@ const SeatSelection = () => {
 
   const venueType: VenueType = seatsResponse?.venueType ?? (event.venueType as VenueType) ?? "ARENA";
   const venueName = seatsResponse?.venueName ?? event.venue;
+  const isOperationalRole = user?.role === "ADMIN" || user?.role === "STAFF";
+  const seatTotals = sections.flatMap((section) => section.seats).reduce(
+    (acc, seat) => {
+      acc.total += 1;
+      acc[seat.status.toLowerCase() as "available" | "held" | "sold" | "blocked"] += 1;
+      return acc;
+    },
+    { total: 0, available: 0, held: 0, sold: 0, blocked: 0 }
+  );
+  const occupancyPercent = seatTotals.total > 0
+    ? Math.round(((seatTotals.sold + seatTotals.held) / seatTotals.total) * 100)
+    : 0;
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
@@ -202,7 +214,12 @@ const SeatSelection = () => {
 
         <div className="grid lg:grid-cols-3 gap-8">
           <div className="lg:col-span-2 bg-card rounded-xl border border-border p-6 overflow-x-auto">
-            <h2 className="font-black text-foreground uppercase tracking-tight mb-6">Selecciona tus Asientos</h2>
+            <h2 className="font-black text-foreground uppercase tracking-tight mb-2">
+              {isOperationalRole ? "Mapa Operativo de Asientos" : "Selecciona tus Asientos"}
+            </h2>
+            {isOperationalRole ? (
+              <p className="text-sm text-muted-foreground mb-6">Vista solo lectura: consulta ocupación y disponibilidad sin reservar asientos.</p>
+            ) : null}
             {error ? (
               <p className="text-sm text-destructive py-8 text-center">{error}</p>
             ) : (
@@ -210,8 +227,8 @@ const SeatSelection = () => {
                 venueType={venueType}
                 venueName={venueName}
                 sections={sections}
-                selectedSeats={selectedSeats}
-                onToggleSeat={toggleSeat}
+                selectedSeats={isOperationalRole ? [] : selectedSeats}
+                onToggleSeat={isOperationalRole ? () => {} : toggleSeat}
                 maxSeats={10}
               />
             )}
@@ -219,9 +236,40 @@ const SeatSelection = () => {
 
           <div>
             <div className="sticky top-24 bg-card rounded-xl border border-border p-6 space-y-4">
-              <h3 className="font-black text-foreground uppercase tracking-tight">Resumen</h3>
+              <h3 className="font-black text-foreground uppercase tracking-tight">{isOperationalRole ? "Estado del aforo" : "Resumen"}</h3>
 
-              {selectedSeats.length === 0 ? (
+              {isOperationalRole ? (
+                <>
+                  <div className="rounded-xl bg-secondary p-4">
+                    <p className="text-xs text-muted-foreground font-bold uppercase tracking-wider">Ocupación</p>
+                    <p className="text-3xl font-black text-foreground">{occupancyPercent}%</p>
+                    <div className="mt-3 h-2 rounded-full bg-background overflow-hidden">
+                      <div className="h-full bg-primary" style={{ width: `${Math.min(100, occupancyPercent)}%` }} />
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="rounded-lg border border-border p-3">
+                      <p className="text-xs font-bold uppercase text-muted-foreground">Disponibles</p>
+                      <p className="text-xl font-black text-success">{seatTotals.available}</p>
+                    </div>
+                    <div className="rounded-lg border border-border p-3">
+                      <p className="text-xs font-bold uppercase text-muted-foreground">Vendidos</p>
+                      <p className="text-xl font-black text-foreground">{seatTotals.sold}</p>
+                    </div>
+                    <div className="rounded-lg border border-border p-3">
+                      <p className="text-xs font-bold uppercase text-muted-foreground">Reservados</p>
+                      <p className="text-xl font-black text-foreground">{seatTotals.held}</p>
+                    </div>
+                    <div className="rounded-lg border border-border p-3">
+                      <p className="text-xs font-bold uppercase text-muted-foreground">Bloqueados</p>
+                      <p className="text-xl font-black text-foreground">{seatTotals.blocked}</p>
+                    </div>
+                  </div>
+                  <p className="rounded-lg bg-secondary px-3 py-3 text-center text-xs font-bold text-muted-foreground">
+                    Las cuentas operativas no pueden seleccionar ni reservar asientos.
+                  </p>
+                </>
+              ) : selectedSeats.length === 0 ? (
                 <div className="text-center py-6 space-y-2">
                   <p className="text-sm text-muted-foreground">Selecciona una sección en el mapa y luego haz clic en los asientos.</p>
                   <p className="text-xs text-muted-foreground">(Máx. 10 asientos)</p>
