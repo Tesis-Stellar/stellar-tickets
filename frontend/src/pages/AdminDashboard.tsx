@@ -232,19 +232,19 @@ const AdminDashboard = () => {
   const adminSections: { id: AdminSection; label: string; icon: typeof Settings }[] = [
     { id: "panel", label: "Panel", icon: Settings },
     { id: "events", label: "Eventos", icon: Plus },
-    { id: "policies", label: "Políticas de Reventa", icon: SlidersHorizontal },
+    { id: "policies", label: "Reglas Secure Ticket", icon: SlidersHorizontal },
     { id: "claims", label: "PQR y Reclamos", icon: MessageSquareText },
-    { id: "contracts", label: "Contratos On-Chain", icon: ShieldCheck },
-    { id: "scanner", label: "Escáner", icon: QrCode },
+    { id: "contracts", label: "Contratos Secure Ticket", icon: ShieldCheck },
+    { id: "scanner", label: "Secure Ticket Scanner", icon: QrCode },
     { id: "profile", label: "Perfil", icon: Users },
   ];
 
   const adminCards: { id: AdminSection; icon: typeof Settings; label: string; value: string }[] = [
     { id: "events", icon: Building, label: "Eventos", value: `${events.length} registrado${events.length !== 1 ? "s" : ""}` },
-    { id: "contracts", icon: ShieldCheck, label: "Contratos", value: `${deployedContractsCount} desplegado${deployedContractsCount !== 1 ? "s" : ""}` },
-    { id: "policies", icon: SlidersHorizontal, label: "Políticas de Reventa", value: "Reglas por evento" },
+    { id: "contracts", icon: ShieldCheck, label: "Secure Ticket", value: `${deployedContractsCount} contrato${deployedContractsCount !== 1 ? "s" : ""}` },
+    { id: "policies", icon: SlidersHorizontal, label: "Reglas Secure Ticket", value: "Control P2P" },
     { id: "claims", icon: MessageSquareText, label: "PQR y Reclamos", value: `${claims.length} caso${claims.length !== 1 ? "s" : ""}` },
-    { id: "scanner", icon: QrCode, label: "Escáner", value: "Validación en puerta" },
+    { id: "scanner", icon: QrCode, label: "Secure Ticket Scanner", value: "Validación en puerta" },
     { id: "events", icon: Rocket, label: "Pendientes de Deploy", value: `${pendingDeployCount} evento${pendingDeployCount !== 1 ? "s" : ""}` },
   ];
 
@@ -402,9 +402,9 @@ const AdminDashboard = () => {
         
         <div className="flex flex-col gap-2">
           <h1 className="text-3xl font-black text-foreground flex items-center gap-3">
-            <ShieldCheck className="w-8 h-8 text-primary" /> Panel de Organización
+            <ShieldCheck className="w-8 h-8 text-primary" /> Secure Ticket Console
           </h1>
-          <p className="text-muted-foreground text-sm">Crea eventos fraccionando el aforo de estadios oficiales y despliega tus Smart Contracts.</p>
+          <p className="text-muted-foreground text-sm">Capa operativa de confianza para TuTicket: contratos, reglas de reventa, scanner y evidencia.</p>
         </div>
 
         <div className="grid lg:grid-cols-4 gap-6">
@@ -935,10 +935,10 @@ const AdminDashboard = () => {
           {activeSection === "scanner" && (
             <section className="bg-card rounded-xl p-6 border border-border shadow-sm">
               <h2 className="text-lg font-bold flex items-center gap-2 uppercase tracking-tight mb-3">
-                <QrCode className="w-5 h-5 text-primary" /> Escáner de Tickets
+                <QrCode className="w-5 h-5 text-primary" /> Secure Ticket Scanner
               </h2>
               <p className="text-sm text-muted-foreground mb-5">
-                Acceso operativo para validar QR firmados en puerta y registrar check-ins.
+                Acceso operativo de Secure Ticket para validar QR firmados en puerta y registrar check-ins.
               </p>
               <button
                 type="button"
@@ -954,7 +954,7 @@ const AdminDashboard = () => {
           {activeSection === "contracts" && contractsData && contractsData.factoryContractId && (
             <div className="md:col-span-2 bg-card rounded-xl p-6 border border-amber-500/20 shadow-sm overflow-hidden flex flex-col lg:col-span-2 mt-4">
               <h2 className="text-xl font-black flex items-center gap-2 uppercase tracking-tight text-amber-500 mb-6">
-                <ShieldCheck className="w-6 h-6" /> Explorador de Contratos On-Chain
+                <ShieldCheck className="w-6 h-6" /> Explorador Secure Ticket On-Chain
               </h2>
               
               <div className="mb-8 p-5 bg-amber-500/10 border border-amber-500/20 rounded-xl relative overflow-hidden">
@@ -1000,7 +1000,7 @@ const AdminDashboard = () => {
           {activeSection === "contracts" && (!contractsData || !contractsData.factoryContractId) && (
             <section className="bg-card rounded-xl p-6 border border-border shadow-sm">
               <h2 className="text-lg font-bold flex items-center gap-2 uppercase tracking-tight mb-3">
-                <ShieldCheck className="w-5 h-5 text-primary" /> Contratos On-Chain
+                <ShieldCheck className="w-5 h-5 text-primary" /> Contratos Secure Ticket
               </h2>
               <p className="text-sm text-muted-foreground">No se pudo cargar información de contratos todavía.</p>
             </section>

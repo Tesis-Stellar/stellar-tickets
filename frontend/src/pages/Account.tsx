@@ -27,7 +27,7 @@ const Account = () => {
   if (user?.role === "ADMIN") return <AdminDashboard />;
   if (user?.role === "STAFF") {
     const staffCards = [
-      { to: "/escanear", icon: QrCode, label: "Escáner", value: "Validación en puerta" },
+      { to: "/escanear", icon: QrCode, label: "Secure Ticket Scanner", value: "Validación en puerta" },
       { to: "/mi-cuenta/perfil", icon: User, label: "Perfil", value: user?.name ?? "" },
       { to: "/contactanos", icon: ShieldCheck, label: "Ayuda operativa", value: "Soporte y FAQ" },
     ];

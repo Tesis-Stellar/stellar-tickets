@@ -2,16 +2,16 @@
 
 ## Objetivo
 
-Documentar el despliegue real del prototipo Secure Ticket para evitar contradicciones entre SAD, SRS, demo y codigo.
+Documentar el despliegue real del prototipo para evitar contradicciones entre SAD, SRS, demo y codigo. En la narrativa del producto, TuTicket es la ticketera demo y Secure Ticket es la capa/servicio Web2.5 de confianza que TuTicket consume para contratos, QR firmado, reventa controlada, evidencia y validacion operativa.
 
 ## Topologia Real
 
 | Capa | Runtime actual | Rol |
 | --- | --- | --- |
-| Frontend | Vite/React en Vercel o local | UI, Freighter, rutas de demo |
-| Backend/API | Node.js + Express en Railway o local long-lived | Auth, carrito, checkout simulado, scanner, XDR, submit, admin |
+| Frontend TuTicket | Vite/React en Vercel o local | UI de ticketera, compra demo, cuenta de usuario y Freighter para clientes |
+| Secure Ticket API | Node.js + Express en Railway o local long-lived | Auth, checkout simulado, scanner, XDR, submit, reglas P2P, evidencia y consola operativa |
 | Base de datos | PostgreSQL/Supabase, schema `ticketing` | Proyeccion operativa, cache, ordenes, tickets, checkins |
-| Blockchain | Stellar Testnet / Soroban | Contratos, eventos on-chain y validaciones Web3 |
+| Blockchain | Stellar Testnet / Soroban | Contratos Secure Ticket, eventos on-chain y validaciones Web3 |
 | Indexer | Proceso Node long-lived | Polling Soroban RPC, `onchain_events`, `indexer_state`, proyeccion DB |
 
 ## Backend Long-Lived

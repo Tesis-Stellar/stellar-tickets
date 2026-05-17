@@ -80,9 +80,9 @@ export const ScannerPage = () => {
       <main className="flex-1 flex flex-col items-center justify-start py-8 px-4 w-full max-w-lg mx-auto">
         <div className="w-full text-center mb-6">
           <h1 className="text-2xl font-black text-foreground flex items-center justify-center gap-2">
-            <Camera className="w-6 h-6 text-primary" /> Validación QR
+            <Camera className="w-6 h-6 text-primary" /> Secure Ticket Scanner
           </h1>
-          <p className="text-sm text-muted-foreground mt-1">Escanea los boletos de los asistentes.</p>
+          <p className="text-sm text-muted-foreground mt-1">Valida QR firmados de TuTicket en la capa Secure Ticket.</p>
         </div>
 
         <div className="w-full aspect-square bg-black rounded-3xl overflow-hidden relative shadow-2xl border-4 border-border">

@@ -225,7 +225,7 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
           <div className="mt-2 flex flex-col gap-2">
             <div className="flex items-center gap-2 flex-wrap">
               <span className="inline-flex items-center gap-1 px-3 py-1 bg-success/10 text-success text-xs font-black rounded-lg border border-success/20">
-                <ShieldCheck className="w-4 h-4" /> Asegurado en Blockchain
+                <ShieldCheck className="w-4 h-4" /> Asegurado por Secure Ticket
               </span>
               {isListed && (
                 <>
@@ -329,7 +329,7 @@ export const TicketCard = ({ ticket }: { ticket: PurchasedTicket }) => {
             className={`inline-flex items-center gap-1.5 px-4 py-2 mt-2 text-xs font-black rounded-lg transition-all ${isMinting ? "bg-muted text-muted-foreground" : "bg-purple-600 hover:bg-purple-700 text-white shadow-md shadow-purple-900/20"}`}
           >
             <Lock className="w-3.5 h-3.5" />
-            {isMinting ? "Registrando en Soroban..." : "Asegurar en Blockchain"}
+            {isMinting ? "Registrando en Secure Ticket..." : "Asegurar con Secure Ticket"}
           </button>
         )}
       </div>

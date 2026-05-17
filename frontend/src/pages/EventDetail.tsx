@@ -196,7 +196,7 @@ const EventDetail = () => {
               <div className="bg-card rounded-xl border border-border p-6 space-y-5">
                 <div className="flex items-center justify-between gap-3">
                   <div>
-                    <p className="text-xs font-black uppercase tracking-widest text-primary">Vista operativa</p>
+                    <p className="text-xs font-black uppercase tracking-widest text-primary">Secure Ticket Console</p>
                     <h3 className="font-black text-foreground uppercase tracking-tight mt-1">Estado del evento</h3>
                   </div>
                   <Activity className="w-8 h-8 text-primary" />
@@ -245,13 +245,13 @@ const EventDetail = () => {
                   </Link>
                   {user?.role === "ADMIN" ? (
                     <Link to="/mi-cuenta" className="flex items-center justify-center gap-2 w-full py-3 border border-border hover:bg-secondary text-foreground font-black rounded-lg text-center text-sm transition-colors">
-                      Panel administrativo
+                      Secure Ticket Console
                     </Link>
                   ) : null}
                 </div>
 
                 <p className="text-xs text-muted-foreground leading-relaxed">
-                  Las cuentas operativas no compran boletos. Esta vista resume aforo y disponibilidad para control de acceso y soporte.
+                  Las cuentas operativas no compran boletos. Secure Ticket resume aforo y disponibilidad para control de acceso y soporte.
                 </p>
               </div>
             ) : (
@@ -271,7 +271,7 @@ const EventDetail = () => {
               <h3 className="font-black text-purple-600 uppercase tracking-tight text-sm flex items-center gap-2">
                 <ShieldCheck className="w-4 h-4" /> Reventa P2P Segura
               </h3>
-              <p className="text-xs text-muted-foreground leading-relaxed">Boletos revendidos por fans, custodiados y garantizados por los Contratos de Soroban.</p>
+              <p className="text-xs text-muted-foreground leading-relaxed">Boletos revendidos por fans, custodiados y garantizados por Secure Ticket sobre Soroban.</p>
 
               <div className="space-y-3">
                 {liveTickets.length === 0 ? (
