@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { Header } from "@/components/layout/Header";
 import { Footer } from "@/components/layout/Footer";
 import { useAppContext } from "@/context/AppContext";
-import { ShieldCheck, Plus, RefreshCw, Rocket, Building, MapPin, Users, Ticket, ExternalLink, Image as ImageIcon, X, MessageSquareText, SlidersHorizontal, Settings, LogOut, QrCode } from "lucide-react";
+import { ShieldCheck, Plus, RefreshCw, Rocket, Building, MapPin, Users, Ticket, ExternalLink, Image as ImageIcon, X, MessageSquareText, SlidersHorizontal, Settings, LogOut, QrCode, Eye, EyeOff } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 
 const getErrorMessage = (error: unknown, fallback: string) =>
@@ -118,6 +118,7 @@ const AdminDashboard = () => {
   const [loading, setLoading] = useState(true);
   const [deployingId, setDeployingId] = useState<string | null>(null);
   const [eventsPage, setEventsPage] = useState(1);
+  const [showMasterAccount, setShowMasterAccount] = useState(false);
   
   // Interactive Form State
   const [selectedVenueId, setSelectedVenueId] = useState<string>("");
@@ -961,16 +962,31 @@ const AdminDashboard = () => {
                 <div className="absolute top-0 right-0 p-4 opacity-10 pointer-events-none"><Building className="w-24 h-24" /></div>
                 <h3 className="relative text-sm font-bold text-amber-500 uppercase flex items-center gap-1.5"><Rocket className="w-4 h-4"/> Supremo: Cuenta Maestra Organizadora</h3>
                 <p className="relative text-xs text-muted-foreground mt-1 mb-3">Tu billetera administradora en Stellar. Despliega y delega permisos a todas las fábricas y eventos creados de forma descentralizada.</p>
-                <div className="relative z-10 font-mono bg-background p-3 rounded-md text-sm border border-border flex items-center justify-between">
-                  <span className="truncate mr-4 text-foreground/80">{contractsData.factoryContractId}</span>
-                  <a
-                    target="_blank"
-                    rel="noreferrer"
-                    href={`https://stellar.expert/explorer/testnet/${contractsData.factoryContractId.startsWith("C") ? "contract" : "account"}/${contractsData.factoryContractId}`}
-                    className="text-[10px] text-blue-500 font-bold hover:underline flex items-center gap-1 shrink-0 bg-blue-500/10 px-2 py-1 rounded cursor-pointer"
-                  >
-                    Stellar Expert <ExternalLink className="w-3 h-3"/>
-                  </a>
+                <div className="relative z-10 font-mono bg-background p-3 rounded-md text-sm border border-border flex items-center justify-between gap-2">
+                  <span className="truncate mr-2 text-foreground/80">
+                    {showMasterAccount ? contractsData.factoryContractId : `${contractsData.factoryContractId.slice(0, 8)}••••••••••••${contractsData.factoryContractId.slice(-6)}`}
+                  </span>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => setShowMasterAccount((value) => !value)}
+                      className="text-[10px] text-muted-foreground font-bold hover:text-foreground flex items-center gap-1 bg-secondary px-2 py-1 rounded cursor-pointer"
+                      aria-label={showMasterAccount ? "Ocultar cuenta maestra" : "Mostrar cuenta maestra"}
+                    >
+                      {showMasterAccount ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
+                      {showMasterAccount ? "Ocultar" : "Mostrar"}
+                    </button>
+                    {showMasterAccount && (
+                      <a
+                        target="_blank"
+                        rel="noreferrer"
+                        href={`https://stellar.expert/explorer/testnet/${contractsData.factoryContractId.startsWith("C") ? "contract" : "account"}/${contractsData.factoryContractId}`}
+                        className="text-[10px] text-blue-500 font-bold hover:underline flex items-center gap-1 bg-blue-500/10 px-2 py-1 rounded cursor-pointer"
+                      >
+                        Stellar Expert <ExternalLink className="w-3 h-3"/>
+                      </a>
+                    )}
+                  </div>
                 </div>
               </div>
 
