@@ -81,6 +81,41 @@ test('POST /api/auth/login rejects invalid credentials', async () => {
   assert.ok(res.body.requestId);
 });
 
+test('POST /api/auth/register rejects duplicate identity documents with 409', async () => {
+  const suffix = Date.now();
+  const documentNumber = `REG-DOC-${suffix}`;
+
+  await request(app)
+    .post('/api/auth/register')
+    .send({
+      firstName: 'Registro',
+      lastName: 'Uno',
+      email: `register-one-${suffix}@stellar-tickets.local`,
+      password: 'Prueba1912',
+      documentType: 'CC',
+      documentNumber,
+      phone: '3000000101',
+    })
+    .expect(200);
+
+  const res = await request(app)
+    .post('/api/auth/register')
+    .send({
+      firstName: 'Registro',
+      lastName: 'Dos',
+      email: `register-two-${suffix}@stellar-tickets.local`,
+      password: 'Prueba1912',
+      documentType: 'CC',
+      documentNumber,
+      phone: '3000000102',
+    })
+    .expect(409);
+
+  assert.equal(res.body.code, 'CONFLICT');
+  assert.equal(res.body.message, 'Ya existe una cuenta con ese documento de identidad');
+  assert.ok(res.body.requestId);
+});
+
 test('GET /api/cart requires authentication', async () => {
   const res = await request(app).get('/api/cart').expect(401);
   assert.equal(res.body.code, 'UNAUTHORIZED');

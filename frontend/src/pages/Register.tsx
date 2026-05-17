@@ -37,8 +37,8 @@ const Register = () => {
       setIsSubmitting(true);
       await register({ name: form.name, email: form.email, phone: form.phone, document: form.document, password: form.password });
       navigate("/mi-cuenta");
-    } catch {
-      setErrors({ submit: "No se pudo crear la cuenta" });
+    } catch (error) {
+      setErrors({ submit: error instanceof Error ? error.message : "No se pudo crear la cuenta" });
     } finally {
       setIsSubmitting(false);
     }

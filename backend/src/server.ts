@@ -2387,6 +2387,15 @@ app.post('/api/auth/register', authRateLimit, async (req, res) => {
       return;
     }
 
+    const normalizedDocumentType = documentType || 'CC';
+    const existingDocument = await prisma.users.findFirst({
+      where: { document_type: normalizedDocumentType, document_number: documentNumber, deleted_at: null },
+    });
+    if (existingDocument) {
+      sendApiError(req, res, 409, 'CONFLICT', 'Ya existe una cuenta con ese documento de identidad');
+      return;
+    }
+
     const password_hash = await bcrypt.hash(password, 10);
     const user = await prisma.users.create({
       data: {
@@ -2394,7 +2403,7 @@ app.post('/api/auth/register', authRateLimit, async (req, res) => {
         last_name: lastName || '',
         email,
         password_hash,
-        document_type: documentType || 'CC',
+        document_type: normalizedDocumentType,
         document_number: documentNumber,
         phone: phone || null,
       },
@@ -2403,6 +2412,14 @@ app.post('/api/auth/register', authRateLimit, async (req, res) => {
     const accessToken = jwt.sign({ userId: user.id }, EFFECTIVE_JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
     res.json({ accessToken, user: toUserDto(user) });
   } catch (error: any) {
+    if (error?.code === 'P2002') {
+      const target = Array.isArray(error?.meta?.target) ? error.meta.target.join(',') : String(error?.meta?.target ?? '');
+      const message = target.includes('document')
+        ? 'Ya existe una cuenta con ese documento de identidad'
+        : 'Ya existe una cuenta con esos datos';
+      sendApiError(req, res, 409, 'CONFLICT', message);
+      return;
+    }
     console.error('[AUTH] Register error:', error);
     sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error interno del servidor');
   }
