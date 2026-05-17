@@ -16,7 +16,7 @@ const Field = ({ label, name, type = "text", placeholder = "", value, onChange, 
 );
 
 const Checkout = () => {
-  const { cart, checkout, isLoggedIn, authStatus } = useAppContext();
+  const { cart, checkout, isLoggedIn, authStatus, user } = useAppContext();
   const location = useLocation();
   const [step, setStep] = useState(1);
   const [form, setForm] = useState({ name: "", email: "", phone: "", document: "", docType: "CC", payMethod: "card", terms: false });
@@ -38,6 +38,21 @@ const Checkout = () => {
 
   if (!isLoggedIn) {
     return <Navigate to="/login" replace state={{ from: location.pathname, message: "Inicia sesión para finalizar la compra." }} />;
+  }
+
+  if (user?.role !== "CUSTOMER") {
+    return (
+      <div className="min-h-screen bg-background flex flex-col"><Header />
+        <main className="flex-1 flex items-center justify-center px-4">
+          <div className="text-center space-y-4 max-w-md">
+            <CreditCard className="w-16 h-16 text-muted-foreground mx-auto" />
+            <h1 className="text-2xl font-black text-foreground">Checkout no disponible</h1>
+            <p className="text-sm text-muted-foreground">Las cuentas operativas no pueden comprar boletos ni confirmar pagos simulados.</p>
+            <Link to="/mi-cuenta" className="inline-block py-3 px-6 bg-primary text-primary-foreground font-bold rounded-lg text-sm">Volver a Mi Cuenta</Link>
+          </div>
+        </main>
+      <Footer /></div>
+    );
   }
 
   if (cart.length === 0 && step < 3) return (

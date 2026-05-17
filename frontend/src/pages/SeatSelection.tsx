@@ -36,7 +36,7 @@ const SeatSelection = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const location = useLocation();
-  const { addToCart, apiFetch, isLoggedIn } = useAppContext();
+  const { addToCart, apiFetch, isLoggedIn, user } = useAppContext();
   const { toast } = useToast();
   const [event, setEvent] = useState<EventData | null>(null);
   const [seatsResponse, setSeatsResponse] = useState<SeatsApiResponse | null>(null);
@@ -96,6 +96,10 @@ const SeatSelection = () => {
           message: "Inicia sesión para agregar asientos al carrito.",
         },
       });
+      return;
+    }
+    if (user?.role !== "CUSTOMER") {
+      navigate("/mi-cuenta");
       return;
     }
     setAddingToCart(true);
@@ -253,14 +257,18 @@ const SeatSelection = () => {
                     </div>
                   </div>
 
-                  <button
-                    onClick={handleAdd}
-                    disabled={addingToCart}
-                    className="w-full py-3 bg-accent hover:bg-accent/90 disabled:opacity-60 text-accent-foreground font-black rounded-lg flex items-center justify-center gap-2 transition-colors text-sm"
-                  >
-                    {addingToCart ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShoppingCart className="w-4 h-4" />}
-                    {addingToCart ? "Agregando..." : "Agregar al Carrito"}
-                  </button>
+                  {user?.role && user.role !== "CUSTOMER" ? (
+                    <p className="rounded-lg bg-secondary px-3 py-3 text-center text-xs font-bold text-muted-foreground">Las cuentas operativas no pueden comprar boletos.</p>
+                  ) : (
+                    <button
+                      onClick={handleAdd}
+                      disabled={addingToCart}
+                      className="w-full py-3 bg-accent hover:bg-accent/90 disabled:opacity-60 text-accent-foreground font-black rounded-lg flex items-center justify-center gap-2 transition-colors text-sm"
+                    >
+                      {addingToCart ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShoppingCart className="w-4 h-4" />}
+                      {addingToCart ? "Agregando..." : "Agregar al Carrito"}
+                    </button>
+                  )}
                 </>
               )}
             </div>

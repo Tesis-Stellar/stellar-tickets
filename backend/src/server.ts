@@ -190,6 +190,15 @@ async function authMiddleware(req: Request, res: Response, next: NextFunction) {
   }
 }
 
+function requireCustomerRole(req: Request, res: Response): boolean {
+  const role = (req as any).authUser?.role;
+  if (role !== 'CUSTOMER') {
+    sendApiError(req, res, 403, 'FORBIDDEN', 'Las cuentas operativas no pueden comprar boletos');
+    return false;
+  }
+  return true;
+}
+
 const rateLimitBuckets = new Map<string, RateLimitBucket>();
 
 function rateLimit(options: { key: string; windowMs: number; max: number }) {
@@ -3445,6 +3454,7 @@ app.get('/api/cart', authMiddleware, async (req, res) => {
 //   - Assigned seating: { ticketTypeId, seatIds: [seatUuid, ...] } — one cart_item per seat
 app.post('/api/cart/items', authMiddleware, async (req, res) => {
   try {
+    if (!requireCustomerRole(req, res)) return;
     const userId = (req as any).userId;
     const { ticketTypeId, quantity, seatIds } = req.body;
     await releaseExpiredSeatHolds();
@@ -3566,6 +3576,7 @@ app.post('/api/cart/items', authMiddleware, async (req, res) => {
 // PATCH /api/cart/items/:id — update quantity
 app.patch('/api/cart/items/:id', authMiddleware, async (req, res) => {
   try {
+    if (!requireCustomerRole(req, res)) return;
     const userId = (req as any).userId;
     const { quantity } = req.body;
     if (!quantity || quantity < 1) {
@@ -3593,6 +3604,7 @@ app.patch('/api/cart/items/:id', authMiddleware, async (req, res) => {
 // DELETE /api/cart/items/:id — remove single item (releases HELD inventory)
 app.delete('/api/cart/items/:id', authMiddleware, async (req, res) => {
   try {
+    if (!requireCustomerRole(req, res)) return;
     const userId = (req as any).userId;
     const item = await prisma.cart_items.findFirst({
       where: {
@@ -3635,6 +3647,7 @@ app.delete('/api/cart/items/:id', authMiddleware, async (req, res) => {
 // DELETE /api/cart/clear — remove all items from active cart (releases HELD inventory)
 app.delete('/api/cart/clear', authMiddleware, async (req, res) => {
   try {
+    if (!requireCustomerRole(req, res)) return;
     const userId = (req as any).userId;
     const cart = await prisma.carts.findFirst({
       where: { user_id: userId, status: 'ACTIVE' },
@@ -3678,6 +3691,7 @@ app.delete('/api/cart/clear', authMiddleware, async (req, res) => {
 // POST /api/checkout/preview — validate cart, return totals
 app.post('/api/checkout/preview', authMiddleware, async (req, res) => {
   try {
+    if (!requireCustomerRole(req, res)) return;
     const userId = (req as any).userId;
     await releaseExpiredSeatHolds();
     const cart = await prisma.carts.findFirst({
@@ -3713,6 +3727,7 @@ app.post('/api/checkout/preview', authMiddleware, async (req, res) => {
 // POST /api/checkout/confirm — create order from cart
 app.post('/api/checkout/confirm', authMiddleware, async (req, res) => {
   try {
+    if (!requireCustomerRole(req, res)) return;
     const userId = (req as any).userId;
     const { buyerEmail, buyerPhone, paymentMethod } = req.body;
     const requestedIdempotencyKey = normalizeIdempotencyKey(req.body?.idempotencyKey ?? req.headers['idempotency-key']);

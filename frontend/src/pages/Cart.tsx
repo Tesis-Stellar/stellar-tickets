@@ -13,10 +13,25 @@ const getVenueName = (venue: unknown) => {
 };
 
 const Cart = () => {
-  const { cart, removeFromCart, updateCartQuantity, clearCart } = useAppContext();
+  const { cart, removeFromCart, updateCartQuantity, clearCart, user, isLoggedIn } = useAppContext();
   const subtotal = cart.reduce((s, c) => s + c.ticketType.price * c.quantity, 0);
   const fees = cart.reduce((s, c) => s + c.ticketType.serviceFee * c.quantity, 0);
   const total = subtotal + fees;
+
+  if (isLoggedIn && user?.role !== "CUSTOMER") return (
+    <div className="min-h-screen bg-background flex flex-col">
+      <Header />
+      <main className="flex-1 flex items-center justify-center px-4">
+        <div className="text-center space-y-4 max-w-md">
+          <ShoppingCart className="w-16 h-16 text-muted-foreground mx-auto" />
+          <h1 className="text-2xl font-black text-foreground">Carrito no disponible</h1>
+          <p className="text-sm text-muted-foreground">Las cuentas operativas están reservadas para administración y validación, no para compra de boletos.</p>
+          <Link to="/mi-cuenta" className="inline-block py-3 px-6 bg-primary text-primary-foreground font-bold rounded-lg text-sm hover:bg-primary/90 transition-colors">Volver a Mi Cuenta</Link>
+        </div>
+      </main>
+      <Footer />
+    </div>
+  );
 
   if (cart.length === 0) return (
     <div className="min-h-screen bg-background flex flex-col">

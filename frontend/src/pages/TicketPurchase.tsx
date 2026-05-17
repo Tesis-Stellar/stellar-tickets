@@ -12,7 +12,7 @@ const TicketPurchase = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const location = useLocation();
-  const { addToCart, isLoggedIn } = useAppContext();
+  const { addToCart, isLoggedIn, user } = useAppContext();
   const [event, setEvent] = useState<EventData | null>(null);
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<Record<string, number>>({});
@@ -71,6 +71,10 @@ const TicketPurchase = () => {
       });
       return;
     }
+    if (user?.role !== "CUSTOMER") {
+      navigate("/mi-cuenta");
+      return;
+    }
     await Promise.all(Object.entries(selected).map(async ([tid, qty]) => {
       const tt = event.ticketTypes.find((t) => t.id === tid);
       if (tt && qty > 0) await addToCart({ event, ticketType: tt, quantity: qty });
@@ -103,7 +107,11 @@ const TicketPurchase = () => {
                   })}
                   <hr className="border-border" />
                   <div className="flex justify-between font-black text-foreground"><span>Total</span><span>${totalPrice.toLocaleString("es-CO")}</span></div>
-                  <button onClick={handleAdd} className="w-full py-3 bg-accent hover:bg-accent/90 text-accent-foreground font-black rounded-lg flex items-center justify-center gap-2 transition-colors text-sm"><ShoppingCart className="w-4 h-4" /> Agregar al Carrito</button>
+                  {user?.role && user.role !== "CUSTOMER" ? (
+                    <p className="rounded-lg bg-secondary px-3 py-3 text-center text-xs font-bold text-muted-foreground">Las cuentas operativas no pueden comprar boletos.</p>
+                  ) : (
+                    <button onClick={handleAdd} className="w-full py-3 bg-accent hover:bg-accent/90 text-accent-foreground font-black rounded-lg flex items-center justify-center gap-2 transition-colors text-sm"><ShoppingCart className="w-4 h-4" /> Agregar al Carrito</button>
+                  )}
                 </>
               )}
               {totalItems === 0 && <p className="text-sm text-muted-foreground text-center py-4">Selecciona al menos un boleto</p>}
