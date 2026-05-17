@@ -28,12 +28,13 @@ const isSafariBrowser = () =>
   /^((?!chrome|android|crios|fxios|edgios).)*safari/i.test(navigator.userAgent);
 
 export const ConnectWallet = () => {
-  const { walletAddress, setWalletAddress, linkWallet, isLoggedIn, balanceVersion } = useAppContext();
+  const { walletAddress, setWalletAddress, linkWallet, isLoggedIn, balanceVersion, user } = useAppContext();
   const { toast } = useToast();
   const address = walletAddress;
   const [balance, setBalance] = useState<string | null>(null);
   const [loading, setLoading] = useState(!walletAddress);
   const xlmCop = useXlmPrice();
+  const canUseWallet = isLoggedIn && user?.role === "CUSTOMER";
 
   const fetchBalance = useCallback(async (pk: string) => {
     try {
@@ -79,7 +80,7 @@ export const ConnectWallet = () => {
 
   // Auto-detect Freighter only if logged in AND no address cached in context yet.
   useEffect(() => {
-    if (!isLoggedIn) {
+    if (!canUseWallet) {
       setBalance(null);
       setWalletAddress(null);
       setLoading(false);
@@ -111,7 +112,7 @@ export const ConnectWallet = () => {
       }
     };
     checkConnection();
-  }, [setWalletAddress, isLoggedIn, address, tryLinkWallet]);
+  }, [setWalletAddress, canUseWallet, address, tryLinkWallet]);
 
   const connectWallet = async () => {
     if (!isLoggedIn) {
@@ -165,7 +166,7 @@ export const ConnectWallet = () => {
     }
   };
 
-  if (!isLoggedIn) return null;
+  if (!canUseWallet) return null;
   if (loading) return null;
 
   return (

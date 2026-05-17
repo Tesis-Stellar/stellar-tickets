@@ -2929,6 +2929,10 @@ app.patch('/api/users/me', authMiddleware, async (req, res) => {
 // POST /api/wallet/challenge — issue a short-lived message to prove wallet ownership
 app.post('/api/wallet/challenge', walletRateLimit, authMiddleware, async (req, res) => {
   try {
+    if ((req as any).authUser?.role !== 'CUSTOMER') {
+      sendApiError(req, res, 403, 'FORBIDDEN', 'Las cuentas operativas no pueden vincular wallet');
+      return;
+    }
     const walletAddress = String(req.body?.walletAddress ?? '').trim();
     if (!walletAddress) {
       sendApiError(req, res, 400, 'BAD_REQUEST', 'walletAddress requerido');
@@ -2969,6 +2973,10 @@ app.post('/api/wallet/challenge', walletRateLimit, authMiddleware, async (req, r
 // PATCH /api/users/me/wallet — link Freighter wallet to user account after signature proof
 app.patch('/api/users/me/wallet', walletRateLimit, authMiddleware, async (req, res) => {
   try {
+    if ((req as any).authUser?.role !== 'CUSTOMER') {
+      sendApiError(req, res, 403, 'FORBIDDEN', 'Las cuentas operativas no pueden vincular wallet');
+      return;
+    }
     const walletAddress = String(req.body?.walletAddress ?? '').trim();
     const challengeId = String(req.body?.challengeId ?? '').trim();
     const signature = String(req.body?.signature ?? '').trim();
