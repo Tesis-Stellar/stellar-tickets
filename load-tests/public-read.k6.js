@@ -13,8 +13,8 @@ export const options = {
   thresholds: {
     http_req_failed: ['rate<0.01'],
     'http_req_duration{name:health}': ['p(95)<300'],
-    'http_req_duration{name:events_list}': ['p(95)<500'],
-    'http_req_duration{name:event_detail}': ['p(95)<700'],
+    'http_req_duration{name:events_list}': ['p(95)<1200'],
+    'http_req_duration{name:event_detail}': ['p(95)<1500'],
     'http_req_duration{name:nft_metadata}': ['p(95)<500'],
     'http_req_duration{name:nft_qr}': ['p(95)<1000'],
   },

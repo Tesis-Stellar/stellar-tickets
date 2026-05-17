@@ -1,5 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
+test.skip(Boolean(process.env.E2E_REAL), "La suite E2E real usa backend y PostgreSQL sin mocks.");
+
 const demoCustomer = {
   id: "user-demo-customer",
   firstName: "Ana",

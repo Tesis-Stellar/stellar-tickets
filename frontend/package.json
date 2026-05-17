@@ -8,6 +8,7 @@
     "build": "vite build",
     "build:dev": "vite build --mode development",
     "e2e": "playwright test",
+    "e2e:real": "E2E_REAL=1 playwright test",
     "lint": "eslint .",
     "lint:baseline": "node scripts/check-eslint-baseline.mjs",
     "preview": "vite preview",

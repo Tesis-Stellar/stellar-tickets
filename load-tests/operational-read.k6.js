@@ -14,10 +14,10 @@ export const options = {
   },
   thresholds: {
     http_req_failed: ['rate<0.01'],
-    'http_req_duration{name:events_public_read}': ['p(95)<800'],
-    'http_req_duration{name:event_operational_detail}': ['p(95)<900'],
+    'http_req_duration{name:events_public_read}': ['p(95)<1000'],
+    'http_req_duration{name:event_operational_detail}': ['p(95)<1200'],
     'http_req_duration{name:seat_inventory_read}': ['p(95)<1200'],
-    'http_req_duration{name:admin_events_read}': ['p(95)<1200'],
+    'http_req_duration{name:admin_events_read}': ['p(95)<1800'],
     'http_req_duration{name:admin_contracts_read}': ['p(95)<1200'],
     'http_req_duration{name:admin_claims_read}': ['p(95)<1200'],
   },

@@ -47,7 +47,7 @@ La duracion de 30 a 60 segundos permite estabilizar mediciones de percentil sin 
 | Endpoint | Criterio |
 | --- | --- |
 | `/health` | p95 menor a 300 ms |
-| `/api/events` | p95 menor a 500 ms |
+| `/api/events` | p95 menor a 1200 ms |
 | `/api/events/:slug` | p95 menor a 700 ms |
 | `/api/nft/metadata/:contract/:tokenId` | p95 menor a 500 ms |
 | `/api/nft/qr/:contract/:tokenId.png` | p95 menor a 1000 ms |
@@ -64,6 +64,8 @@ La duracion de 30 a 60 segundos permite estabilizar mediciones de percentil sin 
 Los codigos `400` y `409` pueden ser resultados esperados en scanner cuando se prueba QR invalido, usado o duplicado. En esos casos no se interpretan como fallo de disponibilidad, sino como rechazo funcional correcto.
 
 Los codigos `400`, `403`, `409` y `503` pueden ser resultados esperados en transaction guards cuando el request se rechaza antes de llegar a Soroban. La prueba mide estabilidad y proteccion de borde, no confirmacion on-chain.
+
+El umbral de `/api/events` es mas amplio que `/health` porque consulta catalogo, filtros y agregados de disponibilidad sobre PostgreSQL remoto; en staging se acepta hasta 1.2 s p95 para evitar falsos negativos por latencia de red, pero se debe investigar si supera ese valor.
 
 Los umbrales de checkout son mas amplios porque el escenario no destructivo recorre carrito, validacion de checkout y limpieza de reservas contra PostgreSQL remoto antes de rechazar. Para checkout real de produccion deberia existir una prueba separada con fixtures temporales e infraestructura dedicada.
 
@@ -114,6 +116,35 @@ TRANSACTION_EMAIL=<EMAIL_DE_PRUEBA> \
 TRANSACTION_PASSWORD='<PASSWORD_DE_PRUEBA>' \
 k6 run load-tests/transactions-guard.k6.js
 ```
+
+Suite con evidencia exportable:
+
+```bash
+BASE_URL=http://localhost:3000 \
+EVENT_SLUG=<SLUG_DE_EVENTO> \
+NFT_CONTRACT_ADDRESS=<NFT_CONTRACT_ADDRESS> \
+NFT_TOKEN_ID=<TOKEN_ID> \
+LOAD_TEST_EMAIL=<EMAIL_DE_PRUEBA> \
+LOAD_TEST_PASSWORD='<PASSWORD_DE_PRUEBA>' \
+SCANNER_EMAIL=<EMAIL_STAFF_O_ADMIN> \
+SCANNER_PASSWORD='<PASSWORD_DE_PRUEBA>' \
+CHECKOUT_EMAIL=<EMAIL_DE_PRUEBA_CON_CARRITO_VACIO> \
+CHECKOUT_PASSWORD='<PASSWORD_DE_PRUEBA>' \
+TRANSACTION_EMAIL=<EMAIL_DE_PRUEBA> \
+TRANSACTION_PASSWORD='<PASSWORD_DE_PRUEBA>' \
+ADMIN_EMAIL=<EMAIL_ADMIN> \
+ADMIN_PASSWORD='<PASSWORD_ADMIN>' \
+STAFF_EMAIL=<EMAIL_STAFF> \
+STAFF_PASSWORD='<PASSWORD_STAFF>' \
+load-tests/run-load-suite.sh
+```
+
+El script crea `load-tests/results/<timestamp>/` con:
+
+- `*.summary.json`: resumen estructurado de k6 para anexos;
+- `*.log`: salida completa de cada corrida;
+- `environment.txt`: ambiente y fecha de ejecucion;
+- `*.skipped.txt`: escenarios omitidos por falta de credenciales.
 
 ## Limitaciones
 

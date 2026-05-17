@@ -23,6 +23,7 @@ const Checkout = () => {
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [completedOrderId, setCompletedOrderId] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
 
   const subtotal = cart.reduce((s, c) => s + c.ticketType.price * c.quantity, 0);
   const fees = cart.reduce((s, c) => s + c.ticketType.serviceFee * c.quantity, 0);
@@ -79,6 +80,7 @@ const Checkout = () => {
 
   const handleNext = async () => {
     if (isSubmitting) return;
+    setSubmitError(null);
     if (step === 1 && validate1()) setStep(2);
     else if (step === 2 && validate2()) {
       const paymentMap: Record<string, "CARD" | "PSE" | "CASHPOINT"> = {
@@ -97,6 +99,8 @@ const Checkout = () => {
         });
         setCompletedOrderId(order?.id ?? null);
         setStep(3);
+      } catch (error) {
+        setSubmitError(error instanceof Error ? error.message : "No se pudo confirmar la compra");
       } finally {
         setIsSubmitting(false);
       }
@@ -178,6 +182,11 @@ const Checkout = () => {
                   {isSubmitting ? "Confirmando..." : step === 2 ? `Confirmar compra simulada — $${total.toLocaleString("es-CO")}` : "Continuar"}
                 </button>
               </div>
+              {submitError && (
+                <p role="alert" className="text-sm font-semibold text-destructive">
+                  {submitError}
+                </p>
+              )}
             </div>
             <div className="bg-card rounded-xl border border-border p-6 space-y-4 h-fit sticky top-24">
               <h3 className="font-black text-foreground uppercase tracking-tight text-sm">Resumen de Orden</h3>

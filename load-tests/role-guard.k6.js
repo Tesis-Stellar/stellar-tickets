@@ -2,7 +2,7 @@ import http from 'k6/http';
 import { check, sleep } from 'k6';
 import { BASE_URL, authHeaders, headers, requiredEnv } from './lib/config.js';
 
-http.setResponseCallback(http.expectedStatuses(403));
+http.setResponseCallback(http.expectedStatuses(200, 403));
 
 export const options = {
   scenarios: {

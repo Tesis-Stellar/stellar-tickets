@@ -120,6 +120,32 @@ k6 run load-tests/role-guard.k6.js
 
 También acepta `ADMIN_TOKEN` y `STAFF_TOKEN`.
 
+## Suite completa con reportes
+
+Para generar evidencia anexable, usa:
+
+```bash
+BASE_URL=http://localhost:3000 \
+EVENT_SLUG=<SLUG_DE_EVENTO> \
+NFT_CONTRACT_ADDRESS=<NFT_CONTRACT_ADDRESS> \
+NFT_TOKEN_ID=<TOKEN_ID> \
+LOAD_TEST_EMAIL=<EMAIL_DE_PRUEBA> \
+LOAD_TEST_PASSWORD='<PASSWORD>' \
+SCANNER_EMAIL=<EMAIL_STAFF_O_ADMIN> \
+SCANNER_PASSWORD='<PASSWORD>' \
+CHECKOUT_EMAIL=<EMAIL_CARRITO_VACIO> \
+CHECKOUT_PASSWORD='<PASSWORD>' \
+TRANSACTION_EMAIL=<EMAIL_DE_PRUEBA> \
+TRANSACTION_PASSWORD='<PASSWORD>' \
+ADMIN_EMAIL=<EMAIL_ADMIN> \
+ADMIN_PASSWORD='<PASSWORD_ADMIN>' \
+STAFF_EMAIL=<EMAIL_STAFF> \
+STAFF_PASSWORD='<PASSWORD_STAFF>' \
+load-tests/run-load-suite.sh
+```
+
+La salida queda en `load-tests/results/<timestamp>/` con logs, `summary.json` y archivo de ambiente.
+
 ## Parametros comunes
 
 - `BASE_URL`: API objetivo. Default: `http://localhost:3000`.

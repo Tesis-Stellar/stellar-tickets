@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "start": "tsx src/server.ts",
-    "test": "VERCEL=1 RUN_INDEXER=false node --import tsx --test src/**/*.test.ts",
+    "test": "npm run test:unit && npm run test:api",
+    "test:unit": "VERCEL=1 RUN_INDEXER=false find src -name '*.test.ts' ! -name 'api.supertest.test.ts' ! -name '*.integration.test.ts' -print0 | xargs -0 node --import tsx --test",
+    "test:api": "sh -c 'if [ -n \"$DATABASE_URL_TEST\" ]; then export DATABASE_URL=\"$DATABASE_URL_TEST\"; fi; VERCEL=1 RUN_INDEXER=false node --import tsx --test src/api.supertest.test.ts src/*.integration.test.ts'",
     "build": "tsc --noEmitOnError false || true",
     "postinstall": "prisma generate",
     "prisma:generate": "prisma generate",
