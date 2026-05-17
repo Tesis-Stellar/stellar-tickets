@@ -3,7 +3,7 @@ import { useParams, Link, useNavigate } from "react-router-dom";
 import { Header } from "@/components/layout/Header";
 import { Footer } from "@/components/layout/Footer";
 import { getEventBySlug, getEventTicketTypes, getRelatedEvents, type EventData, type LiveTicket } from "@/data/events";
-import { MapPin, Calendar, Clock, ChevronLeft, User, Info, ShieldCheck, Lock, Loader2, ExternalLink, CheckCircle2 } from "lucide-react";
+import { MapPin, Calendar, Clock, ChevronLeft, User, Info, ShieldCheck, Lock, Loader2, ExternalLink, CheckCircle2, BarChart3, QrCode, TicketCheck, Activity } from "lucide-react";
 import { EventCard } from "@/components/ui/EventCard";
 import { useAppContext, type ResaleFlowStatus } from "@/context/AppContext";
 import { useXlmPrice, formatCOP } from "@/hooks/useXlmPrice";
@@ -19,6 +19,14 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 
+type OperationalSeatsResponse = {
+  sections: Array<{
+    id: string;
+    name: string;
+    seats: Array<{ status: "AVAILABLE" | "HELD" | "SOLD" | "BLOCKED" }>;
+  }>;
+};
+
 const EventDetail = () => {
   const { id: slug } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -30,7 +38,8 @@ const EventDetail = () => {
   const [cancellingId, setCancellingId] = useState<string | null>(null);
   const [flowStatusByTicketId, setFlowStatusByTicketId] = useState<Record<string, ResaleFlowStatus>>({});
   const [successDialog, setSuccessDialog] = useState<{ kind: "buy" | "cancel"; txHash?: string } | null>(null);
-  const { buyResaleTicket, cancelResaleListing, linkWallet, walletAddress } = useAppContext();
+  const [operationalSeats, setOperationalSeats] = useState<OperationalSeatsResponse | null>(null);
+  const { buyResaleTicket, cancelResaleListing, linkWallet, walletAddress, apiFetch, user } = useAppContext();
   const { toast } = useToast();
   const xlmCop = useXlmPrice();
 
@@ -50,17 +59,29 @@ const EventDetail = () => {
           detail.ticketTypes.length ? Promise.resolve(detail.ticketTypes) : getEventTicketTypes(detail.id),
           getRelatedEvents(detail.id),
         ]);
-        setEvent({ ...detail, ticketTypes });
+        const nextEvent = { ...detail, ticketTypes };
+        setEvent(nextEvent);
         setLiveTickets(detail.liveTickets ?? []);
         setRelated(relatedEvents);
+        if (["ADMIN", "STAFF"].includes(user?.role ?? "") && nextEvent.hasSeatSelection) {
+          try {
+            const seats = await apiFetch<OperationalSeatsResponse>(`/api/events/${nextEvent.id}/seats`);
+            setOperationalSeats(seats);
+          } catch {
+            setOperationalSeats(null);
+          }
+        } else {
+          setOperationalSeats(null);
+        }
       } catch {
         setEvent(null);
         setRelated([]);
+        setOperationalSeats(null);
       } finally {
         setLoading(false);
       }
     })();
-  }, [slug]);
+  }, [slug, apiFetch, user?.role]);
 
   if (loading) {
     return (
@@ -87,6 +108,26 @@ const EventDetail = () => {
 
   const minPrice = event.ticketTypes.length ? Math.min(...event.ticketTypes.map((t) => t.price)) : 0;
   const buyUrl = getOfficialPurchasePath(event.id, event.hasSeatSelection);
+  const isOperationalRole = user?.role === "ADMIN" || user?.role === "STAFF";
+  const seatTotals = operationalSeats
+    ? operationalSeats.sections.flatMap((section) => section.seats).reduce(
+        (acc, seat) => {
+          acc.total += 1;
+          acc[seat.status.toLowerCase() as "available" | "held" | "sold" | "blocked"] += 1;
+          return acc;
+        },
+        { total: 0, available: 0, held: 0, sold: 0, blocked: 0 }
+      )
+    : null;
+  const ticketAvailable = event.ticketTypes.reduce((sum, tt) => sum + Math.max(0, tt.available), 0);
+  const operationalTotal = seatTotals?.total ?? ticketAvailable;
+  const operationalAvailable = seatTotals?.available ?? ticketAvailable;
+  const operationalSold = seatTotals?.sold ?? 0;
+  const operationalHeld = seatTotals?.held ?? 0;
+  const operationalBlocked = seatTotals?.blocked ?? 0;
+  const occupancyPercent = operationalTotal > 0
+    ? Math.round(((operationalSold + operationalHeld) / operationalTotal) * 100)
+    : 0;
   const flowStatusLabel: Record<ResaleFlowStatus, string> = {
     building_xdr: "Preparando XDR...",
     signing: "Esperando firma...",
@@ -151,18 +192,82 @@ const EventDetail = () => {
           </div>
 
           <div className="lg:col-span-1">
-            <div className="bg-card rounded-xl border border-border p-6 space-y-5">
-              <img src={event.image} alt={event.title} className="rounded-lg w-full aspect-video object-cover" />
-              <p className="font-bold text-foreground text-sm">{event.title}</p>
-              <p className="text-xs text-muted-foreground">{event.date} {event.month} {event.year} · {event.venue}</p>
-              <p className="text-lg font-black text-primary">{minPrice > 0 ? `Desde $${minPrice.toLocaleString("es-CO")}` : "Gratis"}</p>
-              <Link to={buyUrl} className="block w-full py-3 bg-accent hover:bg-accent/90 text-accent-foreground font-black rounded-lg text-center text-sm transition-colors">
-                Comprar Boletos Oficiales
-              </Link>
-            </div>
+            {isOperationalRole ? (
+              <div className="bg-card rounded-xl border border-border p-6 space-y-5">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-black uppercase tracking-widest text-primary">Vista operativa</p>
+                    <h3 className="font-black text-foreground uppercase tracking-tight mt-1">Estado del evento</h3>
+                  </div>
+                  <Activity className="w-8 h-8 text-primary" />
+                </div>
+
+                <div className="rounded-xl bg-secondary p-4">
+                  <div className="flex items-end justify-between">
+                    <div>
+                      <p className="text-xs text-muted-foreground font-bold uppercase tracking-wider">Ocupación</p>
+                      <p className="text-3xl font-black text-foreground">{occupancyPercent}%</p>
+                    </div>
+                    <BarChart3 className="w-8 h-8 text-primary" />
+                  </div>
+                  <div className="mt-3 h-2 rounded-full bg-background overflow-hidden">
+                    <div className="h-full bg-primary" style={{ width: `${Math.min(100, occupancyPercent)}%` }} />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3 text-sm">
+                  <div className="rounded-lg border border-border p-3">
+                    <p className="text-muted-foreground text-xs font-bold uppercase">Disponibles</p>
+                    <p className="text-xl font-black text-success">{operationalAvailable}</p>
+                  </div>
+                  <div className="rounded-lg border border-border p-3">
+                    <p className="text-muted-foreground text-xs font-bold uppercase">Vendidos</p>
+                    <p className="text-xl font-black text-foreground">{operationalSold}</p>
+                  </div>
+                  <div className="rounded-lg border border-border p-3">
+                    <p className="text-muted-foreground text-xs font-bold uppercase">Reservados</p>
+                    <p className="text-xl font-black text-foreground">{operationalHeld}</p>
+                  </div>
+                  <div className="rounded-lg border border-border p-3">
+                    <p className="text-muted-foreground text-xs font-bold uppercase">Bloqueados</p>
+                    <p className="text-xl font-black text-foreground">{operationalBlocked}</p>
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  {event.hasSeatSelection ? (
+                    <Link to={buyUrl} className="flex items-center justify-center gap-2 w-full py-3 bg-secondary hover:bg-secondary/80 text-secondary-foreground font-black rounded-lg text-center text-sm transition-colors">
+                      <TicketCheck className="w-4 h-4" /> Ver mapa de asientos
+                    </Link>
+                  ) : null}
+                  <Link to="/escanear" className="flex items-center justify-center gap-2 w-full py-3 bg-primary hover:bg-primary/90 text-primary-foreground font-black rounded-lg text-center text-sm transition-colors">
+                    <QrCode className="w-4 h-4" /> Abrir escáner
+                  </Link>
+                  {user?.role === "ADMIN" ? (
+                    <Link to="/mi-cuenta" className="flex items-center justify-center gap-2 w-full py-3 border border-border hover:bg-secondary text-foreground font-black rounded-lg text-center text-sm transition-colors">
+                      Panel administrativo
+                    </Link>
+                  ) : null}
+                </div>
+
+                <p className="text-xs text-muted-foreground leading-relaxed">
+                  Las cuentas operativas no compran boletos. Esta vista resume aforo y disponibilidad para control de acceso y soporte.
+                </p>
+              </div>
+            ) : (
+              <div className="bg-card rounded-xl border border-border p-6 space-y-5">
+                <img src={event.image} alt={event.title} className="rounded-lg w-full aspect-video object-cover" />
+                <p className="font-bold text-foreground text-sm">{event.title}</p>
+                <p className="text-xs text-muted-foreground">{event.date} {event.month} {event.year} · {event.venue}</p>
+                <p className="text-lg font-black text-primary">{minPrice > 0 ? `Desde $${minPrice.toLocaleString("es-CO")}` : "Gratis"}</p>
+                <Link to={buyUrl} className="block w-full py-3 bg-accent hover:bg-accent/90 text-accent-foreground font-black rounded-lg text-center text-sm transition-colors">
+                  Comprar Boletos Oficiales
+                </Link>
+              </div>
+            )}
 
             {/* Mercado Secundario Seguro */}
-            <div className="bg-purple-500/5 rounded-xl border border-purple-500/20 p-6 space-y-4 mt-6">
+            {!isOperationalRole && <div className="bg-purple-500/5 rounded-xl border border-purple-500/20 p-6 space-y-4 mt-6">
               <h3 className="font-black text-purple-600 uppercase tracking-tight text-sm flex items-center gap-2">
                 <ShieldCheck className="w-4 h-4" /> Reventa P2P Segura
               </h3>
@@ -282,7 +387,7 @@ const EventDetail = () => {
                   ))
                 )}
               </div>
-            </div>
+            </div>}
           </div>
         </div>
 
