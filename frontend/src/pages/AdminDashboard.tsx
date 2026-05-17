@@ -1001,7 +1001,7 @@ const AdminDashboard = () => {
                       </div>
                       <div className="mt-4 pt-3 border-t border-border flex justify-between items-center gap-2">
                         <span className="font-mono text-[10px] text-muted-foreground truncate" title={c.contract_address}>{c.contract_address.slice(0, 8)}...</span>
-                        <a target="_blank" rel="noreferrer" href={`https://stellar.expert/explorer/testnet/contract/${c.contract_address}`} className="text-[9px] bg-primary/10 text-primary border border-primary/20 px-2 py-1 rounded-sm font-black hover:bg-primary hover:text-white transition-colors shrink-0">VISUAlIZAR</a>
+                        <a target="_blank" rel="noreferrer" href={`https://stellar.expert/explorer/testnet/contract/${c.contract_address}`} className="text-[9px] bg-primary/10 text-primary border border-primary/20 px-2 py-1 rounded-sm font-black hover:bg-primary hover:text-white transition-colors shrink-0">VISUALIZAR</a>
                       </div>
                     </div>
                   ))}
