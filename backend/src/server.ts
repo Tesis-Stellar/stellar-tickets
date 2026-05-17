@@ -367,6 +367,82 @@ function normalizeResalePolicy(policy: any): ResalePolicyInput {
   };
 }
 
+function formatAdminResalePolicy(eventId: string, policy: any) {
+  const normalized = normalizeResalePolicy(policy);
+  return {
+    eventId,
+    enabled: normalized.enabled,
+    limitType: normalized.limitType,
+    maxPriceAmount: normalized.maxPriceAmount,
+    maxPricePercent: normalized.maxPricePercent,
+    resaleStartsAt: normalized.resaleStartsAt ? normalized.resaleStartsAt.toISOString() : null,
+    resaleEndsAt: normalized.resaleEndsAt ? normalized.resaleEndsAt.toISOString() : null,
+    blockHoursBeforeEvent: normalized.blockHoursBeforeEvent,
+    platformFeePercent: normalized.platformFeePercent,
+    organizerFeePercent: normalized.organizerFeePercent,
+  };
+}
+
+function parseOptionalDate(value: unknown): Date | null {
+  if (value === undefined || value === null || value === '') return null;
+  const date = new Date(String(value));
+  if (Number.isNaN(date.getTime())) throw new Error('Fecha inválida');
+  return date;
+}
+
+function parsePolicyNumber(value: unknown, fieldName: string): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) throw new Error(`${fieldName} inválido`);
+  return parsed;
+}
+
+function buildAdminResalePolicyInput(body: any) {
+  const limitType = body?.limitType === 'FIXED_PRICE' ? 'FIXED_PRICE' : body?.limitType === 'PERCENTAGE' ? 'PERCENTAGE' : null;
+  if (!limitType) throw new Error('Tipo de límite inválido');
+  const enabled = Boolean(body?.enabled);
+
+  const maxPriceAmount = body?.maxPriceAmount === null || body?.maxPriceAmount === '' || body?.maxPriceAmount === undefined
+    ? null
+    : parsePolicyNumber(body.maxPriceAmount, 'Precio máximo fijo');
+  const maxPricePercent = body?.maxPricePercent === null || body?.maxPricePercent === '' || body?.maxPricePercent === undefined
+    ? null
+    : parsePolicyNumber(body.maxPricePercent, 'Porcentaje máximo');
+  const blockHoursBeforeEvent = parsePolicyNumber(body?.blockHoursBeforeEvent, 'Bloqueo antes del evento');
+  const platformFeePercent = parsePolicyNumber(body?.platformFeePercent, 'Comisión plataforma');
+  const organizerFeePercent = parsePolicyNumber(body?.organizerFeePercent, 'Comisión organizador');
+  const resaleStartsAt = parseOptionalDate(body?.resaleStartsAt);
+  const resaleEndsAt = parseOptionalDate(body?.resaleEndsAt);
+
+  if (enabled && limitType === 'FIXED_PRICE' && (!maxPriceAmount || maxPriceAmount <= 0)) {
+    throw new Error('El precio máximo fijo debe ser mayor a cero');
+  }
+  if (enabled && limitType === 'PERCENTAGE' && (!maxPricePercent || maxPricePercent <= 0)) {
+    throw new Error('El porcentaje máximo debe ser mayor a cero');
+  }
+  if (blockHoursBeforeEvent < 0 || blockHoursBeforeEvent > 720) {
+    throw new Error('El bloqueo antes del evento debe estar entre 0 y 720 horas');
+  }
+  if (platformFeePercent < 0 || organizerFeePercent < 0 || platformFeePercent + organizerFeePercent > 100) {
+    throw new Error('Las comisiones deben ser positivas y no superar el 100% acumulado');
+  }
+  if (resaleStartsAt && resaleEndsAt && resaleStartsAt >= resaleEndsAt) {
+    throw new Error('La fecha de inicio debe ser anterior a la fecha de fin');
+  }
+
+  return {
+    enabled,
+    limit_type: limitType,
+    max_price_amount: limitType === 'FIXED_PRICE' ? maxPriceAmount : null,
+    max_price_percent: limitType === 'PERCENTAGE' ? maxPricePercent : null,
+    resale_starts_at: resaleStartsAt,
+    resale_ends_at: resaleEndsAt,
+    block_hours_before_event: blockHoursBeforeEvent,
+    platform_fee_percent: platformFeePercent,
+    organizer_fee_percent: organizerFeePercent,
+    updated_at: new Date(),
+  };
+}
+
 async function getTicketResaleContext(ticketId: string, userId?: string) {
   const ticket = await prisma.tickets.findFirst({
     where: { id: ticketId, ...(userId ? { owner_user_id: userId } : {}) },
@@ -2559,6 +2635,66 @@ app.get('/api/admin/events', authMiddleware, async (req, res) => {
   } catch (error: any) {
     console.error('[ADMIN] Events error:', error);
     sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error obteniendo eventos admin');
+  }
+});
+
+app.get('/api/admin/events/:id/resale-policy', authMiddleware, async (req, res) => {
+  try {
+    const user = await prisma.users.findUnique({ where: { id: (req as any).userId } });
+    if (user?.role !== 'ADMIN') { sendApiError(req, res, 403, 'FORBIDDEN', 'Acceso denegado'); return; }
+
+    const event = await prisma.events.findUnique({
+      where: { id: String(req.params.id) },
+      include: { event_resale_policies: true },
+    });
+    if (!event) {
+      sendApiError(req, res, 404, 'NOT_FOUND', 'Evento no encontrado');
+      return;
+    }
+
+    res.json(formatAdminResalePolicy(event.id, event.event_resale_policies));
+  } catch (error: any) {
+    console.error('[ADMIN] Get resale policy error:', error);
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error obteniendo política de reventa');
+  }
+});
+
+app.patch('/api/admin/events/:id/resale-policy', authMiddleware, async (req, res) => {
+  try {
+    const user = await prisma.users.findUnique({ where: { id: (req as any).userId } });
+    if (user?.role !== 'ADMIN') { sendApiError(req, res, 403, 'FORBIDDEN', 'Acceso denegado'); return; }
+
+    const eventId = String(req.params.id);
+    const event = await prisma.events.findUnique({
+      where: { id: eventId },
+      select: { id: true },
+    });
+    if (!event) {
+      sendApiError(req, res, 404, 'NOT_FOUND', 'Evento no encontrado');
+      return;
+    }
+
+    let data: ReturnType<typeof buildAdminResalePolicyInput>;
+    try {
+      data = buildAdminResalePolicyInput(req.body);
+    } catch (validationError: any) {
+      sendApiError(req, res, 400, 'BAD_REQUEST', validationError.message || 'Política de reventa inválida');
+      return;
+    }
+
+    const policy = await prisma.event_resale_policies.upsert({
+      where: { event_id: eventId },
+      update: data as any,
+      create: {
+        event_id: eventId,
+        ...data,
+      } as any,
+    });
+
+    res.json(formatAdminResalePolicy(eventId, policy));
+  } catch (error: any) {
+    console.error('[ADMIN] Update resale policy error:', error);
+    sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Error actualizando política de reventa');
   }
 });
 

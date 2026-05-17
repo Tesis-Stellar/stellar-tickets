@@ -1,5 +1,5 @@
 import { Link, useLocation } from "react-router-dom";
-import { Ticket, ShoppingBag, User, Settings, LogOut, ArrowRightLeft, MessageSquareText } from "lucide-react";
+import { Ticket, ShoppingBag, User, Settings, LogOut, ArrowRightLeft, MessageSquareText, ShieldCheck } from "lucide-react";
 import { useAppContext } from "@/context/AppContext";
 
 const links = [
@@ -13,11 +13,14 @@ const links = [
 
 export const AccountSidebar = () => {
   const { pathname } = useLocation();
-  const { logout } = useAppContext();
+  const { logout, user } = useAppContext();
+  const visibleLinks = user?.role === "ADMIN"
+    ? [...links, { to: "/mi-cuenta/admin", label: "Panel Admin", icon: ShieldCheck }]
+    : links;
 
   return (
     <aside className="bg-card rounded-xl border border-border p-4 space-y-1">
-      {links.map(({ to, label, icon: Icon, exact }) => {
+      {visibleLinks.map(({ to, label, icon: Icon, exact }) => {
         const active = exact ? pathname === to : pathname.startsWith(to);
         return (
           <Link

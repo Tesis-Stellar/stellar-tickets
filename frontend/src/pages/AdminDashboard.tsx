@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { Header } from "@/components/layout/Header";
 import { Footer } from "@/components/layout/Footer";
 import { useAppContext } from "@/context/AppContext";
-import { ShieldCheck, Plus, RefreshCw, Rocket, Building, MapPin, Users, Ticket, ExternalLink, Image as ImageIcon, X, MessageSquareText } from "lucide-react";
+import { ShieldCheck, Plus, RefreshCw, Rocket, Building, MapPin, Users, Ticket, ExternalLink, Image as ImageIcon, X, MessageSquareText, SlidersHorizontal, Settings, LogOut, QrCode } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 
 const getErrorMessage = (error: unknown, fallback: string) =>
@@ -49,8 +49,67 @@ interface AdminClaim {
   user: { name: string; email: string } | null;
 }
 
+interface AdminResalePolicy {
+  eventId: string;
+  enabled: boolean;
+  limitType: "FIXED_PRICE" | "PERCENTAGE";
+  maxPriceAmount: number | null;
+  maxPricePercent: number | null;
+  resaleStartsAt: string | null;
+  resaleEndsAt: string | null;
+  blockHoursBeforeEvent: number;
+  platformFeePercent: number;
+  organizerFeePercent: number;
+}
+
+type ResalePolicyForm = {
+  enabled: boolean;
+  limitType: "FIXED_PRICE" | "PERCENTAGE";
+  maxPriceAmount: string;
+  maxPricePercent: string;
+  resaleStartsAt: string;
+  resaleEndsAt: string;
+  blockHoursBeforeEvent: string;
+  platformFeePercent: string;
+  organizerFeePercent: string;
+};
+
+type AdminSection = "panel" | "events" | "policies" | "claims" | "contracts" | "scanner" | "profile";
+
+const defaultPolicyForm: ResalePolicyForm = {
+  enabled: true,
+  limitType: "PERCENTAGE",
+  maxPriceAmount: "",
+  maxPricePercent: "150",
+  resaleStartsAt: "",
+  resaleEndsAt: "",
+  blockHoursBeforeEvent: "6",
+  platformFeePercent: "3",
+  organizerFeePercent: "5",
+};
+
+const toDatetimeLocal = (value: string | null) => {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const offsetMs = date.getTimezoneOffset() * 60 * 1000;
+  return new Date(date.getTime() - offsetMs).toISOString().slice(0, 16);
+};
+
+const policyToForm = (policy: AdminResalePolicy): ResalePolicyForm => ({
+  enabled: policy.enabled,
+  limitType: policy.limitType,
+  maxPriceAmount: policy.maxPriceAmount != null ? String(policy.maxPriceAmount) : "",
+  maxPricePercent: policy.maxPricePercent != null ? String(policy.maxPricePercent) : "",
+  resaleStartsAt: toDatetimeLocal(policy.resaleStartsAt),
+  resaleEndsAt: toDatetimeLocal(policy.resaleEndsAt),
+  blockHoursBeforeEvent: String(policy.blockHoursBeforeEvent),
+  platformFeePercent: String(policy.platformFeePercent),
+  organizerFeePercent: String(policy.organizerFeePercent),
+});
+
 const AdminDashboard = () => {
-  const { user, authStatus, apiFetch } = useAppContext();
+  const { user, authStatus, apiFetch, logout } = useAppContext();
   const navigate = useNavigate();
   const [events, setEvents] = useState<AdminEvent[]>([]);
   const [venues, setVenues] = useState<Venue[]>([]);
@@ -67,6 +126,11 @@ const AdminDashboard = () => {
   const [coverImage, setCoverImage] = useState<string | null>(null);
   const [coverImageName, setCoverImageName] = useState<string>("");
   const [claimResponses, setClaimResponses] = useState<Record<string, string>>({});
+  const [policyEventId, setPolicyEventId] = useState("");
+  const [policyForm, setPolicyForm] = useState<ResalePolicyForm>(defaultPolicyForm);
+  const [policyLoading, setPolicyLoading] = useState(false);
+  const [policySaving, setPolicySaving] = useState(false);
+  const [activeSection, setActiveSection] = useState<AdminSection>("panel");
   
   const { toast } = useToast();
 
@@ -158,10 +222,31 @@ const AdminDashboard = () => {
   const totalVenueCapacity = selectedVenue ? selectedVenue.sections.reduce((sum, s) => sum + s.capacity, 0) : 0;
   const activeCapacity = selectedVenue ? selectedVenue.sections.filter(s => activeSections[s.id]).reduce((sum, s) => sum + (sectionConfig[s.id]?.capacity || 0), 0) : 0;
   const capacityPercent = totalVenueCapacity ? Math.round((activeCapacity / totalVenueCapacity) * 100) : 0;
-  const eventsPageSize = 5;
+  const eventsPageSize = 3;
   const eventsTotalPages = Math.max(1, Math.ceil(events.length / eventsPageSize));
   const normalizedEventsPage = Math.min(eventsPage, eventsTotalPages);
   const paginatedEvents = events.slice((normalizedEventsPage - 1) * eventsPageSize, normalizedEventsPage * eventsPageSize);
+  const deployedContractsCount = contractsData?.events.length ?? events.filter((event) => event.contract_address).length;
+  const pendingDeployCount = events.filter((event) => !event.contract_address).length;
+
+  const adminSections: { id: AdminSection; label: string; icon: typeof Settings }[] = [
+    { id: "panel", label: "Panel", icon: Settings },
+    { id: "events", label: "Eventos", icon: Plus },
+    { id: "policies", label: "Políticas de Reventa", icon: SlidersHorizontal },
+    { id: "claims", label: "PQR y Reclamos", icon: MessageSquareText },
+    { id: "contracts", label: "Contratos On-Chain", icon: ShieldCheck },
+    { id: "scanner", label: "Escáner", icon: QrCode },
+    { id: "profile", label: "Perfil", icon: Users },
+  ];
+
+  const adminCards: { id: AdminSection; icon: typeof Settings; label: string; value: string }[] = [
+    { id: "events", icon: Building, label: "Eventos", value: `${events.length} registrado${events.length !== 1 ? "s" : ""}` },
+    { id: "contracts", icon: ShieldCheck, label: "Contratos", value: `${deployedContractsCount} desplegado${deployedContractsCount !== 1 ? "s" : ""}` },
+    { id: "policies", icon: SlidersHorizontal, label: "Políticas de Reventa", value: "Reglas por evento" },
+    { id: "claims", icon: MessageSquareText, label: "PQR y Reclamos", value: `${claims.length} caso${claims.length !== 1 ? "s" : ""}` },
+    { id: "scanner", icon: QrCode, label: "Escáner", value: "Validación en puerta" },
+    { id: "events", icon: Rocket, label: "Pendientes de Deploy", value: `${pendingDeployCount} evento${pendingDeployCount !== 1 ? "s" : ""}` },
+  ];
 
   useEffect(() => {
     if (eventsPage > eventsTotalPages) setEventsPage(eventsTotalPages);
@@ -246,6 +331,59 @@ const AdminDashboard = () => {
     }
   };
 
+  const loadResalePolicy = async (eventId: string) => {
+    setPolicyEventId(eventId);
+    if (!eventId) {
+      setPolicyForm(defaultPolicyForm);
+      return;
+    }
+    setPolicyLoading(true);
+    try {
+      const policy = await apiFetch<AdminResalePolicy>(`/api/admin/events/${eventId}/resale-policy`);
+      setPolicyForm(policyToForm(policy));
+    } catch (err: unknown) {
+      toast({ title: "No se pudieron consultar las reglas", description: getErrorMessage(err, "Intenta nuevamente."), variant: "destructive" });
+    } finally {
+      setPolicyLoading(false);
+    }
+  };
+
+  const updatePolicyField = <K extends keyof ResalePolicyForm>(field: K, value: ResalePolicyForm[K]) => {
+    setPolicyForm((prev) => ({ ...prev, [field]: value }));
+  };
+
+  const saveResalePolicy = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    if (!policyEventId) {
+      toast({ title: "Selecciona un evento", description: "Debes escoger el evento antes de guardar reglas.", variant: "destructive" });
+      return;
+    }
+    setPolicySaving(true);
+    try {
+      const payload = {
+        enabled: policyForm.enabled,
+        limitType: policyForm.limitType,
+        maxPriceAmount: policyForm.limitType === "FIXED_PRICE" ? Number(policyForm.maxPriceAmount) : null,
+        maxPricePercent: policyForm.limitType === "PERCENTAGE" ? Number(policyForm.maxPricePercent) : null,
+        resaleStartsAt: policyForm.resaleStartsAt || null,
+        resaleEndsAt: policyForm.resaleEndsAt || null,
+        blockHoursBeforeEvent: Number(policyForm.blockHoursBeforeEvent),
+        platformFeePercent: Number(policyForm.platformFeePercent),
+        organizerFeePercent: Number(policyForm.organizerFeePercent),
+      };
+      const saved = await apiFetch<AdminResalePolicy>(`/api/admin/events/${policyEventId}/resale-policy`, {
+        method: "PATCH",
+        body: JSON.stringify(payload),
+      });
+      setPolicyForm(policyToForm(saved));
+      toast({ title: "Reglas de reventa guardadas", description: "Los usuarios verán estos límites antes de listar sus boletos." });
+    } catch (err: unknown) {
+      toast({ title: "No se pudo guardar la política", description: getErrorMessage(err, "Revisa los valores e intenta de nuevo."), variant: "destructive" });
+    } finally {
+      setPolicySaving(false);
+    }
+  };
+
   if (authStatus === "checking") {
     return (
       <div className="min-h-screen bg-background flex flex-col">
@@ -269,6 +407,56 @@ const AdminDashboard = () => {
           <p className="text-muted-foreground text-sm">Crea eventos fraccionando el aforo de estadios oficiales y despliega tus Smart Contracts.</p>
         </div>
 
+        <div className="grid lg:grid-cols-4 gap-6">
+          <aside className="bg-card rounded-xl border border-border p-4 space-y-1 h-fit">
+            {adminSections.map(({ id, label, icon: Icon }) => (
+              <button
+                key={id}
+                type="button"
+                onClick={() => setActiveSection(id)}
+                className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors w-full text-left ${
+                  activeSection === id
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:bg-secondary hover:text-foreground"
+                }`}
+              >
+                <Icon className="w-4 h-4" />
+                {label}
+              </button>
+            ))}
+            <button
+              onClick={logout}
+              className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-destructive hover:bg-destructive/10 transition-colors w-full"
+            >
+              <LogOut className="w-4 h-4" />
+              Cerrar Sesión
+            </button>
+          </aside>
+
+          <div className="lg:col-span-3 space-y-6">
+            {activeSection === "panel" && (
+              <section className="space-y-6">
+                <p className="text-sm text-muted-foreground">
+                  Bienvenido, <span className="font-bold text-foreground">{user?.name}</span>
+                </p>
+                <div className="grid sm:grid-cols-2 gap-4">
+                  {adminCards.map((card) => (
+                    <button
+                      key={`${card.id}-${card.label}`}
+                      type="button"
+                      onClick={() => setActiveSection(card.id)}
+                      className="bg-card rounded-xl border border-border p-6 hover:border-primary/30 transition-colors group text-left"
+                    >
+                      <card.icon className="w-8 h-8 text-primary mb-3" />
+                      <p className="font-bold text-foreground group-hover:text-primary transition-colors">{card.label}</p>
+                      <p className="text-sm text-muted-foreground">{card.value}</p>
+                    </button>
+                  ))}
+                </div>
+              </section>
+            )}
+
+            {activeSection === "events" && (
         <div className="grid md:grid-cols-2 gap-8">
           
           {/* CREATE FORM */}
@@ -515,7 +703,173 @@ const AdminDashboard = () => {
           </div>
 
         </div>
+            )}
 
+          {activeSection === "policies" && (
+          <section className="bg-card rounded-xl p-6 border border-border shadow-sm">
+            <div className="flex items-center justify-between gap-3 mb-5">
+              <div>
+                <h2 className="text-lg font-bold flex items-center gap-2 uppercase tracking-tight">
+                  <SlidersHorizontal className="w-5 h-5 text-primary" /> Políticas de Reventa
+                </h2>
+                <p className="text-xs text-muted-foreground mt-1">Configura límites por evento para controlar la reventa P2P.</p>
+              </div>
+              {policyLoading && <RefreshCw className="w-4 h-4 animate-spin text-muted-foreground" />}
+            </div>
+
+            <form onSubmit={saveResalePolicy} className="space-y-5">
+              <div className="grid md:grid-cols-[1.5fr_0.7fr_0.8fr] gap-4">
+                <label className="space-y-1">
+                  <span className="text-xs font-bold text-muted-foreground uppercase">Evento</span>
+                  <select
+                    value={policyEventId}
+                    onChange={(e) => loadResalePolicy(e.target.value)}
+                    className="w-full bg-background border border-border p-2.5 rounded-lg text-sm focus:ring-2 focus:ring-primary/20 outline-none"
+                  >
+                    <option value="">Selecciona un evento</option>
+                    {events.map((event) => (
+                      <option key={event.id} value={event.id}>{event.title}</option>
+                    ))}
+                  </select>
+                </label>
+
+                <label className="space-y-1">
+                  <span className="text-xs font-bold text-muted-foreground uppercase">Estado</span>
+                  <select
+                    value={policyForm.enabled ? "true" : "false"}
+                    onChange={(e) => updatePolicyField("enabled", e.target.value === "true")}
+                    disabled={!policyEventId || policyLoading}
+                    className="w-full bg-background border border-border p-2.5 rounded-lg text-sm focus:ring-2 focus:ring-primary/20 outline-none disabled:opacity-60"
+                  >
+                    <option value="true">Reventa habilitada</option>
+                    <option value="false">Reventa deshabilitada</option>
+                  </select>
+                </label>
+
+                <label className="space-y-1">
+                  <span className="text-xs font-bold text-muted-foreground uppercase">Tipo de límite</span>
+                  <select
+                    value={policyForm.limitType}
+                    onChange={(e) => updatePolicyField("limitType", e.target.value as ResalePolicyForm["limitType"])}
+                    disabled={!policyEventId || policyLoading}
+                    className="w-full bg-background border border-border p-2.5 rounded-lg text-sm focus:ring-2 focus:ring-primary/20 outline-none disabled:opacity-60"
+                  >
+                    <option value="PERCENTAGE">Porcentaje</option>
+                    <option value="FIXED_PRICE">Precio fijo</option>
+                  </select>
+                </label>
+              </div>
+
+              <div className="grid md:grid-cols-3 gap-4">
+                {policyForm.limitType === "FIXED_PRICE" ? (
+                  <label className="space-y-1">
+                    <span className="text-xs font-bold text-muted-foreground uppercase">Precio máximo fijo (COP)</span>
+                    <input
+                      type="number"
+                      min={1}
+                      value={policyForm.maxPriceAmount}
+                      onChange={(e) => updatePolicyField("maxPriceAmount", e.target.value)}
+                      disabled={!policyEventId || policyLoading}
+                      className="w-full bg-background border border-border p-2.5 rounded-lg text-sm font-mono focus:ring-2 focus:ring-primary/20 outline-none disabled:opacity-60"
+                    />
+                  </label>
+                ) : (
+                  <label className="space-y-1">
+                    <span className="text-xs font-bold text-muted-foreground uppercase">Máximo sobre precio original (%)</span>
+                    <input
+                      type="number"
+                      min={1}
+                      value={policyForm.maxPricePercent}
+                      onChange={(e) => updatePolicyField("maxPricePercent", e.target.value)}
+                      disabled={!policyEventId || policyLoading}
+                      className="w-full bg-background border border-border p-2.5 rounded-lg text-sm font-mono focus:ring-2 focus:ring-primary/20 outline-none disabled:opacity-60"
+                    />
+                  </label>
+                )}
+
+                <label className="space-y-1">
+                  <span className="text-xs font-bold text-muted-foreground uppercase">Comisión plataforma (%)</span>
+                  <input
+                    type="number"
+                    min={0}
+                    max={100}
+                    step="0.1"
+                    value={policyForm.platformFeePercent}
+                    onChange={(e) => updatePolicyField("platformFeePercent", e.target.value)}
+                    disabled={!policyEventId || policyLoading}
+                    className="w-full bg-background border border-border p-2.5 rounded-lg text-sm font-mono focus:ring-2 focus:ring-primary/20 outline-none disabled:opacity-60"
+                  />
+                </label>
+
+                <label className="space-y-1">
+                  <span className="text-xs font-bold text-muted-foreground uppercase">Comisión organizador (%)</span>
+                  <input
+                    type="number"
+                    min={0}
+                    max={100}
+                    step="0.1"
+                    value={policyForm.organizerFeePercent}
+                    onChange={(e) => updatePolicyField("organizerFeePercent", e.target.value)}
+                    disabled={!policyEventId || policyLoading}
+                    className="w-full bg-background border border-border p-2.5 rounded-lg text-sm font-mono focus:ring-2 focus:ring-primary/20 outline-none disabled:opacity-60"
+                  />
+                </label>
+              </div>
+
+              <div className="grid md:grid-cols-3 gap-4">
+                <label className="space-y-1">
+                  <span className="text-xs font-bold text-muted-foreground uppercase">Inicio de ventana</span>
+                  <input
+                    type="datetime-local"
+                    value={policyForm.resaleStartsAt}
+                    onChange={(e) => updatePolicyField("resaleStartsAt", e.target.value)}
+                    disabled={!policyEventId || policyLoading}
+                    className="w-full bg-background border border-border p-2.5 rounded-lg text-sm focus:ring-2 focus:ring-primary/20 outline-none disabled:opacity-60"
+                  />
+                </label>
+
+                <label className="space-y-1">
+                  <span className="text-xs font-bold text-muted-foreground uppercase">Fin de ventana</span>
+                  <input
+                    type="datetime-local"
+                    value={policyForm.resaleEndsAt}
+                    onChange={(e) => updatePolicyField("resaleEndsAt", e.target.value)}
+                    disabled={!policyEventId || policyLoading}
+                    className="w-full bg-background border border-border p-2.5 rounded-lg text-sm focus:ring-2 focus:ring-primary/20 outline-none disabled:opacity-60"
+                  />
+                </label>
+
+                <label className="space-y-1">
+                  <span className="text-xs font-bold text-muted-foreground uppercase">Bloqueo antes del evento (h)</span>
+                  <input
+                    type="number"
+                    min={0}
+                    max={720}
+                    value={policyForm.blockHoursBeforeEvent}
+                    onChange={(e) => updatePolicyField("blockHoursBeforeEvent", e.target.value)}
+                    disabled={!policyEventId || policyLoading}
+                    className="w-full bg-background border border-border p-2.5 rounded-lg text-sm font-mono focus:ring-2 focus:ring-primary/20 outline-none disabled:opacity-60"
+                  />
+                </label>
+              </div>
+
+              <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 rounded-xl border border-border bg-background px-4 py-3">
+                <p className="text-xs text-muted-foreground">
+                  Vendedor recibe {Math.max(0, 100 - Number(policyForm.platformFeePercent || 0) - Number(policyForm.organizerFeePercent || 0)).toFixed(1)}% después de comisiones.
+                </p>
+                <button
+                  type="submit"
+                  disabled={!policyEventId || policyLoading || policySaving}
+                  className="rounded-lg bg-primary px-4 py-2 text-xs font-black text-primary-foreground hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {policySaving ? "Guardando..." : "Guardar reglas"}
+                </button>
+              </div>
+            </form>
+          </section>
+          )}
+
+          {activeSection === "claims" && (
           <section className="bg-card rounded-xl p-6 border border-border shadow-sm">
             <div className="flex items-center justify-between gap-3 mb-4">
               <h2 className="text-lg font-bold flex items-center gap-2 uppercase tracking-tight">
@@ -554,9 +908,50 @@ const AdminDashboard = () => {
               </div>
             )}
           </section>
+          )}
+
+          {activeSection === "profile" && (
+            <section className="bg-card rounded-xl p-6 border border-border shadow-sm">
+              <h2 className="text-lg font-bold flex items-center gap-2 uppercase tracking-tight mb-4">
+                <Users className="w-5 h-5 text-primary" /> Perfil
+              </h2>
+              <div className="grid sm:grid-cols-2 gap-4 text-sm">
+                <div className="rounded-xl border border-border bg-background p-4">
+                  <p className="text-xs font-bold text-muted-foreground uppercase">Nombre</p>
+                  <p className="font-bold text-foreground mt-1">{user?.name ?? "Administrador"}</p>
+                </div>
+                <div className="rounded-xl border border-border bg-background p-4">
+                  <p className="text-xs font-bold text-muted-foreground uppercase">Rol</p>
+                  <p className="font-bold text-foreground mt-1">{user?.role ?? "ADMIN"}</p>
+                </div>
+                <div className="rounded-xl border border-border bg-background p-4 sm:col-span-2">
+                  <p className="text-xs font-bold text-muted-foreground uppercase">Correo</p>
+                  <p className="font-bold text-foreground mt-1">{user?.email ?? "Sin correo"}</p>
+                </div>
+              </div>
+            </section>
+          )}
+
+          {activeSection === "scanner" && (
+            <section className="bg-card rounded-xl p-6 border border-border shadow-sm">
+              <h2 className="text-lg font-bold flex items-center gap-2 uppercase tracking-tight mb-3">
+                <QrCode className="w-5 h-5 text-primary" /> Escáner de Tickets
+              </h2>
+              <p className="text-sm text-muted-foreground mb-5">
+                Acceso operativo para validar QR firmados en puerta y registrar check-ins.
+              </p>
+              <button
+                type="button"
+                onClick={() => navigate("/escanear")}
+                className="inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-black text-primary-foreground hover:bg-primary/90 transition-colors"
+              >
+                <QrCode className="w-4 h-4" /> Abrir escáner
+              </button>
+            </section>
+          )}
 
           {/* CONTRACT EXPLORER */}
-          {contractsData && contractsData.factoryContractId && (
+          {activeSection === "contracts" && contractsData && contractsData.factoryContractId && (
             <div className="md:col-span-2 bg-card rounded-xl p-6 border border-amber-500/20 shadow-sm overflow-hidden flex flex-col lg:col-span-2 mt-4">
               <h2 className="text-xl font-black flex items-center gap-2 uppercase tracking-tight text-amber-500 mb-6">
                 <ShieldCheck className="w-6 h-6" /> Explorador de Contratos On-Chain
@@ -601,6 +996,18 @@ const AdminDashboard = () => {
               </div>
             </div>
           )}
+
+          {activeSection === "contracts" && (!contractsData || !contractsData.factoryContractId) && (
+            <section className="bg-card rounded-xl p-6 border border-border shadow-sm">
+              <h2 className="text-lg font-bold flex items-center gap-2 uppercase tracking-tight mb-3">
+                <ShieldCheck className="w-5 h-5 text-primary" /> Contratos On-Chain
+              </h2>
+              <p className="text-sm text-muted-foreground">No se pudo cargar información de contratos todavía.</p>
+            </section>
+          )}
+
+          </div>
+        </div>
 
       </main>
       <Footer />

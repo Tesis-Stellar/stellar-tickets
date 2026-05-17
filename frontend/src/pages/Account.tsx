@@ -5,6 +5,7 @@ import { Footer } from "@/components/layout/Footer";
 import { AccountSidebar } from "@/components/layout/AccountSidebar";
 import { useAppContext } from "@/context/AppContext";
 import { Ticket, ShoppingBag, User, Settings, ArrowRightLeft, MessageSquareText } from "lucide-react";
+import AdminDashboard from "./AdminDashboard";
 
 const Account = () => {
   const { isLoggedIn, authStatus, user, purchasedTickets, soldTickets, refreshTickets, refreshSoldTickets } = useAppContext();
@@ -23,6 +24,7 @@ const Account = () => {
     return <div className="min-h-screen bg-background flex flex-col"><Header /><main className="flex-1 flex items-center justify-center px-4"><p className="text-sm font-bold text-muted-foreground">Cargando sesión...</p></main><Footer /></div>;
   }
   if (!isLoggedIn) return <Navigate to="/login" replace />;
+  if (user?.role === "ADMIN") return <AdminDashboard />;
 
   const purchasesCount = purchasedTickets.length;
 

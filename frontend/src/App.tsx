@@ -55,6 +55,7 @@ const App = () => (
             <Route path="/mi-cuenta/perfil" element={<Profile />} />
             <Route path="/mi-cuenta/ventas-p2p" element={<MySalesP2P />} />
             <Route path="/mi-cuenta/reclamos" element={<Claims />} />
+            <Route path="/mi-cuenta/admin" element={<AdminDashboard />} />
             <Route path="/escanear" element={<ScannerPage />} />
             <Route path="/contactanos" element={<Contact />} />
             <Route path="*" element={<NotFound />} />
