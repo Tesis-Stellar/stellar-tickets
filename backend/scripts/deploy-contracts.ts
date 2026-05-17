@@ -33,6 +33,7 @@ dotenv.config();
 const RPC_URL = process.env.SOROBAN_RPC_URL || 'https://soroban-testnet.stellar.org';
 const NETWORK_PASSPHRASE = Networks.TESTNET;
 const WASM_DIR = path.resolve(__dirname, '../../contracts/wasm');
+const CONTRACTS_DIR = path.resolve(__dirname, '../../contracts');
 
 const server = new SorobanRpc.Server(RPC_URL);
 const prisma = new PrismaClient();
@@ -40,6 +41,19 @@ const prisma = new PrismaClient();
 // Commissions: 5% organizer, 3% platform (out of 100 base)
 const COMISION_ORGANIZADOR = 5;
 const COMISION_PLATAFORMA = 3;
+
+function resolveWasmPath(contractName: string, candidates: string[]): string {
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  throw new Error(
+    `${contractName} WASM not found. Checked:\n${candidates.map((candidate) => `  - ${candidate}`).join('\n')}\n` +
+    `Build the contract first or copy the WASM to ${WASM_DIR}.`,
+  );
+}
 
 async function fundAccount(publicKey: string): Promise<void> {
   console.log(`  Funding ${publicKey.slice(0, 8)}...`);
@@ -203,10 +217,12 @@ async function main() {
   await fundAccount(organizerKeypair.publicKey());
 
   // 3. Upload event_contract WASM
-  const eventWasmPath = path.join(WASM_DIR, 'event_contract.wasm');
-  if (!fs.existsSync(eventWasmPath)) {
-    throw new Error(`WASM not found: ${eventWasmPath}`);
-  }
+  const eventWasmPath = resolveWasmPath('event_contract', [
+    path.join(WASM_DIR, 'event_contract.wasm'),
+    path.join(CONTRACTS_DIR, 'target/wasm32v1-none/release/event_contract.wasm'),
+    path.join(CONTRACTS_DIR, 'target/wasm32-unknown-unknown/release/event_contract.optimized.wasm'),
+    path.join(CONTRACTS_DIR, 'target/wasm32-unknown-unknown/release/event_contract.wasm'),
+  ]);
   const wasmHash = await uploadWasm(adminKeypair, eventWasmPath);
 
   // 4. Deploy only the requested event when invoked from admin. Never clear
