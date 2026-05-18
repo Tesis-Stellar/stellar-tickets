@@ -36,12 +36,17 @@ function seedRealE2E(): RealE2EFixture {
   return JSON.parse(output) as RealE2EFixture;
 }
 
-async function login(page: Page, email: string, password: string) {
-  await page.goto("/login", { waitUntil: "domcontentloaded" });
-  await page.getByPlaceholder("tu@email.com").fill(email);
-  await page.getByPlaceholder("••••••••").fill(password);
-  await page.getByRole("button", { name: "Ingresar" }).click();
-  await expect(page.locator("main")).toContainText(/Mi Cuenta|Secure Ticket Console|Panel Operativo/);
+async function login(page: Page, request: APIRequestContext, email: string, password: string) {
+  const response = await request.post(`${apiBaseUrl}/api/auth/login`, {
+    data: { email, password },
+  });
+  expect(response.ok()).toBeTruthy();
+  const body = await response.json() as { accessToken: string };
+
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await page.evaluate((accessToken) => window.localStorage.setItem("authToken", accessToken), body.accessToken);
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await expect(page.locator("header").getByRole("link", { name: "Mi Cuenta" })).toBeVisible({ timeout: 45_000 });
 }
 
 async function getAuthToken(page: Page) {
@@ -67,11 +72,25 @@ test.beforeEach(async ({ page }) => {
   await page.evaluate(() => window.localStorage.clear());
 });
 
-test("cliente compra en backend real, staff escanea el ticket y DB bloquea el segundo escaneo", async ({ page, request }) => {
-  await login(page, fixture.customer.email, fixture.password);
+test("E2E-BUY-01 compra primaria simulada del prototipo y E2E-SCAN-01 scanner DB-first bloquea doble escaneo", async ({ page, request }) => {
+  // E2E-BUY-01 valida la compra primaria simulada/off-chain del prototipo.
+  // No se espera tx hash en este flujo. La redencion on-chain se valida en CONTRACT-REDEEM-01.
+  await page.goto(`/evento/${fixture.event.id}/boletas`, { waitUntil: "domcontentloaded" });
+  await expect(page.locator("main"), "event detail should finish loading for unauthenticated purchase guard").toContainText(
+    fixture.event.title,
+    { timeout: 45_000 },
+  );
+  await page.getByRole("button", { name: `Agregar ${fixture.ticketType.name}` }).click();
+  await page.getByRole("button", { name: /Agregar al Carrito/i }).click();
+  await page.waitForURL("**/login");
+
+  await login(page, request, fixture.customer.email, fixture.password);
 
   await page.goto(`/evento/${fixture.event.id}/boletas`, { waitUntil: "domcontentloaded" });
-  await expect(page.getByText(fixture.event.title)).toBeVisible();
+  await expect(page.locator("main"), "event detail should finish loading for authenticated purchase").toContainText(
+    fixture.event.title,
+    { timeout: 45_000 },
+  );
   await page.getByRole("button", { name: `Agregar ${fixture.ticketType.name}` }).click();
   const addToCartResponse = page.waitForResponse((response) =>
     response.url().includes("/api/cart/items") && response.request().method() === "POST",
@@ -111,7 +130,7 @@ test("cliente compra en backend real, staff escanea el ticket y DB bloquea el se
   expect(purchasedTicket?.id).toBeTruthy();
 
   await page.evaluate(() => window.localStorage.clear());
-  await login(page, fixture.staff.email, fixture.password);
+  await login(page, request, fixture.staff.email, fixture.password);
   const staffToken = await getAuthToken(page);
   const scanPayload = JSON.stringify({
     ticketId: purchasedTicket!.id,

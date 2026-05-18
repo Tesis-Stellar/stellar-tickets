@@ -196,6 +196,9 @@ export const getEventBySlug = async (slug: string): Promise<EventData | null> =>
 };
 
 export const getEventById = async (id: string): Promise<EventData | null> => {
+  const detail = await getEventBySlug(id).catch(() => null);
+  if (detail && (detail.id === id || detail.slug === id)) return detail;
+
   const events = await getEvents({ search: id });
   return events.find((event) => event.id === id) ?? null;
 };

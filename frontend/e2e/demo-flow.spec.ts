@@ -152,6 +152,7 @@ async function mockDemoApi(page: Page) {
   let cartItems: unknown[] = [];
   let orders = [confirmedOrder];
   let tickets: unknown[] = [];
+  let scanAttempts = 0;
   const events = [demoEvent, seatedEvent];
 
   await page.route("http://127.0.0.1:3000/**", async (route) => {
@@ -249,6 +250,16 @@ async function mockDemoApi(page: Page) {
       return json([]);
     }
     if (method === "POST" && path === "/api/admin/scan") {
+      const body = request.postDataJSON() as { qrToken?: string; ticketId?: string };
+      if (body.qrToken === "invalid-demo-token") {
+        return json({ code: "BAD_REQUEST", message: "QR firmado invalido" }, 400);
+      }
+      if (body.ticketId === purchasedTicket.id) {
+        scanAttempts += 1;
+        if (scanAttempts > 1) {
+          return json({ code: "CONFLICT", message: "Boleto ya no esta activo: USED" }, 409);
+        }
+      }
       return json({ success: true, ticketId: purchasedTicket.id, result: "ACCEPTED" });
     }
     if (method === "GET" && path === "/api/admin/events") {
@@ -337,6 +348,33 @@ test("staff: dashboard operativo, scanner y mapa de asientos solo lectura", asyn
 
   await page.goto("/carrito", { waitUntil: "domcontentloaded" });
   await expect(page.getByText("Carrito no disponible")).toBeVisible();
+});
+
+test("E2E-SCAN-01 UI: staff ve exito/error de scanner y customer no accede", async ({ page }) => {
+  // El scanner operativo es DB-first. La redencion on-chain se valida en CONTRACT-REDEEM-01.
+  await login(page, demoStaff.email);
+
+  await page.evaluate((payload) => window.localStorage.setItem("e2eScanPayload", payload), JSON.stringify({ ticketId: purchasedTicket.id }));
+  await page.goto("/escanear", { waitUntil: "domcontentloaded" });
+  await expect(page.getByText("Secure Ticket Scanner")).toBeVisible();
+  await page.getByRole("button", { name: "Simular escaneo QA" }).click();
+  await expect(page.getByText("Acceso Permitido")).toBeVisible();
+
+  await page.waitForTimeout(3200);
+  await page.getByRole("button", { name: "Simular escaneo QA" }).click();
+  await expect(page.getByText("Acceso Denegado")).toBeVisible();
+  await expect(page.getByText("Boleto ya no esta activo: USED")).toBeVisible();
+
+  await page.waitForTimeout(3200);
+  await page.evaluate(() => window.localStorage.setItem("e2eScanPayload", JSON.stringify({ qrToken: "invalid-demo-token" })));
+  await page.getByRole("button", { name: "Simular escaneo QA" }).click();
+  await expect(page.getByText("Acceso Denegado")).toBeVisible();
+  await expect(page.getByText("QR firmado invalido")).toBeVisible();
+
+  await page.evaluate(() => window.localStorage.clear());
+  await login(page, demoCustomer.email);
+  await page.goto("/escanear", { waitUntil: "domcontentloaded" });
+  await expect(page).toHaveURL(/\/$/);
 });
 
 test("admin: consola, contratos y cuenta maestra ocultable", async ({ page }) => {
