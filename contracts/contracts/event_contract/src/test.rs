@@ -290,10 +290,10 @@ fn test_list_ticket_zero_price_fails() {
     assert_eq!(resultado, Err(Ok(ErrorContrato::PrecioInvalido)));
 }
 
-// Cancela una venta activa
-// Se espera que en_venta pase de true a false
+// CONTRACT-RESALE-CANCEL-01: cancela una venta activa.
+// Se espera que en_venta pase de true a false.
 #[test]
-fn test_cancel_sale_success() {
+fn test_contract_resale_cancel_01_cancel_sale_success() {
     let (_entorno, cliente, _, _, _, _) = configurar_entorno();
     let root_id = crear_y_listar_boleto_primario(&cliente, 101, 1000);
 
@@ -598,12 +598,30 @@ fn test_redeem_ticket_already_used_fails() {
     assert_eq!(resultado, Err(Ok(ErrorContrato::YaUsado)));
 }
 
+// CONTRACT-REDEEM-01 cubre los negativos restantes de redención on-chain:
+// un boleto invalidado y un boleto inexistente no pueden redimirse.
+#[test]
+fn test_contract_redeem_01_rejects_invalidated_and_missing_tickets() {
+    let (_entorno, cliente, _, _, _, _) = configurar_entorno();
+    let verificador = Address::generate(&_entorno);
+
+    let root_id = cliente.crear_boleto(&101, &1000);
+    cliente.agregar_verificador(&verificador);
+    cliente.invalidar_boleto(&root_id);
+
+    let invalidado = cliente.try_redimir_boleto(&root_id, &verificador);
+    assert_eq!(invalidado, Err(Ok(ErrorContrato::BoletoInvalidado)));
+
+    let inexistente = cliente.try_redimir_boleto(&999, &verificador);
+    assert_eq!(inexistente, Err(Ok(ErrorContrato::BoletoNoEncontrado)));
+}
+
 // TESTS: INVALIDACIÓN
 
-// El organizador invalida un boleto
+// CONTRACT-INVALIDATE-01: El organizador invalida un boleto
 // Se espera que "invalidado" sea true y "en_venta" sea false
 #[test]
-fn test_invalidar_boleto_success() {
+fn test_contract_invalidate_01_invalidar_boleto_success() {
     let (_entorno, cliente, _, _, _, _) = configurar_entorno();
     let root_id = cliente.crear_boleto(&101, &1000);
 

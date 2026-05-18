@@ -165,7 +165,7 @@ test('rejects list intent when ticket was listed before submit', () => {
   assert.deepEqual(result, { ok: false, status: 409, error: 'Ticket ya esta en venta' });
 });
 
-test('authorizes cancel listing intent only while listing still exists', () => {
+test('API-RESALE-CANCEL-01 authorizes cancellation only for the owner while the listing still exists', () => {
   const result = authorizeTransactionIntentCurrentState({
     intent: { ...baseIntent, operation: 'cancelar_venta', expected_price: null },
     ticket: { ...baseTicket, owner_wallet: 'GOWNER', is_for_sale: true },
@@ -173,6 +173,24 @@ test('authorizes cancel listing intent only while listing still exists', () => {
   });
 
   assert.deepEqual(result, { ok: true });
+
+  const intruder = authorizeTransactionIntentCurrentState({
+    intent: { ...baseIntent, operation: 'cancelar_venta', expected_price: null },
+    ticket: { ...baseTicket, owner_wallet: 'GOWNER', is_for_sale: true },
+    walletAddress: 'GINTRUDER',
+  });
+  assert.deepEqual(intruder, {
+    ok: false,
+    status: 403,
+    error: 'La wallet ya no coincide con el propietario del ticket',
+  });
+
+  const cancelled = authorizeTransactionIntentCurrentState({
+    intent: { ...baseIntent, operation: 'cancelar_venta' },
+    ticket: { ...baseTicket, owner_wallet: 'GOWNER', is_for_sale: false },
+    walletAddress: 'GOWNER',
+  });
+  assert.deepEqual(cancelled, { ok: false, status: 409, error: 'Ticket ya no esta en venta' });
 });
 
 test('rejects cancel listing intent when ticket is no longer for sale', () => {

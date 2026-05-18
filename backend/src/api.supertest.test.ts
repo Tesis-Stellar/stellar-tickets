@@ -132,6 +132,51 @@ async function buyGeneralAdmissionTicket(input: {
   return { orderResponse, ticketId: String(ticketId) };
 }
 
+async function createScannableTicketFixture(label: string, options: {
+  status?: 'ACTIVE' | 'USED' | 'CANCELLED' | 'REFUNDED';
+  ticketVersion?: number;
+  qrVersion?: number;
+  ownerWallet?: string;
+  qrTtlSeconds?: number;
+} = {}) {
+  const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const owner = await createCustomerFixture(`Scan${label}`);
+  const { event } = await createGeneralAdmissionEventFixture(`Scan${label}`);
+  const contractAddress = `C_SCAN_${label}_${suffix}`;
+  const ticketRootId = Number(String(Date.now()).slice(-6));
+  const version = options.ticketVersion ?? 0;
+  const ownerWallet = options.ownerWallet ?? 'GA3GQMZLZBE4VTVNZPZ2SQZGR5F6TFVMHY65IQCY2MMZ4KUMRYWSOVRD';
+
+  await prisma.events.update({
+    where: { id: event.id },
+    data: { contract_address: contractAddress },
+  });
+  const ticket = await prisma.tickets.create({
+    data: {
+      ticket_code: `CI-SCAN-${label}-${ticketRootId}`,
+      owner_user_id: owner.id,
+      owner_wallet: ownerWallet,
+      contract_address: contractAddress,
+      ticket_root_id: ticketRootId,
+      version,
+      status: options.status ?? 'ACTIVE',
+    },
+    select: { id: true },
+  });
+  const qrToken = signTicketQr({
+    secret: qrSecret,
+    contractAddress,
+    ticketRootId,
+    version: options.qrVersion ?? version,
+    eventId: event.id,
+    ownerWallet,
+    nonce: `ci-scan-${label}-${ticketRootId}`,
+    ttlSeconds: options.qrTtlSeconds,
+  });
+
+  return { event, ticket, qrToken, contractAddress, ticketRootId, ownerWallet };
+}
+
 test.before(async () => {
   await prisma.users.upsert({
     where: { email: 'ci-supertest-admin@stellar-tickets.local' },
@@ -559,6 +604,166 @@ test('POST /api/admin/scan accepts a signed QR once and records duplicate denial
   assert.equal(checkins[1].source, 'db');
 });
 
+test('API-SCAN-NEG-01 scanner accepts STAFF/ADMIN valid QR and rejects missing auth, CUSTOMER, fake, expired, stale, invalidated, used and missing tickets', async () => {
+  const adminId = await testUserId('ci-supertest-admin@stellar-tickets.local');
+  const staffId = await testUserId('ci-supertest-staff@stellar-tickets.local');
+  const customerId = await testUserId('ci-supertest-customer@stellar-tickets.local');
+
+  const noToken = await request(app)
+    .post('/api/admin/scan')
+    .send({ qrToken: 'missing-auth-token' })
+    .expect(401);
+  assert.equal(noToken.body.message, 'Token requerido');
+
+  const customerBlocked = await request(app)
+    .post('/api/admin/scan')
+    .set('Authorization', `Bearer ${tokenFor(customerId)}`)
+    .send({ qrToken: 'customer-cannot-scan' })
+    .expect(403);
+  assert.equal(customerBlocked.body.message, 'Acceso denegado');
+
+  const adminFixture = await createScannableTicketFixture('AdminValid');
+  const adminScan = await request(app)
+    .post('/api/admin/scan')
+    .set('Authorization', `Bearer ${tokenFor(adminId)}`)
+    .send({ qrToken: adminFixture.qrToken })
+    .expect(200);
+  assert.equal(adminScan.body.success, true);
+
+  const adminCheckin = await prisma.checkins.findFirstOrThrow({
+    where: { ticket_id: adminFixture.ticket.id, verifier_user_id: adminId },
+    select: { result: true, source: true },
+  });
+  assert.deepEqual(adminCheckin, { result: 'ALLOWED', source: 'db' });
+
+  const staffFixture = await createScannableTicketFixture('StaffValid');
+  const staffScan = await request(app)
+    .post('/api/admin/scan')
+    .set('Authorization', `Bearer ${tokenFor(staffId)}`)
+    .send({ qrToken: staffFixture.qrToken })
+    .expect(200);
+  assert.equal(staffScan.body.success, true);
+
+  const duplicateStaffScan = await request(app)
+    .post('/api/admin/scan')
+    .set('Authorization', `Bearer ${tokenFor(staffId)}`)
+    .send({ qrToken: staffFixture.qrToken })
+    .expect(409);
+  assert.equal(duplicateStaffScan.body.message, 'Boleto ya no esta activo: USED');
+  const staffCheckins = await prisma.checkins.findMany({
+    where: { ticket_id: staffFixture.ticket.id },
+    orderBy: { created_at: 'asc' },
+    select: { result: true, source: true },
+  });
+  assert.deepEqual(staffCheckins.map((checkin) => checkin.result), ['ALLOWED', 'DENIED']);
+  assert.equal(staffCheckins.filter((checkin) => checkin.result === 'ALLOWED').length, 1);
+  assert.equal(staffCheckins[0].source, 'db');
+
+  const fakeQr = await request(app)
+    .post('/api/admin/scan')
+    .set('Authorization', `Bearer ${tokenFor(staffId)}`)
+    .send({ qrToken: 'not-a-valid-signed-token' })
+    .expect(400);
+  assert.equal(fakeQr.body.message, 'QR firmado invalido');
+
+  const expiredFixture = await createScannableTicketFixture('ExpiredQr', { qrTtlSeconds: -1 });
+  const expiredQr = await request(app)
+    .post('/api/admin/scan')
+    .set('Authorization', `Bearer ${tokenFor(staffId)}`)
+    .send({ qrToken: expiredFixture.qrToken })
+    .expect(409);
+  assert.equal(expiredQr.body.message, 'QR expirado');
+
+  const staleFixture = await createScannableTicketFixture('StaleVersion', { ticketVersion: 1, qrVersion: 0 });
+  const staleQr = await request(app)
+    .post('/api/admin/scan')
+    .set('Authorization', `Bearer ${tokenFor(staffId)}`)
+    .send({ qrToken: staleFixture.qrToken })
+    .expect(409);
+  assert.equal(staleQr.body.message, 'QR vencido: este boleto fue revendido. El nuevo dueño tiene el QR válido.');
+
+  const invalidatedFixture = await createScannableTicketFixture('Invalidated', { status: 'CANCELLED' });
+  const invalidatedQr = await request(app)
+    .post('/api/admin/scan')
+    .set('Authorization', `Bearer ${tokenFor(staffId)}`)
+    .send({ qrToken: invalidatedFixture.qrToken })
+    .expect(409);
+  assert.equal(invalidatedQr.body.message, 'Boleto ya no esta activo: CANCELLED');
+
+  const { event } = await createGeneralAdmissionEventFixture('ScanMissingTicket');
+  const contractAddress = `C_SCAN_MISSING_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+  const missingRootId = Number(String(Date.now()).slice(-6));
+  await prisma.events.update({ where: { id: event.id }, data: { contract_address: contractAddress } });
+  const missingQrToken = signTicketQr({
+    secret: qrSecret,
+    contractAddress,
+    ticketRootId: missingRootId,
+    version: 0,
+    eventId: event.id,
+    ownerWallet: 'GDMISSINGSCANNERQR000000000000000000000000000000000000000000',
+    nonce: `missing-${missingRootId}`,
+  });
+  const missingTicket = await request(app)
+    .post('/api/admin/scan')
+    .set('Authorization', `Bearer ${tokenFor(staffId)}`)
+    .send({ qrToken: missingQrToken })
+    .expect(404);
+  assert.equal(missingTicket.body.message, 'Boleto no encontrado');
+});
+
+test('API-TICKET-INVALIDATE-01 invalidated tickets cannot be listed, bought through resale, or accepted by scanner', async () => {
+  const staffId = await testUserId('ci-supertest-staff@stellar-tickets.local');
+  const buyer = await createCustomerFixture('InvalidateBuyer');
+  const buyerWallet = `GAPIINVALIDATEBUYER${Date.now()}${Math.random().toString(16).slice(2)}`.slice(0, 56);
+  await prisma.users.update({ where: { id: buyer.id }, data: { wallet_address: buyerWallet } });
+  const invalidatedFixture = await createScannableTicketFixture('InvalidateApi', { status: 'CANCELLED' });
+  const invalidatedOwner = await prisma.tickets.findUniqueOrThrow({
+    where: { id: invalidatedFixture.ticket.id },
+    select: { owner_user_id: true },
+  });
+  assert.ok(invalidatedOwner.owner_user_id);
+  await prisma.users.update({
+    where: { id: invalidatedOwner.owner_user_id },
+    data: { wallet_address: invalidatedFixture.ownerWallet },
+  });
+
+  const policy = await request(app)
+    .get(`/api/tickets/${invalidatedFixture.ticket.id}/resale-policy`)
+    .set('Authorization', `Bearer ${tokenFor(invalidatedOwner.owner_user_id)}`)
+    .expect(200);
+  assert.equal(policy.body.canList, false);
+  assert.equal(policy.body.ticketStatus, 'CANCELLED');
+
+  const listAttempt = await request(app)
+    .post('/api/transactions/list-ticket')
+    .set('Authorization', `Bearer ${tokenFor(invalidatedOwner.owner_user_id)}`)
+    .send({ ticketId: invalidatedFixture.ticket.id, price: 10000000, priceCop: 1000 })
+    .expect(409);
+  assert.equal(listAttempt.body.message, 'El ticket no está activo: CANCELLED');
+
+  await prisma.tickets.update({
+    where: { id: invalidatedFixture.ticket.id },
+    data: { is_for_sale: true, resale_price: 10000000n },
+  });
+  const buyAttempt = await request(app)
+    .post('/api/transactions/build-buy-xdr')
+    .set('Authorization', `Bearer ${tokenFor(buyer.id)}`)
+    .send({
+      contractAddress: invalidatedFixture.contractAddress,
+      ticketRootId: invalidatedFixture.ticketRootId,
+      buyerPublicKey: buyerWallet,
+    })
+    .expect(404);
+  assert.equal(buyAttempt.body.message, 'Ticket no está en venta');
+
+  const scan = await request(app)
+    .post('/api/admin/scan')
+    .set('Authorization', `Bearer ${tokenFor(staffId)}`)
+    .send({ qrToken: invalidatedFixture.qrToken })
+    .expect(409);
+  assert.equal(scan.body.message, 'Boleto ya no esta activo: CANCELLED');
+});
+
 test('POST /api/transactions/transfer-nft requires authentication', async () => {
   const res = await request(app).post('/api/transactions/transfer-nft').send({}).expect(401);
   assert.equal(res.body.code, 'UNAUTHORIZED');
@@ -719,6 +924,126 @@ test('operational roles cannot link wallets', async () => {
     assert.equal(patch.body.message, 'Las cuentas operativas no pueden vincular wallet');
     assert.ok(patch.body.requestId);
   }
+});
+
+test('SEC-ROLE-01 enforces protected endpoints, role boundaries, ticket ownership and wallet identity checks', async () => {
+  const adminId = await testUserId('ci-supertest-admin@stellar-tickets.local');
+  const staffId = await testUserId('ci-supertest-staff@stellar-tickets.local');
+  const customerId = await testUserId('ci-supertest-customer@stellar-tickets.local');
+
+  const protectedNoToken = await request(app).get('/api/cart').expect(401);
+  assert.equal(protectedNoToken.body.message, 'Token requerido');
+
+  const protectedInvalidToken = await request(app)
+    .get('/api/cart')
+    .set('Authorization', 'Bearer invalid-token')
+    .expect(401);
+  assert.equal(protectedInvalidToken.body.message, 'Token inválido o expirado');
+
+  const expiredToken = jwt.sign({ userId: customerId }, jwtSecret, { expiresIn: -10 });
+  const protectedExpiredToken = await request(app)
+    .get('/api/cart')
+    .set('Authorization', `Bearer ${expiredToken}`)
+    .expect(401);
+  assert.equal(protectedExpiredToken.body.message, 'Token inválido o expirado');
+
+  const customerAdmin = await request(app)
+    .get('/api/admin/events')
+    .set('Authorization', `Bearer ${tokenFor(customerId)}`)
+    .expect(403);
+  assert.equal(customerAdmin.body.message, 'Acceso denegado');
+
+  const customerScanner = await request(app)
+    .post('/api/admin/scan')
+    .set('Authorization', `Bearer ${tokenFor(customerId)}`)
+    .send({ qrToken: 'customer-denied-before-parse' })
+    .expect(403);
+  assert.equal(customerScanner.body.message, 'Acceso denegado');
+
+  const staffScanner = await request(app)
+    .post('/api/admin/scan')
+    .set('Authorization', `Bearer ${tokenFor(staffId)}`)
+    .send({ qrToken: 'staff-reaches-scanner-policy' })
+    .expect(400);
+  assert.equal(staffScanner.body.message, 'QR firmado invalido');
+
+  const staffAdmin = await request(app)
+    .get('/api/admin/events')
+    .set('Authorization', `Bearer ${tokenFor(staffId)}`)
+    .expect(403);
+  assert.equal(staffAdmin.body.message, 'Acceso denegado');
+
+  await request(app)
+    .get('/api/admin/events')
+    .set('Authorization', `Bearer ${tokenFor(adminId)}`)
+    .expect(200);
+
+  const owner = await createCustomerFixture('SecOwner');
+  const intruder = await createCustomerFixture('SecIntruder');
+  const { ticketType } = await createGeneralAdmissionEventFixture('SecTicket', { price: 1000, serviceFee: 100 });
+  const { ticketId } = await buyGeneralAdmissionTicket({
+    customerId: owner.id,
+    ticketTypeId: ticketType.id,
+    idempotencyKey: `sec-role-ticket-${Date.now()}`,
+  });
+  const ownership = await request(app)
+    .get(`/api/tickets/${ticketId}/resale-policy`)
+    .set('Authorization', `Bearer ${tokenFor(intruder.id)}`)
+    .expect(404);
+  assert.equal(ownership.body.message, 'Ticket no encontrado');
+
+  const walletUser = await createCustomerFixture('WalletMismatch');
+  await prisma.users.update({
+    where: { id: walletUser.id },
+    data: { wallet_address: `GWALLET_${Date.now()}_${Math.random().toString(16).slice(2)}` },
+  });
+  const walletMismatch = await request(app)
+    .post('/api/transactions/build-buy-xdr')
+    .set('Authorization', `Bearer ${tokenFor(walletUser.id)}`)
+    .send({
+      contractAddress: 'CSECROLEWALLETBOUNDARY',
+      ticketRootId: 1,
+      buyerPublicKey: `GOTHER_${Date.now()}`,
+    })
+    .expect(403);
+  assert.equal(walletMismatch.body.message, 'buyerPublicKey no coincide con la wallet vinculada al usuario');
+
+  const priceOwner = await createCustomerFixture('PriceTamperOwner');
+  const priceOwnerWallet = `GPRICEOWNER${Date.now()}${Math.random().toString(16).slice(2)}`.slice(0, 56);
+  await prisma.users.update({ where: { id: priceOwner.id }, data: { wallet_address: priceOwnerWallet } });
+  const priceBuyer = await createCustomerFixture('PriceTamperBuyer');
+  const priceBuyerWallet = `GPRICEBUYER${Date.now()}${Math.random().toString(16).slice(2)}`.slice(0, 56);
+  await prisma.users.update({ where: { id: priceBuyer.id }, data: { wallet_address: priceBuyerWallet } });
+  const { event } = await createGeneralAdmissionEventFixture('PriceTamper', { price: 1000, serviceFee: 100 });
+  const contractAddress = `C_PRICE_TAMPER_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+  await prisma.events.update({ where: { id: event.id }, data: { contract_address: contractAddress } });
+  const ticketRootId = Number(String(Date.now()).slice(-6));
+  await prisma.tickets.create({
+    data: {
+      ticket_code: `SEC-PRICE-${ticketRootId}`,
+      owner_user_id: priceOwner.id,
+      owner_wallet: priceOwnerWallet,
+      contract_address: contractAddress,
+      ticket_root_id: ticketRootId,
+      version: 0,
+      status: 'ACTIVE',
+      is_for_sale: false,
+      resale_price: null,
+    },
+  });
+  const manipulatedStatusOrPrice = await request(app)
+    .post('/api/transactions/build-buy-xdr')
+    .set('Authorization', `Bearer ${tokenFor(priceBuyer.id)}`)
+    .send({
+      contractAddress,
+      ticketRootId,
+      buyerPublicKey: priceBuyerWallet,
+      price: 1,
+      status: 'ACTIVE',
+      isForSale: true,
+    })
+    .expect(404);
+  assert.equal(manipulatedStatusOrPrice.body.message, 'Ticket no está en venta');
 });
 
 test('customer users can request a wallet proof challenge', async () => {

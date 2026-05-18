@@ -101,6 +101,211 @@ test.after(async () => {
   await prisma.$disconnect();
 });
 
+test('INT-SYNC-01 projects normalized Soroban lifecycle fixtures into PostgreSQL without duplicate processing', async () => {
+  // INT-SYNC-01 usa eventos Soroban normalizados/mockeados y PostgreSQL real
+  // via Prisma. La prueba no consume Stellar Testnet: la ejecucion Testnet queda
+  // cubierta por la guia manual E2E-REV-01.
+  const fixture = await createIndexerFixture('sync');
+  const rootId = Number(String(Date.now()).slice(-6));
+  const redeemRootId = rootId + 1;
+  const invalidatedRootId = rootId + 2;
+
+  const created = await processIndexerEvent(prisma, {
+    evt: { txHash: `tx-sync-created-${rootId}`, ledger: 501 },
+    eventName: 'boleto_creado',
+    contractId: fixture.contractAddress,
+    topics: ['boleto_creado', rootId],
+    data: { propietario: fixture.sellerWallet },
+    fallbackLedger: 501,
+  });
+  assert.equal(created.status, 'processed');
+
+  const ticket = await prisma.tickets.findFirstOrThrow({
+    where: { contract_address: fixture.contractAddress, ticket_root_id: rootId, version: 0 },
+    select: {
+      contract_address: true,
+      ticket_root_id: true,
+      version: true,
+      owner_wallet: true,
+      owner_user_id: true,
+      status: true,
+      is_for_sale: true,
+      resale_price: true,
+    },
+  });
+  assert.deepEqual(ticket, {
+    contract_address: fixture.contractAddress,
+    ticket_root_id: rootId,
+    version: 0,
+    owner_wallet: fixture.sellerWallet,
+    owner_user_id: fixture.seller.id,
+    status: 'ACTIVE',
+    is_for_sale: false,
+    resale_price: null,
+  });
+
+  const listed = await processIndexerEvent(prisma, {
+    evt: { txHash: `tx-sync-listed-${rootId}`, ledger: 502 },
+    eventName: 'boleto_listado',
+    contractId: fixture.contractAddress,
+    topics: ['boleto_listado', rootId],
+    data: { version: 0, precio: 9000n },
+    fallbackLedger: 502,
+  });
+  assert.equal(listed.status, 'processed');
+  const listedTicket = await prisma.tickets.findFirstOrThrow({
+    where: { contract_address: fixture.contractAddress, ticket_root_id: rootId, version: 0 },
+    select: { is_for_sale: true, resale_price: true, status: true },
+  });
+  assert.equal(listedTicket.is_for_sale, true);
+  assert.equal(String(listedTicket.resale_price), '9000');
+  assert.equal(listedTicket.status, 'ACTIVE');
+
+  const cancelled = await processIndexerEvent(prisma, {
+    evt: { txHash: `tx-sync-cancelled-${rootId}`, ledger: 503 },
+    eventName: 'venta_cancelada',
+    contractId: fixture.contractAddress,
+    topics: ['venta_cancelada', rootId],
+    data: { version: 0 },
+    fallbackLedger: 503,
+  });
+  assert.equal(cancelled.status, 'processed');
+  const cancelledTicket = await prisma.tickets.findFirstOrThrow({
+    where: { contract_address: fixture.contractAddress, ticket_root_id: rootId, version: 0 },
+    select: { is_for_sale: true, resale_price: true, lifecycle_reason: true },
+  });
+  assert.equal(cancelledTicket.is_for_sale, false);
+  assert.equal(cancelledTicket.resale_price, null);
+  assert.equal(cancelledTicket.lifecycle_reason, 'LISTING_CANCELLED');
+
+  await processIndexerEvent(prisma, {
+    evt: { txHash: `tx-sync-relisted-${rootId}`, ledger: 504 },
+    eventName: 'boleto_listado',
+    contractId: fixture.contractAddress,
+    topics: ['boleto_listado', rootId],
+    data: { version: 0, precio: 12000n },
+    fallbackLedger: 504,
+  });
+  const resaleInput = {
+    evt: { txHash: `tx-sync-resale-${rootId}`, ledger: 505 },
+    eventName: 'boleto_revendido',
+    contractId: fixture.contractAddress,
+    topics: ['boleto_revendido', rootId],
+    data: {
+      vendedor: fixture.sellerWallet,
+      comprador: fixture.buyerWallet,
+      precio: 12000n,
+      version_anterior: 0,
+      version_nueva: 1,
+    },
+    fallbackLedger: 505,
+  };
+  const resold = await processIndexerEvent(prisma, resaleInput);
+  const replay = await processIndexerEvent(prisma, resaleInput);
+  assert.equal(resold.status, 'processed');
+  assert.equal(replay.status, 'skipped');
+
+  const versions = await prisma.tickets.findMany({
+    where: { contract_address: fixture.contractAddress, ticket_root_id: rootId },
+    orderBy: { version: 'asc' },
+    select: { version: true, owner_wallet: true, status: true, is_for_sale: true, lifecycle_reason: true },
+  });
+  assert.deepEqual(versions, [
+    { version: 0, owner_wallet: fixture.sellerWallet, status: 'CANCELLED', is_for_sale: false, lifecycle_reason: 'RESOLD_PREVIOUS_VERSION' },
+    { version: 1, owner_wallet: fixture.buyerWallet, status: 'ACTIVE', is_for_sale: false, lifecycle_reason: null },
+  ]);
+
+  await prisma.tickets.createMany({
+    data: [
+      {
+        ticket_code: `IDX-SYNC-REDEEM-${redeemRootId}`,
+        contract_address: fixture.contractAddress,
+        ticket_root_id: redeemRootId,
+        version: 0,
+        status: 'ACTIVE',
+        owner_wallet: fixture.sellerWallet,
+        owner_user_id: fixture.seller.id,
+      },
+      {
+        ticket_code: `IDX-SYNC-INVALID-${invalidatedRootId}`,
+        contract_address: fixture.contractAddress,
+        ticket_root_id: invalidatedRootId,
+        version: 0,
+        status: 'ACTIVE',
+        is_for_sale: true,
+        resale_price: 15000n,
+        owner_wallet: fixture.sellerWallet,
+        owner_user_id: fixture.seller.id,
+      },
+    ],
+  });
+
+  await processIndexerEvent(prisma, {
+    evt: { txHash: `tx-sync-redeemed-${redeemRootId}`, ledger: 506 },
+    eventName: 'boleto_redimido',
+    contractId: fixture.contractAddress,
+    topics: ['boleto_redimido', redeemRootId],
+    data: { version: 0 },
+    fallbackLedger: 506,
+  });
+  const redeemed = await prisma.tickets.findFirstOrThrow({
+    where: { contract_address: fixture.contractAddress, ticket_root_id: redeemRootId, version: 0 },
+    select: { status: true, is_for_sale: true, lifecycle_reason: true, used_at: true },
+  });
+  assert.equal(redeemed.status, 'USED');
+  assert.equal(redeemed.is_for_sale, false);
+  assert.equal(redeemed.lifecycle_reason, 'REDEEMED_ONCHAIN');
+  assert.ok(redeemed.used_at);
+
+  await processIndexerEvent(prisma, {
+    evt: { txHash: `tx-sync-invalidated-${invalidatedRootId}`, ledger: 507 },
+    eventName: 'boleto_invalidado_evt',
+    contractId: fixture.contractAddress,
+    topics: ['boleto_invalidado_evt', invalidatedRootId],
+    data: { version: 0 },
+    fallbackLedger: 507,
+  });
+  const invalidated = await prisma.tickets.findFirstOrThrow({
+    where: { contract_address: fixture.contractAddress, ticket_root_id: invalidatedRootId, version: 0 },
+    select: { status: true, is_for_sale: true, lifecycle_reason: true, resale_price: true },
+  });
+  assert.equal(invalidated.status, 'CANCELLED');
+  assert.equal(invalidated.is_for_sale, false);
+  assert.equal(invalidated.lifecycle_reason, 'INVALIDATED_ONCHAIN');
+  assert.equal(String(invalidated.resale_price), '15000');
+
+  const unknown = await processIndexerEvent(prisma, {
+    evt: { txHash: `tx-sync-unknown-${rootId}`, ledger: 508 },
+    eventName: 'evento_desconocido_para_compatibilidad',
+    contractId: fixture.contractAddress,
+    topics: ['evento_desconocido_para_compatibilidad', rootId],
+    data: { version: 0, raw: 'ignored' },
+    fallbackLedger: 508,
+  });
+  assert.equal(unknown.status, 'processed');
+  const afterUnknownVersions = await prisma.tickets.findMany({
+    where: { contract_address: fixture.contractAddress, ticket_root_id: rootId },
+    orderBy: { version: 'asc' },
+    select: { version: true, owner_wallet: true, status: true, is_for_sale: true, lifecycle_reason: true },
+  });
+  assert.deepEqual(afterUnknownVersions, versions);
+
+  const malformed = await processIndexerEvent(prisma, {
+    evt: { txHash: `tx-sync-malformed-${rootId}`, ledger: 509 },
+    eventName: 'boleto_listado',
+    contractId: fixture.contractAddress,
+    topics: ['boleto_listado'],
+    data: { version: 0, precio: 1n },
+    fallbackLedger: 509,
+  });
+  assert.deepEqual(malformed, { status: 'skipped', reason: 'invalid_identity' });
+
+  const onchainEventCount = await prisma.onchain_events.count({
+    where: { contract_address: fixture.contractAddress, status: 'PROCESSED' },
+  });
+  assert.equal(onchainEventCount, 8);
+});
+
 test('indexer integration projects boleto_redimido into USED with REDEEMED_ONCHAIN', async () => {
   const fixture = await createIndexerFixture('redeem');
   const rootId = Number(String(Date.now()).slice(-6));
