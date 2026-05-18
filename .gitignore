@@ -1,6 +1,4 @@
-# AI / IDE
-.gemini/
-.cursor/
+# Local editor config
 .vscode/
 .idea/
 
