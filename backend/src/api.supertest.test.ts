@@ -716,7 +716,11 @@ test('API-TICKET-INVALIDATE-01 invalidated tickets cannot be listed, bought thro
   const buyer = await createCustomerFixture('InvalidateBuyer');
   const buyerWallet = `GAPIINVALIDATEBUYER${Date.now()}${Math.random().toString(16).slice(2)}`.slice(0, 56);
   await prisma.users.update({ where: { id: buyer.id }, data: { wallet_address: buyerWallet } });
-  const invalidatedFixture = await createScannableTicketFixture('InvalidateApi', { status: 'CANCELLED' });
+  const ownerWallet = `GAPIINVALIDATEOWNER${Date.now()}${Math.random().toString(16).slice(2)}`.slice(0, 56);
+  const invalidatedFixture = await createScannableTicketFixture('InvalidateApi', {
+    status: 'CANCELLED',
+    ownerWallet,
+  });
   const invalidatedOwner = await prisma.tickets.findUniqueOrThrow({
     where: { id: invalidatedFixture.ticket.id },
     select: { owner_user_id: true },
