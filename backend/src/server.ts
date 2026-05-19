@@ -1116,10 +1116,27 @@ function toEventDto(event: any) {
 }
 
 const eventIncludes = {
-  venues: { include: { cities: true } },
-  organizers: true,
-  event_categories: true,
-  event_ticket_types: { where: { is_active: true } },
+  venues: {
+    select: {
+      name: true,
+      venue_type: true,
+      cities: { select: { city_name: true } },
+    },
+  },
+  organizers: { select: { legal_name: true } },
+  event_categories: { select: { code: true, display_name: true } },
+  event_ticket_types: {
+    where: { is_active: true },
+    select: {
+      id: true,
+      ticket_type_name: true,
+      price_amount: true,
+      service_fee_amount: true,
+      inventory_quantity: true,
+      max_per_order: true,
+      venue_section_id: true,
+    },
+  },
 };
 
 async function getTicketTypeAvailability(eventId: string, ticketType: any, hasAssignedSeating: boolean): Promise<number> {
@@ -1288,7 +1305,11 @@ app.get('/api/events/:slug', async (req, res) => {
       name: t.ticket_type_name,
       price: Number(t.price_amount),
       serviceFee: Number(t.service_fee_amount),
-      availability: await getTicketTypeAvailability(event.id, t, Boolean(event.has_assigned_seating)),
+      availability: await cached(
+        `event:${event.id}:ticket-type:${t.id}:availability`,
+        10_000,
+        () => getTicketTypeAvailability(event.id, t, Boolean(event.has_assigned_seating))
+      ),
       maxPerOrder: t.max_per_order ?? 10,
     })));
 
@@ -2893,7 +2914,22 @@ app.post('/api/auth/register', authRateLimit, async (req, res) => {
 
 app.get('/api/users/me', authMiddleware, async (req, res) => {
   try {
-    const user = await prisma.users.findUnique({ where: { id: (req as any).userId } });
+    const user = await cached(`user:profile:${(req as any).userId}`, 30_000, () =>
+      prisma.users.findUnique({
+        where: { id: (req as any).userId },
+        select: {
+          id: true,
+          first_name: true,
+          last_name: true,
+          email: true,
+          phone: true,
+          document_type: true,
+          document_number: true,
+          wallet_address: true,
+          role: true,
+        },
+      })
+    );
     if (!user) {
       sendApiError(req, res, 404, 'NOT_FOUND', 'Usuario no encontrado');
       return;
@@ -2919,6 +2955,7 @@ app.patch('/api/users/me', authMiddleware, async (req, res) => {
         ...(documentNumber !== undefined && { document_number: documentNumber }),
       },
     });
+    invalidateCache(`user:profile:${(req as any).userId}`);
     res.json(toUserDto(user));
   } catch (error: any) {
     console.error('[AUTH] Update profile error:', error);
@@ -3027,6 +3064,7 @@ app.patch('/api/users/me/wallet', walletRateLimit, authMiddleware, async (req, r
       });
     });
 
+    invalidateCache(`user:profile:${(req as any).userId}`);
     res.json({ walletAddress: user.wallet_address });
   } catch (error: any) {
     if (error.code === 'P2002') {
@@ -3704,7 +3742,16 @@ app.post('/api/checkout/preview', authMiddleware, async (req, res) => {
     await releaseExpiredSeatHolds();
     const cart = await prisma.carts.findFirst({
       where: { user_id: userId, status: 'ACTIVE' },
-      include: { cart_items: { include: { event_ticket_types: true } } },
+      select: {
+        cart_items: {
+          select: {
+            id: true,
+            quantity: true,
+            unit_price_amount: true,
+            service_fee_amount: true,
+          },
+        },
+      },
     });
     if (!cart || cart.cart_items.length === 0) {
       sendApiError(req, res, 400, 'BAD_REQUEST', 'El carrito está vacío');
@@ -3741,9 +3788,6 @@ app.post('/api/checkout/confirm', authMiddleware, async (req, res) => {
     const requestedIdempotencyKey = normalizeIdempotencyKey(req.body?.idempotencyKey ?? req.headers['idempotency-key']);
     await releaseExpiredSeatHolds();
 
-    const user = await prisma.users.findUnique({ where: { id: userId } });
-    if (!user) { sendApiError(req, res, 404, 'NOT_FOUND', 'Usuario no encontrado'); return; }
-
     if (requestedIdempotencyKey) {
       const orderNumber = buildSimulatedOrderNumber(requestedIdempotencyKey);
       const existingOrder = await prisma.orders.findFirst({
@@ -3764,6 +3808,9 @@ app.post('/api/checkout/confirm', authMiddleware, async (req, res) => {
       sendApiError(req, res, 400, 'BAD_REQUEST', 'El carrito está vacío');
       return;
     }
+
+    const user = await prisma.users.findUnique({ where: { id: userId } });
+    if (!user) { sendApiError(req, res, 404, 'NOT_FOUND', 'Usuario no encontrado'); return; }
 
     // Calculate totals
     let subtotal = 0;
@@ -3986,6 +4033,15 @@ app.get('/api/orders', authMiddleware, async (req, res) => {
     const userId = (req as any).userId;
     const orders = await prisma.orders.findMany({
       where: { user_id: userId },
+      select: {
+        id: true,
+        order_number: true,
+        created_at: true,
+        total_amount: true,
+        subtotal_amount: true,
+        service_fee_amount: true,
+        status: true,
+      },
       orderBy: { created_at: 'desc' },
     });
     res.json(orders.map((o) => ({
@@ -4067,26 +4123,29 @@ app.get('/api/tickets', authMiddleware, async (req, res) => {
       : [];
     const eventByContract = new Map(fallbackEvents.map((event) => [event.contract_address, event]));
 
-    const p2pLookups = await Promise.all(
-      tickets.map(async (t) => {
-        if (
-          typeof t.version === 'number' &&
-          t.version > 0 &&
-          t.contract_address &&
-          t.ticket_root_id != null
-        ) {
-          const prev = await prisma.tickets.findFirst({
-            where: {
-              contract_address: t.contract_address,
-              ticket_root_id: t.ticket_root_id,
-              version: t.version - 1,
-            },
-            select: { resale_price: true },
-          });
-          return prev?.resale_price ? Number(prev.resale_price) : null;
-        }
-        return null;
-      })
+    const resalePreviousVersions = tickets
+      .filter((t) =>
+        typeof t.version === 'number' &&
+        t.version > 0 &&
+        t.contract_address &&
+        t.ticket_root_id != null
+      )
+      .map((t) => ({
+        contract_address: t.contract_address!,
+        ticket_root_id: t.ticket_root_id!,
+        version: Number(t.version) - 1,
+      }));
+    const previousTickets = resalePreviousVersions.length
+      ? await prisma.tickets.findMany({
+          where: { OR: resalePreviousVersions },
+          select: { contract_address: true, ticket_root_id: true, version: true, resale_price: true },
+        })
+      : [];
+    const previousTicketPriceByKey = new Map(
+      previousTickets.map((t) => [
+        `${t.contract_address}:${t.ticket_root_id}:${t.version}`,
+        t.resale_price ? Number(t.resale_price) : null,
+      ])
     );
 
     res.json(tickets.map((t, idx) => {
@@ -4125,7 +4184,7 @@ app.get('/api/tickets', authMiddleware, async (req, res) => {
         version: t.version,
         ownerWallet: t.owner_wallet,
         resalePrice: acquiredViaResale
-          ? p2pLookups[idx]
+          ? previousTicketPriceByKey.get(`${t.contract_address}:${t.ticket_root_id}:${Number(t.version ?? 0) - 1}`) ?? null
           : t.resale_price ? Number(t.resale_price) : null,
         acquiredViaResale,
         nftContractAddress: (evt as any)?.nft_contract_address ?? null,

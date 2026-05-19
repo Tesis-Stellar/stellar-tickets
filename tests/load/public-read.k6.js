@@ -15,6 +15,9 @@ export const options = {
   thresholds: {
     http_req_failed: ['rate<=0.01'],
     'http_req_duration{kind:public}': ['p(95)<1500'],
+    'http_req_duration{name:health}': ['p(95)<300'],
+    'http_req_duration{name:events_list}': ['p(95)<1500'],
+    'http_req_duration{name:event_detail_marketplace_equivalent}': ['p(95)<1500'],
   },
 };
 

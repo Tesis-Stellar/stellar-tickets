@@ -15,6 +15,9 @@ export const options = {
   thresholds: {
     http_req_failed: ['rate<=0.01'],
     'http_req_duration{kind:authenticated}': ['p(95)<2500'],
+    'http_req_duration{name:profile}': ['p(95)<1500'],
+    'http_req_duration{name:inventory}': ['p(95)<2500'],
+    'http_req_duration{name:orders}': ['p(95)<2500'],
   },
 };
 

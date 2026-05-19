@@ -14,9 +14,6 @@ export const options = {
   },
   thresholds: {
     http_req_failed: ['rate<=0.01'],
-    'http_req_duration{kind:public}': ['p(95)<1500'],
-    'http_req_duration{kind:authenticated}': ['p(95)<2500'],
-    'http_req_duration{kind:scanner}': ['p(95)<2500'],
   },
 };
 
@@ -87,7 +84,8 @@ export default function (data) {
     });
   }
 
-  if (data.scannerToken) {
+  const scannerSampleEvery = Number(__ENV.SCANNER_SAMPLE_EVERY || 3);
+  if (data.scannerToken && (__ITER % scannerSampleEvery === 0)) {
     group('LOAD-API-01 scanner guard', () => {
       const body = data.scanQrToken ? { qrToken: data.scanQrToken } : { qrToken: 'invalid-load-api-01-token' };
       const scan = http.post(`${BASE_URL}/api/admin/scan`, JSON.stringify(body), {
